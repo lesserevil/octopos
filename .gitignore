@@ -1,0 +1,29 @@
+# Build outputs
+bin/
+*.bpf.o
+
+# IDE
+.opencode/
+*.swp
+*~
+
+# Generated binaries
+octoposd
+octoposctl
+octopos-gw
+octopos-procfs
+octopos-devfs
+octopos-sysfs
+
+# Systemd (deployed files)
+*.service
+
+# Scripts
+clusterctl.sh
+provision_*.sh
+
+# eBPF vmlinux (large, regenerate per-arch)
+ebpf/common/include/vmlinux.h
+
+# Go
+vendor/

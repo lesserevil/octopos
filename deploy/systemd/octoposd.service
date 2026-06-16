@@ -1,0 +1,20 @@
+[Unit]
+Description=OctopOS Cluster Agent
+After=network-online.target wg-quick@wg-octopos.service redis-server.service
+Wants=network-online.target wg-quick@wg-octopos.service redis-server.service
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+ExecStart=/usr/local/bin/octoposd -grpc-addr=0.0.0.0:50051 -wg-interface=wg-octopos
+Restart=always
+RestartSec=5
+Environment=GOMAXPROCS=8
+
+# Capabilities for VFIO, namespace operations
+CapabilityBoundingSet=CAP_SYS_ADMIN CAP_SYS_RESOURCE CAP_DAC_OVERRIDE CAP_IPC_LOCK CAP_SYS_PTRACE CAP_DAC_READ_SEARCH
+AmbientCapabilities=CAP_SYS_ADMIN CAP_SYS_RESOURCE CAP_DAC_OVERRIDE CAP_IPC_LOCK CAP_SYS_PTRACE CAP_DAC_READ_SEARCH
+
+[Install]
+WantedBy=multi-user.target

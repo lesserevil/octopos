@@ -1,0 +1,347 @@
+syntax = "proto3";
+
+package octopos.rpc;
+
+option go_package = "github.com/octopos/octopos/pkg/rpc";
+
+// Cluster service for inter-node communication
+service Cluster {
+  // Node lifecycle
+  rpc RegisterNode(RegisterNodeRequest) returns (RegisterNodeResponse);
+  rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse);
+  rpc GetClusterState(GetClusterStateRequest) returns (GetClusterStateResponse);
+  
+  // Job execution
+  rpc Execute(ExecuteRequest) returns (ExecuteResponse);
+  rpc Signal(SignalRequest) returns (SignalResponse);
+  rpc Wait(WaitRequest) returns (WaitResponse);
+  rpc GetJobStatus(GetJobStatusRequest) returns (GetJobStatusResponse);
+  
+  // Process tracking
+  rpc ListProcesses(ListProcessesRequest) returns (ListProcessesResponse);
+  rpc GetProcess(GetProcessRequest) returns (GetProcessResponse);
+  
+  // Resource management
+  rpc AllocateVFIO(AllocateVFIORequest) returns (AllocateVFIOResponse);
+  rpc ReleaseVFIO(ReleaseVFIORequest) returns (ReleaseVFIOResponse);
+  rpc GetVFIODevices(GetVFIODevicesRequest) returns (GetVFIODevicesResponse);
+  
+  // Session management
+  rpc CreateSession(CreateSessionRequest) returns (CreateSessionResponse);
+  rpc DestroySession(DestroySessionRequest) returns (DestroySessionResponse);
+  rpc ListSessions(ListSessionsRequest) returns (ListSessionsResponse);
+  
+  // Streaming for pipes/stdin/stdout
+  rpc ExecStream(stream ExecStreamRequest) returns (stream ExecStreamResponse);
+}
+
+// Node registration
+message RegisterNodeRequest {
+  string node_id = 1;
+  string address = 2;
+  int32 grpc_port = 3;
+  NodeResources resources = 4;
+  map<string, string> labels = 5;
+}
+
+message RegisterNodeResponse {
+  bool success = 1;
+  string error = 2;
+  repeated NodeInfo peers = 3;
+}
+
+message HeartbeatRequest {
+  string node_id = 1;
+  NodeResources allocated = 2;
+}
+
+message HeartbeatResponse {
+  bool ok = 1;
+  string action = 2; // "none", "drain", "shutdown"
+}
+
+message GetClusterStateRequest {}
+
+message GetClusterStateResponse {
+  repeated NodeInfo nodes = 1;
+  repeated SessionInfo sessions = 2;
+  repeated JobInfo jobs = 3;
+}
+
+// Job execution
+message ExecuteRequest {
+  string session_id = 1;
+  string job_id = 2;
+  repeated string command = 3;
+  repeated string env = 4;
+  string cwd = 5;
+  bool stdin = 6;
+  bool stdout = 7;
+  bool stderr = 8;
+  bool tty = 9;
+  Requirements resources = 10;
+  map<int32, int32> pipe_map = 11;
+}
+
+message ExecuteResponse {
+  string job_id = 1;
+  uint64 global_pid = 2;
+  int32 exit_code = 3;
+  string error = 4;
+}
+
+message SignalRequest {
+  uint64 global_pid = 1;
+  int32 signal = 2;
+}
+
+message SignalResponse {
+  bool success = 1;
+  string error = 2;
+}
+
+message WaitRequest {
+  string job_id = 1;
+  int64 timeout_ms = 2;
+}
+
+message WaitResponse {
+  int32 exit_code = 1;
+  bool timed_out = 2;
+  string error = 3;
+}
+
+message GetJobStatusRequest {
+  string job_id = 1;
+}
+
+message GetJobStatusResponse {
+  JobInfo job = 1;
+  bool found = 2;
+}
+
+// Process tracking
+message ListProcessesRequest {
+  string node_id = 1;
+  string session_id = 2;
+  string job_id = 3;
+}
+
+message ListProcessesResponse {
+  repeated ProcessInfo processes = 1;
+}
+
+message GetProcessRequest {
+  uint64 global_pid = 1;
+}
+
+message GetProcessResponse {
+  ProcessInfo process = 1;
+  bool found = 2;
+}
+
+// VFIO management
+message AllocateVFIORequest {
+  string session_id = 1;
+  string job_id = 2;
+  VFIORequirement device = 3;
+}
+
+message AllocateVFIOResponse {
+  bool success = 1;
+  int32 group_id = 2;
+  int32 container_fd = 3;
+  int32 device_fd = 4;
+  string device_path = 5;
+  string error = 6;
+}
+
+message ReleaseVFIORequest {
+  int32 group_id = 1;
+  string session_id = 2;
+}
+
+message ReleaseVFIOResponse {
+  bool success = 1;
+  string error = 2;
+}
+
+message GetVFIODevicesRequest {
+  string node_id = 1;
+}
+
+message GetVFIODevicesResponse {
+  repeated VFIOGroup groups = 1;
+}
+
+// Session management
+message CreateSessionRequest {
+  string session_id = 1;
+  string user = 2;
+  string preferred_node = 3;
+  bool tty = 4;
+  map<string, string> env = 5;
+  string cwd = 6;
+}
+
+message CreateSessionResponse {
+  bool success = 1;
+  string error = 2;
+}
+
+message DestroySessionRequest {
+  string session_id = 1;
+}
+
+message DestroySessionResponse {
+  bool success = 1;
+  string error = 2;
+}
+
+message ListSessionsRequest {}
+
+message ListSessionsResponse {
+  repeated SessionInfo sessions = 1;
+}
+
+// Streaming for interactive/pipe support
+message ExecStreamRequest {
+  oneof payload {
+    ExecuteRequest exec = 1;
+    bytes stdin_data = 2;
+    SignalRequest signal = 3;
+    bool close_stdin = 4;
+  }
+}
+
+message ExecStreamResponse {
+  oneof payload {
+    ExecuteResponse exec = 1;
+    bytes stdout_data = 2;
+    bytes stderr_data = 3;
+    int32 exit_code = 4;
+    string error = 5;
+  }
+}
+
+// Data structures
+message NodeResources {
+  int64 cpu_millicores = 1;
+  int64 memory_bytes = 2;
+  int32 gpu_count = 3;
+  int32 numa_nodes = 4;
+  repeated PCIDevice pci_devices = 5;
+}
+
+message PCIDevice {
+  string address = 1;
+  string vendor_id = 2;
+  string device_id = 3;
+  string class = 4;
+  string driver = 5;
+  int32 iommu_group = 6;
+  int32 vfio_group = 7;
+}
+
+message NodeInfo {
+  string node_id = 1;
+  string address = 2;
+  int32 grpc_port = 3;
+  NodeState state = 4;
+  NodeResources capacity = 5;
+  NodeResources allocated = 6;
+  map<string, string> labels = 7;
+  int64 last_heartbeat = 8;
+  repeated VFIOGroup vfio_groups = 9;
+}
+
+enum NodeState {
+  NODE_STATE_ACTIVE = 0;
+  NODE_STATE_DRAINING = 1;
+  NODE_STATE_DRAINED = 2;
+  NODE_STATE_MAINTENANCE = 3;
+  NODE_STATE_OFFLINE = 4;
+}
+
+message VFIOGroup {
+  int32 group_id = 1;
+  repeated PCIDevice devices = 2;
+  string claimed_by = 3;
+}
+
+message Requirements {
+  int64 cpu_millicores = 1;
+  int64 memory_bytes = 2;
+  int32 gpus = 3;
+  int64 gpu_mem_bytes = 4;
+  repeated VFIORequirement vfio_devs = 5;
+  map<string, string> node_affinity = 6;
+  string session_id = 7;
+  string job_id = 8;
+  int32 priority = 9;
+  bool interactive = 10;
+}
+
+message VFIORequirement {
+  string vendor_id = 1;
+  string device_id = 2;
+  string class = 3;
+  int32 count = 4;
+}
+
+message ProcessInfo {
+  uint64 global_pid = 1;
+  string node_id = 2;
+  int32 local_pid = 3;
+  int32 ppid = 4;
+  uint32 uid = 5;
+  uint32 gid = 6;
+  string session_id = 7;
+  string job_id = 8;
+  string comm = 9;
+  string cmdline = 10;
+  string cwd = 11;
+  int64 start_time = 12;
+  double cpu_percent = 13;
+  uint64 rss_bytes = 14;
+  string state = 15;
+  repeated string vfio_groups = 16;
+}
+
+message SessionInfo {
+  string session_id = 1;
+  string user = 2;
+  string node_id = 3;
+  int64 created_at = 4;
+  bool tty = 5;
+  map<string, string> env = 6;
+  string cwd = 7;
+}
+
+message JobInfo {
+  string job_id = 1;
+  string session_id = 2;
+  repeated CommandSpec commands = 3;
+  map<int32, int32> pipe_map = 4;
+  JobStatus status = 5;
+  int64 created_at = 6;
+  int64 started_at = 7;
+  int64 finished_at = 8;
+  repeated int32 exit_codes = 9;
+  string primary_node = 10;
+}
+
+message CommandSpec {
+  repeated string argv = 1;
+  repeated string env = 2;
+  Requirements resources = 3;
+  repeated string vfio_groups = 4;
+}
+
+enum JobStatus {
+  JOB_STATUS_PENDING = 0;
+  JOB_STATUS_RUNNING = 1;
+  JOB_STATUS_STOPPED = 2;
+  JOB_STATUS_COMPLETED = 3;
+  JOB_STATUS_FAILED = 4;
+}

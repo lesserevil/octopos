@@ -1,0 +1,25 @@
+[Unit]
+Description=OctopOS Cluster Gateway (VIP SSH)
+After=network.target wg-quick@wg-octopos.service octoposd.service
+Wants=wg-quick@wg-octopos.service octoposd.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/octopos-gw \
+  --vip 10.0.0.100:22 \
+  --grpc-addr 127.0.0.1:50051 \
+  --node-id $(hostname) \
+  --mount-base /tmp/octopos \
+  --host-key /etc/ssh/ssh_host_ed25519_key
+Restart=always
+RestartSec=5
+User=root
+StandardOutput=journal
+StandardError=journal
+
+# Namespace capabilities needed for session isolation
+AmbientCapabilities=CAP_SYS_ADMIN CAP_SYS_RESOURCE CAP_DAC_OVERRIDE
+CapabilityBoundingSet=CAP_SYS_ADMIN CAP_SYS_RESOURCE CAP_DAC_OVERRIDE
+
+[Install]
+WantedBy=multi-user.target
