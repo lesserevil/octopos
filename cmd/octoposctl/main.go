@@ -495,8 +495,6 @@ func main() {
 	clusterBootstrapCmd.Flags().Int("grpc-port", 50051, "gRPC port")
 	clusterBootstrapCmd.Flags().Bool("enable-gateway", true, "Deploy VIP gateway (octopos-gw) on this node")
 	clusterBootstrapCmd.Flags().String("vip-ip", "10.0.0.100", "Virtual IP for cluster gateway")
-	clusterBootstrapCmd.Flags().Bool("enable-gateway", true, "Deploy VIP gateway (octopos-gw)")
-	clusterBootstrapCmd.Flags().String("vip-ip", "10.0.0.100", "Cluster VIP address")
 
 	nodeListCmd.Flags().StringP("output", "o", "", "Output format (json|wide)")
 

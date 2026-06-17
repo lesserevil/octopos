@@ -1,37 +1,61 @@
 # OctopOS Makefile
 
-.PHONY: all build test test-unit test-integration test-e2e clean fmt vet lint ebpf-build bash-build deploy
+.PHONY: all build build-daemon build-octoposd build-tools build-octoposctl build-octopos-gw build-fuse build-octopos-procfs build-octopos-devfs build-octopos-sysfs test test-unit test-tools test-integration test-e2e clean fmt vet lint generate ebpf-build ebpf-verify bash-build dev install deploy status help
 
 # Variables
 GO_VERSION := 1.22
 BINARY_NAME := octoposd
 BASH_BINARY := octo-bash
 BUILD_DIR := ./bin
-GO_PKGS := ./cmd/... ./pkg/... ./test/...
+GO_BINARIES := octoposd octoposctl octopos-gw octopos-procfs octopos-devfs octopos-sysfs
+TOOL_PKGS := ./cmd/octoposctl ./cmd/octopos-gw ./fuse/procfs ./fuse/devfs ./fuse/sysfs
+GO_PKGS := ./cmd/... ./pkg/... ./fuse/...
 
 # Default target
 all: build
 
-# Build Go binaries
-build: $(BUILD_DIR)/$(BINARY_NAME)
+# Build all Go binaries
+build: build-daemon build-tools
 
-$(BUILD_DIR)/$(BINARY_NAME):
+build-daemon: build-octoposd
+
+build-octoposd:
 	@mkdir -p $(BUILD_DIR)
 	go build -o $(BUILD_DIR)/$(BINARY_NAME) ./cmd/octoposd
 
-# Build octoposctl
-$(BUILD_DIR)/octoposctl:
+# Build support tools
+build-tools: build-octoposctl build-octopos-gw build-fuse
+
+build-octoposctl:
 	@mkdir -p $(BUILD_DIR)
 	go build -o $(BUILD_DIR)/octoposctl ./cmd/octoposctl
 
-# Build all CLI tools
-build-tools: $(BUILD_DIR)/$(BINARY_NAME) $(BUILD_DIR)/octoposctl
+build-octopos-gw:
+	@mkdir -p $(BUILD_DIR)
+	go build -o $(BUILD_DIR)/octopos-gw ./cmd/octopos-gw
+
+build-fuse: build-octopos-procfs build-octopos-devfs build-octopos-sysfs
+
+build-octopos-procfs:
+	@mkdir -p $(BUILD_DIR)
+	go build -o $(BUILD_DIR)/octopos-procfs ./fuse/procfs
+
+build-octopos-devfs:
+	@mkdir -p $(BUILD_DIR)
+	go build -o $(BUILD_DIR)/octopos-devfs ./fuse/devfs
+
+build-octopos-sysfs:
+	@mkdir -p $(BUILD_DIR)
+	go build -o $(BUILD_DIR)/octopos-sysfs ./fuse/sysfs
 
 # Run tests
 test: test-unit
 
 test-unit:
 	go test -v -race -coverprofile=coverage.out $(GO_PKGS)
+
+test-tools:
+	go test -v $(TOOL_PKGS)
 
 test-integration:
 	@echo "Running integration tests (requires 3-node cluster)..."
@@ -43,7 +67,7 @@ test-e2e:
 
 # Code quality
 fmt:
-	gofmt -w -s ./cmd ./pkg ./test
+	gofmt -w -s ./cmd ./pkg ./fuse
 
 vet:
 	go vet $(GO_PKGS)
@@ -100,9 +124,9 @@ clean:
 
 # Install to system
 install: build
-	sudo cp $(BUILD_DIR)/$(BINARY_NAME) /usr/local/bin/
-	sudo mkdir -p /etc/octopos
-	sudo cp deploy/systemd/octoposd.service /etc/systemd/system/
+	sudo install -d /usr/local/bin /etc/octopos /etc/systemd/system
+	sudo install -m 0755 $(addprefix $(BUILD_DIR)/,$(GO_BINARIES)) /usr/local/bin/
+	sudo install -m 0644 deploy/systemd/octoposd.service deploy/systemd/octopos-gw.service /etc/systemd/system/
 	sudo systemctl daemon-reload
 
 # Deploy to test cluster
@@ -123,10 +147,13 @@ help:
 	@echo "OctopOS Makefile"
 	@echo ""
 	@echo "Targets:"
-	@echo "  build           - Build octoposd binary"
-	@echo "  build-tools     - Build all CLI tools"
+	@echo "  build           - Build all Go binaries"
+	@echo "  build-daemon    - Build octoposd binary"
+	@echo "  build-tools     - Build CLI, gateway, and FUSE tools"
+	@echo "  build-fuse      - Build FUSE filesystem daemons"
 	@echo "  test            - Run unit tests"
 	@echo "  test-unit       - Run unit tests with coverage"
+	@echo "  test-tools      - Run executable package tests"
 	@echo "  test-integration - Run integration tests"
 	@echo "  test-e2e        - Run E2E tests"
 	@echo "  fmt             - Format code"

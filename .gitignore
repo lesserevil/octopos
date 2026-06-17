@@ -8,12 +8,12 @@ bin/
 *~
 
 # Generated binaries
-octoposd
-octoposctl
-octopos-gw
-octopos-procfs
-octopos-devfs
-octopos-sysfs
+/octoposd
+/octoposctl
+/octopos-gw
+/octopos-procfs
+/octopos-devfs
+/octopos-sysfs
 
 # Systemd (deployed files)
 *.service
