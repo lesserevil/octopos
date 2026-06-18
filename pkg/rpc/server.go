@@ -1,13 +1,9 @@
 package rpc
 
 import (
-	"bytes"
 	"context"
-	"fmt"
 	"log"
-	"os/exec"
 	"sync"
-	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -40,7 +36,7 @@ type ClusterState struct {
 
 // NewClusterServerImpl creates a new cluster gRPC server implementation
 func NewClusterServerImpl(nodeID cluster.NodeID, sched *scheduler.Scheduler, trk *tracker.Tracker, pool *ClusterClientPool) *ClusterServerImpl {
-	return &ClusterServerImpl{
+	server := &ClusterServerImpl{
 		nodeID: nodeID,
 		cluster: &ClusterState{
 			nodes:    make(map[cluster.NodeID]*cluster.NodeInfo),
@@ -52,18 +48,17 @@ func NewClusterServerImpl(nodeID cluster.NodeID, sched *scheduler.Scheduler, trk
 		clientPool:      pool,
 		localPIDCounter: 0,
 	}
+	if sched != nil {
+		for _, node := range sched.ListNodes() {
+			server.cluster.nodes[node.ID] = node
+		}
+	}
+	return server
 }
 
 // RegisterNode registers a new node in the cluster
 func (s *ClusterServerImpl) RegisterNode(ctx context.Context, req *RegisterNodeRequest) (*RegisterNodeResponse, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	nodeID := cluster.NodeID(req.NodeId)
-	if _, exists := s.cluster.nodes[nodeID]; exists {
-		return &RegisterNodeResponse{Success: false, Error: "node already registered"}, nil
-	}
-
 	node := &cluster.NodeInfo{
 		ID:      nodeID,
 		Address: req.Address,
@@ -77,7 +72,16 @@ func (s *ClusterServerImpl) RegisterNode(ctx context.Context, req *RegisterNodeR
 		Labels: req.Labels,
 	}
 
-	s.cluster.nodes[nodeID] = node
+	s.mu.Lock()
+	if existing, exists := s.cluster.nodes[nodeID]; exists {
+		existing.Address = node.Address
+		existing.State = node.State
+		existing.Resources = node.Resources
+		existing.Labels = node.Labels
+		node = existing
+	} else {
+		s.cluster.nodes[nodeID] = node
+	}
 	s.scheduler.AddNode(node)
 
 	// Build peer list
@@ -85,6 +89,14 @@ func (s *ClusterServerImpl) RegisterNode(ctx context.Context, req *RegisterNodeR
 	for _, n := range s.cluster.nodes {
 		if n.ID != nodeID {
 			peers = append(peers, s.nodeInfoToProto(n))
+		}
+	}
+	s.mu.Unlock()
+
+	if nodeID != s.nodeID && s.clientPool != nil {
+		peerAddr := normalizeGRPCAddress(req.Address, req.GrpcPort)
+		if err := s.clientPool.AddPeer(nodeID, peerAddr); err != nil {
+			log.Printf("Failed to connect to registered node %s at %s: %v", nodeID, peerAddr, err)
 		}
 	}
 
@@ -142,112 +154,9 @@ func (s *ClusterServerImpl) GetClusterState(ctx context.Context, req *GetCluster
 	return &GetClusterStateResponse{Nodes: nodes, Sessions: sessions, Jobs: jobs}, nil
 }
 
-// Execute handles job execution requests
+// Execute submits a detached job execution request.
 func (s *ClusterServerImpl) Execute(ctx context.Context, req *ExecuteRequest) (*ExecuteResponse, error) {
-	reqs := s.protoToRequirements(req.Resources)
-
-	s.mu.Lock()
-	node, err := s.scheduler.Schedule(reqs)
-	if err != nil {
-		s.mu.Unlock()
-		return &ExecuteResponse{JobId: req.JobId, ExitCode: -1, Error: err.Error()}, nil
-	}
-
-	jobID := cluster.JobID(req.JobId)
-	job := &cluster.JobInfo{
-		ID:          jobID,
-		SessionID:   cluster.SessionID(req.SessionId),
-		Commands:    s.protoToCommands(req.Command, req.Env, req.Cwd, reqs),
-		PipeMap:     req.PipeMap,
-		Status:      cluster.JobStatusRunning,
-		CreatedAt:   time.Now(),
-		PrimaryNode: node.ID,
-	}
-	s.cluster.jobs[jobID] = job
-	s.mu.Unlock()
-
-	if node.ID == s.nodeID {
-		return s.executeLocal(ctx, req, jobID, node)
-	}
-	return s.executeRemote(ctx, req, node)
-}
-
-func (s *ClusterServerImpl) executeLocal(ctx context.Context, req *ExecuteRequest, jobID cluster.JobID, node *cluster.NodeInfo) (*ExecuteResponse, error) {
-	if len(req.Command) == 0 {
-		s.releaseAndFail(jobID, node, req.Resources)
-		return &ExecuteResponse{JobId: req.JobId, ExitCode: -1, Error: "empty command"}, nil
-	}
-
-	cmd := exec.CommandContext(ctx, req.Command[0], req.Command[1:]...)
-	cmd.Dir = req.Cwd
-	if len(req.Env) > 0 {
-		cmd.Env = req.Env
-	}
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-
-	if err := cmd.Start(); err != nil {
-		s.releaseAndFail(jobID, node, req.Resources)
-		return &ExecuteResponse{JobId: req.JobId, ExitCode: -1, Error: fmt.Sprintf("start: %v", err)}, nil
-	}
-
-	localPID := atomic.AddUint64(&s.localPIDCounter, 1)
-	globalPID := cluster.GlobalPID(localPID)
-	proc := &cluster.ProcessInfo{
-		GlobalPID: globalPID,
-		NodeID:    s.nodeID,
-		LocalPID:  cmd.Process.Pid,
-		SessionID: cluster.SessionID(req.SessionId),
-		JobID:     jobID,
-		Comm:      req.Command[0],
-		Cmdline:   fmt.Sprintf("%v", req.Command),
-		CWD:       req.Cwd,
-		StartTime: time.Now(),
-	}
-	s.tracker.Register(proc)
-
-	err := cmd.Wait()
-	exitCode := int32(0)
-	if exitErr, ok := err.(*exec.ExitError); ok {
-		if status, ok := exitErr.Sys().(syscall.WaitStatus); ok {
-			exitCode = int32(status.ExitStatus())
-		}
-	} else if err != nil {
-		exitCode = -1
-	}
-
-	// Update job status
-	s.mu.Lock()
-	if job, exists := s.cluster.jobs[jobID]; exists {
-		job.Status = cluster.JobStatusCompleted
-		job.ExitCodes = []int{int(exitCode)}
-		job.FinishedAt = time.Now()
-	}
-	s.mu.Unlock()
-
-	s.scheduler.Release(node.ID, s.protoToRequirements(req.Resources))
-
-	return &ExecuteResponse{
-		JobId:     req.JobId,
-		GlobalPid: uint64(globalPID),
-		ExitCode:  exitCode,
-	}, nil
-}
-
-func (s *ClusterServerImpl) executeRemote(ctx context.Context, req *ExecuteRequest, node *cluster.NodeInfo) (*ExecuteResponse, error) {
-	if s.clientPool == nil {
-		return &ExecuteResponse{JobId: req.JobId, ExitCode: -1, Error: "no peer connections available"}, nil
-	}
-
-	client, ok := s.clientPool.GetPeer(node.ID)
-	if !ok {
-		return &ExecuteResponse{JobId: req.JobId, ExitCode: -1, Error: fmt.Sprintf("no connection to node %s", node.ID)}, nil
-	}
-
-	return client.Execute(ctx, req)
+	return s.executeBackground(ctx, req)
 }
 
 func (s *ClusterServerImpl) releaseAndFail(jobID cluster.JobID, node *cluster.NodeInfo, reqProto *Requirements) {
@@ -284,11 +193,13 @@ func (s *ClusterServerImpl) Signal(ctx context.Context, req *SignalRequest) (*Si
 }
 
 func (s *ClusterServerImpl) signalLocal(req *SignalRequest, proc *cluster.ProcessInfo) (*SignalResponse, error) {
-	// Find the process by local PID
-	// Note: tracker stores local PID, but we need to signal the process group
 	log.Printf("Signal %d to process %d on node %s", req.Signal, req.GlobalPid, proc.NodeID)
-	// For local processes, we'd need to track the actual OS PID to send signal
-	// This is a limitation - we'd need to store the OS PID in the tracker
+	if proc.LocalPID <= 0 {
+		return &SignalResponse{Success: false, Error: "process has no local PID"}, nil
+	}
+	if err := syscall.Kill(-proc.LocalPID, syscall.Signal(req.Signal)); err != nil {
+		return &SignalResponse{Success: false, Error: err.Error()}, nil
+	}
 	return &SignalResponse{Success: true}, nil
 }
 
@@ -474,7 +385,7 @@ func (s *ClusterServerImpl) nodeInfoToProto(n *cluster.NodeInfo) *NodeInfo {
 		NodeId:        string(n.ID),
 		Address:       n.Address,
 		GrpcPort:      s.grpcPort,
-		State:         NodeState(NodeState_value[string(n.State)]),
+		State:         nodeStateToProto(n.State),
 		Capacity:      s.resourceSpecToProto(n.Resources),
 		Allocated:     s.resourceSpecToProto(n.Allocated),
 		Labels:        n.Labels,
@@ -518,12 +429,46 @@ func (s *ClusterServerImpl) jobInfoToProto(job *cluster.JobInfo) *JobInfo {
 		SessionId:   string(job.SessionID),
 		Commands:    cmds,
 		PipeMap:     job.PipeMap,
-		Status:      JobStatus(JobStatus_value[string(job.Status)]),
+		Status:      jobStatusToProto(job.Status),
 		CreatedAt:   job.CreatedAt.Unix(),
 		StartedAt:   job.StartedAt.Unix(),
 		FinishedAt:  job.FinishedAt.Unix(),
 		ExitCodes:   int32SliceToProto(job.ExitCodes),
 		PrimaryNode: string(job.PrimaryNode),
+	}
+}
+
+func nodeStateToProto(state cluster.NodeState) NodeState {
+	switch state {
+	case cluster.NodeStateActive:
+		return NodeState_NODE_STATE_ACTIVE
+	case cluster.NodeStateDraining:
+		return NodeState_NODE_STATE_DRAINING
+	case cluster.NodeStateDrained:
+		return NodeState_NODE_STATE_DRAINED
+	case cluster.NodeStateMaintenance:
+		return NodeState_NODE_STATE_MAINTENANCE
+	case cluster.NodeStateOffline:
+		return NodeState_NODE_STATE_OFFLINE
+	default:
+		return NodeState_NODE_STATE_OFFLINE
+	}
+}
+
+func jobStatusToProto(status cluster.JobStatus) JobStatus {
+	switch status {
+	case cluster.JobStatusPending:
+		return JobStatus_JOB_STATUS_PENDING
+	case cluster.JobStatusRunning:
+		return JobStatus_JOB_STATUS_RUNNING
+	case cluster.JobStatusStopped:
+		return JobStatus_JOB_STATUS_STOPPED
+	case cluster.JobStatusCompleted:
+		return JobStatus_JOB_STATUS_COMPLETED
+	case cluster.JobStatusFailed:
+		return JobStatus_JOB_STATUS_FAILED
+	default:
+		return JobStatus_JOB_STATUS_FAILED
 	}
 }
 
@@ -549,15 +494,19 @@ func (s *ClusterServerImpl) processInfoToProto(p *cluster.ProcessInfo) *ProcessI
 }
 
 func (s *ClusterServerImpl) protoToRequirements(pb *Requirements) cluster.Requirements {
+	if pb == nil {
+		return cluster.Requirements{}
+	}
 	return cluster.Requirements{
-		CPU:         pb.CpuMillicores,
-		Memory:      pb.MemoryBytes,
-		GPUs:        int(pb.Gpus),
-		GPUMem:      pb.GpuMemBytes,
-		SessionID:   cluster.SessionID(pb.SessionId),
-		JobID:       cluster.JobID(pb.JobId),
-		Priority:    int(pb.Priority),
-		Interactive: pb.Interactive,
+		CPU:          pb.CpuMillicores,
+		Memory:       pb.MemoryBytes,
+		GPUs:         int(pb.Gpus),
+		GPUMem:       pb.GpuMemBytes,
+		NodeAffinity: pb.NodeAffinity,
+		SessionID:    cluster.SessionID(pb.SessionId),
+		JobID:        cluster.JobID(pb.JobId),
+		Priority:     int(pb.Priority),
+		Interactive:  pb.Interactive,
 	}
 }
 
@@ -567,6 +516,7 @@ func (s *ClusterServerImpl) requirementsToProto(req cluster.Requirements) *Requi
 		MemoryBytes:   req.Memory,
 		Gpus:          int32(req.GPUs),
 		GpuMemBytes:   req.GPUMem,
+		NodeAffinity:  req.NodeAffinity,
 		SessionId:     string(req.SessionID),
 		JobId:         string(req.JobID),
 		Priority:      int32(req.Priority),

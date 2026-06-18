@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -16,17 +17,19 @@ import (
 )
 
 type provisionConfig struct {
-	NodeID       string
-	Address      string // SSH address of the remote node
-	WgIP         string // WireGuard IP for the new node
-	SSHUser      string
-	SSHPassword  string
-	WgEndpoint   string // WireGuard endpoint (IP:port) for existing nodes
-	WgListenPort int
-	GrpcPort     int
-	BinDir       string
-	EBPFEnabled  bool
-	FUSEEnabled  bool
+	NodeID        string
+	Address       string // SSH address of the remote node
+	WgIP          string // WireGuard IP for the new node
+	SSHUser       string
+	SSHPassword   string
+	WgEndpoint    string // WireGuard endpoint (IP:port) for existing nodes
+	LocalEndpoint string // WireGuard endpoint (IP:port) for this node
+	SeedPeer      string // gRPC seed peer for the new node
+	WgListenPort  int
+	GrpcPort      int
+	BinDir        string
+	EBPFEnabled   bool
+	FUSEEnabled   bool
 }
 
 func (p *provisionConfig) sshCmd(cmd string) *exec.Cmd {
@@ -86,15 +89,50 @@ func (p *provisionConfig) runOutput(cmd *exec.Cmd) (string, error) {
 	return strings.TrimSpace(out.String()), nil
 }
 
+func runLocalOutput(cmd *exec.Cmd) (string, error) {
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &out
+	if err := cmd.Run(); err != nil {
+		return "", fmt.Errorf("%s", out.String())
+	}
+	return strings.TrimSpace(out.String()), nil
+}
+
+func localInterfaceIPv4(name string) (string, error) {
+	iface, err := net.InterfaceByName(name)
+	if err != nil {
+		return "", err
+	}
+	addrs, err := iface.Addrs()
+	if err != nil {
+		return "", err
+	}
+	for _, addr := range addrs {
+		ipNet, ok := addr.(*net.IPNet)
+		if ok && ipNet.IP.To4() != nil {
+			return ipNet.IP.String(), nil
+		}
+	}
+	return "", fmt.Errorf("no IPv4 address on %s", name)
+}
+
 func provisionNode(cfg *provisionConfig) error {
 	fmt.Printf("Provisioning node %s (WG: %s, SSH: %s@%s)...\n",
 		cfg.NodeID, cfg.WgIP, cfg.SSHUser, cfg.Address)
 
 	// 1. Install system dependencies
 	fmt.Println("[1/7] Installing system dependencies...")
+	packages := []string{"wireguard"}
+	if cfg.FUSEEnabled {
+		packages = append(packages, "fuse3")
+	}
+	if cfg.EBPFEnabled {
+		packages = append(packages, "clang", "llvm", "bpftool", "linux-headers-$(uname -r)")
+	}
 	installCMDs := []string{
 		"sudo apt update -qq",
-		"sudo apt install -y -qq golang-go clang llvm bpftool linux-headers-$(uname -r) wireguard fuse3 sshpass",
+		"sudo apt install -y -qq " + strings.Join(packages, " "),
 	}
 	for _, cmd := range installCMDs {
 		if err := cfg.run(cmd, cfg.sshCmd(cmd)); err != nil {
@@ -118,12 +156,42 @@ func provisionNode(cfg *provisionConfig) error {
 		return fmt.Errorf("read private key: %w", err)
 	}
 
+	localPubKey, err := runLocalOutput(exec.Command("sudo", "wg", "show", "wg-octopos", "public-key"))
+	if err != nil {
+		localPubKey, err = runLocalOutput(exec.Command("sudo", "cat", "/etc/wireguard/public.key"))
+		if err != nil {
+			return fmt.Errorf("read local WireGuard public key: %w", err)
+		}
+	}
+	localWGIP, err := localInterfaceIPv4("wg-octopos")
+	if err != nil {
+		return fmt.Errorf("detect local WireGuard IP: %w", err)
+	}
+	localEndpoint := cfg.LocalEndpoint
+	if localEndpoint == "" {
+		hostname, err := os.Hostname()
+		if err != nil {
+			return fmt.Errorf("detect local hostname: %w", err)
+		}
+		localEndpoint = fmt.Sprintf("%s:%d", hostname, cfg.WgListenPort)
+	}
+	seedPeer := cfg.SeedPeer
+	if seedPeer == "" {
+		seedPeer = fmt.Sprintf("%s:%d", localWGIP, cfg.GrpcPort)
+	}
+
 	wgConfig := fmt.Sprintf(`[Interface]
 Address = %s/24
 PrivateKey = %s
 ListenPort = %d
 SaveConfig = true
-`, cfg.WgIP, privKey, cfg.WgListenPort)
+
+[Peer]
+PublicKey = %s
+Endpoint = %s
+AllowedIPs = %s/32
+PersistentKeepalive = 25
+`, cfg.WgIP, privKey, cfg.WgListenPort, localPubKey, localEndpoint, localWGIP)
 
 	tmpWgCfg := "/tmp/wg-octopos.conf"
 	if err := os.WriteFile(tmpWgCfg, []byte(wgConfig), 0600); err != nil {
@@ -190,16 +258,21 @@ SaveConfig = true
 		}
 	}
 
-	deployCmd := "sudo cp"
+	deployCmd := "sudo install -m 0755"
 	for _, bin := range binaries {
-		deployCmd += fmt.Sprintf(" /tmp/%s /usr/local/bin/%s && sudo chmod +x /usr/local/bin/%s", bin, bin, bin)
+		deployCmd += fmt.Sprintf(" /tmp/%s", bin)
 	}
+	deployCmd += " /usr/local/bin/"
 	if err := cfg.run("install to /usr/local/bin", cfg.sshCmd(deployCmd)); err != nil {
 		return err
 	}
 
 	// 7. Configure systemd service
 	fmt.Println("[6/7] Configuring systemd service...")
+	peerArgs := ""
+	if seedPeer != "" {
+		peerArgs = fmt.Sprintf(" --peers %s", seedPeer)
+	}
 
 	svcContent := fmt.Sprintf(`[Unit]
 Description=OctopOS Cluster Daemon
@@ -207,14 +280,14 @@ After=network.target wg-quick@wg-octopos.service
 Wants=wg-quick@wg-octopos.service
 
 [Service]
-ExecStart=/usr/local/bin/octoposd --node-id %s --grpc-addr 0.0.0.0:%d --wg-interface wg-octopos
+ExecStart=/usr/local/bin/octoposd --node-id %s --grpc-addr 0.0.0.0:%d --wg-interface wg-octopos%s
 Restart=always
 RestartSec=5
 User=root
 
 [Install]
 WantedBy=multi-user.target
-`, cfg.NodeID, cfg.GrpcPort)
+`, cfg.NodeID, cfg.GrpcPort, peerArgs)
 
 	tmpSvc := "/tmp/octoposd.service"
 	if err := os.WriteFile(tmpSvc, []byte(svcContent), 0644); err != nil {
@@ -230,7 +303,27 @@ WantedBy=multi-user.target
 		return err
 	}
 
-	// 8. Start services
+	// 8. Add WireGuard peer on the local node before the new daemon starts.
+	fmt.Print("Adding WireGuard peer on local node... ")
+	wgAddCmd := exec.Command("sudo", "wg", "set", "wg-octopos",
+		"peer", pubKey,
+		"endpoint", cfg.WgEndpoint,
+		"allowed-ips", cfg.WgIP+"/32",
+		"persistent-keepalive", "25",
+	)
+	if out, err := wgAddCmd.CombinedOutput(); err != nil {
+		fmt.Println("FAILED")
+		fmt.Printf("  %s\n", strings.TrimSpace(string(out)))
+		fmt.Println("  Add the WireGuard peer manually:")
+		fmt.Printf("  sudo wg set wg-octopos peer %s endpoint %s allowed-ips %s/32 persistent-keepalive 25\n",
+			pubKey, cfg.WgEndpoint, cfg.WgIP)
+	} else {
+		fmt.Println("OK")
+		// Save config to persist after reboot
+		exec.Command("sudo", "wg-quick", "save", "wg-octopos").Run()
+	}
+
+	// 9. Start services
 	if cfg.WgListenPort == 0 {
 		cfg.WgListenPort = 51820
 	}
@@ -259,26 +352,6 @@ WantedBy=multi-user.target
 			pubKey, cfg.WgEndpoint, cfg.WgIP)
 	} else {
 		fmt.Println("OK")
-	}
-
-	// 10. Add WireGuard peer on the local node
-	fmt.Print("Adding WireGuard peer on local node... ")
-	wgAddCmd := exec.Command("sudo", "wg", "set", "wg-octopos",
-		"peer", pubKey,
-		"endpoint", cfg.WgEndpoint,
-		"allowed-ips", cfg.WgIP+"/32",
-		"persistent-keepalive", "25",
-	)
-	if out, err := wgAddCmd.CombinedOutput(); err != nil {
-		fmt.Println("FAILED")
-		fmt.Printf("  %s\n", strings.TrimSpace(string(out)))
-		fmt.Println("  Add the WireGuard peer manually:")
-		fmt.Printf("  sudo wg set wg-octopos peer %s endpoint %s allowed-ips %s/32 persistent-keepalive 25\n",
-			pubKey, cfg.WgEndpoint, cfg.WgIP)
-	} else {
-		fmt.Println("OK")
-		// Save config to persist after reboot
-		exec.Command("sudo", "wg-quick", "save", "wg-octopos").Run()
 	}
 
 	fmt.Println("\n=== Provisioning Complete ===")
@@ -310,11 +383,17 @@ func registerNodeWithCluster(cfg *provisionConfig) error {
 	if err != nil {
 		mem = "0"
 	}
+	gpus, err := cfg.runOutput(cfg.sshCmd("if command -v nvidia-smi >/dev/null 2>&1; then nvidia-smi -L 2>/dev/null | wc -l; else echo 0; fi"))
+	if err != nil {
+		gpus = "0"
+	}
 
 	var cpuMillicores int64 = 0
 	var memoryBytes int64 = 0
+	var gpuCount int64 = 0
 	fmt.Sscanf(cpu, "%d", &cpuMillicores)
 	fmt.Sscanf(mem, "%d", &memoryBytes)
+	fmt.Sscanf(gpus, "%d", &gpuCount)
 	cpuMillicores *= 1000 // nproc gives cores, convert to millicores
 
 	resp, err := client.RegisterNode(ctx, &octopospb.RegisterNodeRequest{
@@ -323,6 +402,7 @@ func registerNodeWithCluster(cfg *provisionConfig) error {
 		Resources: &octopospb.NodeResources{
 			CpuMillicores: cpuMillicores,
 			MemoryBytes:   memoryBytes,
+			GpuCount:      int32(gpuCount),
 		},
 		Labels: map[string]string{"role": "compute"},
 	})

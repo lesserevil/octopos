@@ -3,10 +3,13 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -22,11 +25,24 @@ var (
 	conn     *grpc.ClientConn
 )
 
+type commandExitError struct {
+	code int
+}
+
+func (e *commandExitError) Error() string {
+	return fmt.Sprintf("exit status %d", e.code)
+}
+
 var rootCmd = &cobra.Command{
-	Use:   "octoposctl",
-	Short: "OctopOS Cluster Control CLI",
-	Long:  `Admin CLI for managing OctopOS Single System Image cluster`,
+	Use:           "octoposctl",
+	Short:         "OctopOS Cluster Control CLI",
+	Long:          `Admin CLI for managing OctopOS Single System Image cluster`,
+	SilenceUsage:  true,
+	SilenceErrors: true,
 	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+		if !requiresClusterConnection(cmd) {
+			return nil
+		}
 		var err error
 		conn, err = grpc.DialContext(context.Background(), grpcAddr,
 			grpc.WithTransportCredentials(insecure.NewCredentials()),
@@ -45,6 +61,15 @@ var rootCmd = &cobra.Command{
 		}
 		return nil
 	},
+}
+
+func requiresClusterConnection(cmd *cobra.Command) bool {
+	for c := cmd; c != nil; c = c.Parent() {
+		if c == clusterBootstrapCmd {
+			return false
+		}
+	}
+	return true
 }
 
 func init() {
@@ -130,23 +155,27 @@ Example:
 		if wgEndpoint == "" {
 			wgEndpoint = fmt.Sprintf("%s:51820", sshAddr)
 		}
+		localEndpoint, _ := cmd.Flags().GetString("local-endpoint")
+		seedPeer, _ := cmd.Flags().GetString("seed-peer")
 		wgPort, _ := cmd.Flags().GetInt("wg-port")
 		grpcPort, _ := cmd.Flags().GetInt("grpc-port")
 		ebpfEnabled, _ := cmd.Flags().GetBool("ebpf")
 		fuseEnabled, _ := cmd.Flags().GetBool("fuse")
 
 		cfg := &provisionConfig{
-			NodeID:       args[0],
-			Address:      sshAddr,
-			WgIP:         wgIP,
-			SSHUser:      sshUser,
-			SSHPassword:  sshPass,
-			WgEndpoint:   wgEndpoint,
-			WgListenPort: wgPort,
-			GrpcPort:     grpcPort,
-			BinDir:       "bin",
-			EBPFEnabled:  ebpfEnabled,
-			FUSEEnabled:  fuseEnabled,
+			NodeID:        args[0],
+			Address:       sshAddr,
+			WgIP:          wgIP,
+			SSHUser:       sshUser,
+			SSHPassword:   sshPass,
+			WgEndpoint:    wgEndpoint,
+			LocalEndpoint: localEndpoint,
+			SeedPeer:      seedPeer,
+			WgListenPort:  wgPort,
+			GrpcPort:      grpcPort,
+			BinDir:        "bin",
+			EBPFEnabled:   ebpfEnabled,
+			FUSEEnabled:   fuseEnabled,
 		}
 		return provisionNode(cfg)
 	},
@@ -242,9 +271,6 @@ var execCmd = &cobra.Command{
 	Short: "Execute a command on the cluster",
 	Args:  cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-		defer cancel()
-
 		sessionID, _ := cmd.Flags().GetString("session")
 		if sessionID == "" {
 			sessionID = fmt.Sprintf("cli-%d", time.Now().Unix())
@@ -253,27 +279,47 @@ var execCmd = &cobra.Command{
 		cpu, _ := cmd.Flags().GetInt("cpu")
 		mem, _ := cmd.Flags().GetInt("mem")
 		gpus, _ := cmd.Flags().GetInt("gpus")
-		_, _ = cmd.Flags().GetString("node") // node affinity - TODO: implement
+		node, _ := cmd.Flags().GetString("node")
+		background, _ := cmd.Flags().GetBool("background")
 
-		resp, err := client.Execute(ctx, &octopospb.ExecuteRequest{
+		req := &octopospb.ExecuteRequest{
 			SessionId: sessionID,
 			JobId:     fmt.Sprintf("job-%d", time.Now().UnixNano()),
 			Command:   args,
+			Stdin:     !background,
+			Stdout:    !background,
+			Stderr:    !background,
 			Resources: &octopospb.Requirements{
 				CpuMillicores: int64(cpu * 1000),
 				MemoryBytes:   int64(mem * 1024 * 1024 * 1024),
 				Gpus:          int32(gpus),
 			},
-		})
+		}
+		if node != "" {
+			req.Resources.NodeAffinity = map[string]string{"node_id": node}
+		}
+
+		if !background {
+			return runExecForeground(context.Background(), req)
+		}
+
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		resp, err := client.Execute(ctx, req)
 		if err != nil {
 			return fmt.Errorf("Execute failed: %w", err)
 		}
+		if resp.Error != "" {
+			return fmt.Errorf("Execute failed: %s", resp.Error)
+		}
 
 		fmt.Printf("Job submitted: %s (GlobalPID: %d)\n", resp.JobId, resp.GlobalPid)
-
 		wait, _ := cmd.Flags().GetBool("wait")
 		if wait {
-			waitResp, err := client.Wait(ctx, &octopospb.WaitRequest{
+			waitCtx, waitCancel := context.WithTimeout(context.Background(), 60*time.Second)
+			defer waitCancel()
+			waitResp, err := client.Wait(waitCtx, &octopospb.WaitRequest{
 				JobId:     resp.JobId,
 				TimeoutMs: 60000,
 			})
@@ -281,9 +327,86 @@ var execCmd = &cobra.Command{
 				return fmt.Errorf("Wait failed: %w", err)
 			}
 			fmt.Printf("Job completed with exit code: %d\n", waitResp.ExitCode)
+			if waitResp.ExitCode != 0 {
+				return &commandExitError{code: int(waitResp.ExitCode)}
+			}
 		}
 		return nil
 	},
+}
+
+func runExecForeground(ctx context.Context, req *octopospb.ExecuteRequest) error {
+	stream, err := client.ExecStream(ctx)
+	if err != nil {
+		return fmt.Errorf("ExecStream failed: %w", err)
+	}
+
+	if err := stream.Send(&octopospb.ExecStreamRequest{
+		Payload: &octopospb.ExecStreamRequest_Exec{Exec: req},
+	}); err != nil {
+		return fmt.Errorf("send exec request: %w", err)
+	}
+
+	var sendMu sync.Mutex
+	go func() {
+		buf := make([]byte, 32*1024)
+		for {
+			n, readErr := os.Stdin.Read(buf)
+			if n > 0 {
+				data := make([]byte, n)
+				copy(data, buf[:n])
+				sendMu.Lock()
+				err := stream.Send(&octopospb.ExecStreamRequest{
+					Payload: &octopospb.ExecStreamRequest_StdinData{StdinData: data},
+				})
+				sendMu.Unlock()
+				if err != nil {
+					return
+				}
+			}
+			if readErr != nil {
+				sendMu.Lock()
+				_ = stream.Send(&octopospb.ExecStreamRequest{
+					Payload: &octopospb.ExecStreamRequest_CloseStdin{CloseStdin: true},
+				})
+				_ = stream.CloseSend()
+				sendMu.Unlock()
+				return
+			}
+		}
+	}()
+
+	for {
+		resp, err := stream.Recv()
+		if errors.Is(err, io.EOF) {
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("receive exec stream: %w", err)
+		}
+
+		switch payload := resp.Payload.(type) {
+		case *octopospb.ExecStreamResponse_Exec:
+			if payload.Exec.Error != "" {
+				return fmt.Errorf("Execute failed: %s", payload.Exec.Error)
+			}
+		case *octopospb.ExecStreamResponse_StdoutData:
+			if _, err := os.Stdout.Write(payload.StdoutData); err != nil {
+				return err
+			}
+		case *octopospb.ExecStreamResponse_StderrData:
+			if _, err := os.Stderr.Write(payload.StderrData); err != nil {
+				return err
+			}
+		case *octopospb.ExecStreamResponse_Error:
+			return fmt.Errorf("Execute failed: %s", payload.Error)
+		case *octopospb.ExecStreamResponse_ExitCode:
+			if payload.ExitCode != 0 {
+				return &commandExitError{code: int(payload.ExitCode)}
+			}
+			return nil
+		}
+	}
 }
 
 var sessionCmd = &cobra.Command{
@@ -481,6 +604,8 @@ func main() {
 	nodeAddCmd.Flags().String("ssh-user", "root", "SSH user for the remote node")
 	nodeAddCmd.Flags().String("password", "", "SSH password (uses key-based auth if empty)")
 	nodeAddCmd.Flags().String("endpoint", "", "WireGuard endpoint for existing nodes (default: <address>:51820)")
+	nodeAddCmd.Flags().String("local-endpoint", "", "WireGuard endpoint for this existing node (default: <hostname>:wg-port)")
+	nodeAddCmd.Flags().String("seed-peer", "", "gRPC seed peer for the new node (default: local WireGuard IP:grpc-port)")
 	nodeAddCmd.Flags().Int("wg-port", 51820, "WireGuard listen port")
 	nodeAddCmd.Flags().Int("grpc-port", 50051, "gRPC port")
 	nodeAddCmd.Flags().Bool("ebpf", false, "Build and deploy eBPF programs")
@@ -503,7 +628,8 @@ func main() {
 	execCmd.Flags().Int("mem", 1, "Memory required (GB)")
 	execCmd.Flags().Int("gpus", 0, "GPUs required")
 	execCmd.Flags().String("node", "", "Node affinity")
-	execCmd.Flags().Bool("wait", false, "Wait for job completion")
+	execCmd.Flags().Bool("background", false, "Submit the command as a background job")
+	execCmd.Flags().Bool("wait", false, "With --background, wait for the detached job to finish")
 
 	psCmd.Flags().String("node", "", "Filter by node")
 	psCmd.Flags().String("session", "", "Filter by session")
@@ -518,6 +644,10 @@ func main() {
 	rootCmd.AddCommand(nodeCmd, jobCmd, execCmd, sessionCmd, psCmd, clusterCmd)
 
 	if err := rootCmd.Execute(); err != nil {
+		var exitErr *commandExitError
+		if errors.As(err, &exitErr) {
+			os.Exit(exitErr.code)
+		}
 		log.Fatal(err)
 	}
 }

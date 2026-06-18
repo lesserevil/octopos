@@ -3,6 +3,9 @@ package rpc
 import (
 	"context"
 	"log"
+	"net"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -42,6 +45,20 @@ func (p *ClusterClientPool) dial(addr string) (*grpc.ClientConn, error) {
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
 		grpc.WithBlock(),
 	)
+}
+
+func normalizeGRPCAddress(address string, port int32) string {
+	address = strings.TrimSpace(address)
+	if address == "" {
+		return address
+	}
+	if _, _, err := net.SplitHostPort(address); err == nil {
+		return address
+	}
+	if port == 0 {
+		port = 50051
+	}
+	return net.JoinHostPort(address, strconv.Itoa(int(port)))
 }
 
 func (p *ClusterClientPool) AddPeer(nodeID cluster.NodeID, address string) error {
@@ -165,7 +182,7 @@ func (p *ClusterClientPool) RegisterWithPeers(ctx context.Context, resources *No
 				if port == 0 {
 					port = 50051
 				}
-				fullAddr := peerAddr
+				fullAddr := normalizeGRPCAddress(peerAddr, port)
 				if err := p.AddPeer(peerNodeID, fullAddr); err != nil {
 					log.Printf("Failed to connect to peer %s at %s: %v", peerNodeID, fullAddr, err)
 				}

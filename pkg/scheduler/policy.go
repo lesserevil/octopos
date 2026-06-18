@@ -24,6 +24,27 @@ func (b *BinPackPolicy) Filter(nodes []*cluster.NodeInfo, req cluster.Requiremen
 		if n.State != cluster.NodeStateActive {
 			continue
 		}
+		if req.NodeAffinity != nil {
+			if nodeID := req.NodeAffinity["node_id"]; nodeID != "" && string(n.ID) != nodeID {
+				continue
+			}
+			if nodeID := req.NodeAffinity["node"]; nodeID != "" && string(n.ID) != nodeID {
+				continue
+			}
+			matched := true
+			for key, value := range req.NodeAffinity {
+				if key == "node" || key == "node_id" {
+					continue
+				}
+				if n.Labels[key] != value {
+					matched = false
+					break
+				}
+			}
+			if !matched {
+				continue
+			}
+		}
 		// Check CPU
 		if n.Allocated.CPU+req.CPU > n.Resources.CPU {
 			continue

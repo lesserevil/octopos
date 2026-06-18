@@ -175,13 +175,24 @@ func (s *Server) connectToPeers(peerList string) {
 		addresses[i] = strings.TrimSpace(addresses[i])
 	}
 
-	resources := &rpc.NodeResources{
-		CpuMillicores: s.nodeInfo.Resources.CPU,
-		MemoryBytes:   s.nodeInfo.Resources.Memory,
-		GpuCount:      int32(s.nodeInfo.Resources.GPUCount),
-		NumaNodes:     int32(s.nodeInfo.Resources.NUMANodes),
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		resources := &rpc.NodeResources{
+			CpuMillicores: s.nodeInfo.Resources.CPU,
+			MemoryBytes:   s.nodeInfo.Resources.Memory,
+			GpuCount:      int32(s.nodeInfo.Resources.GPUCount),
+			NumaNodes:     int32(s.nodeInfo.Resources.NUMANodes),
+		}
+		s.clientPool.RegisterWithPeers(s.ctx, resources, s.nodeInfo.Labels, addresses)
+
+		select {
+		case <-s.ctx.Done():
+			return
+		case <-ticker.C:
+		}
 	}
-	s.clientPool.RegisterWithPeers(s.ctx, resources, s.nodeInfo.Labels, addresses)
 }
 
 func (s *Server) getWGIP() string {
