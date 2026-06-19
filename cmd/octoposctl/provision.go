@@ -168,6 +168,9 @@ func provisionNode(cfg *provisionConfig) error {
 			return err
 		}
 	}
+	if err := cfg.run("configure headless multi-user target", cfg.sshCmd(remoteHeadlessSystemdCommand())); err != nil {
+		return err
+	}
 	if cfg.RequireSSI {
 		if cfg.ClusterFSMeta != "" {
 			if _, err := cfg.runOutput(cfg.sshCmd("command -v juicefs")); err != nil {

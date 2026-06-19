@@ -33,6 +33,12 @@ func bootstrapCluster(cfg *bootstrapConfig) error {
 	fmt.Println("=== OctopOS Cluster Bootstrap ===")
 	fmt.Printf("Bootstrapping cluster as node %s (%s)...\n", cfg.NodeID, cfg.WgIP)
 
+	fmt.Print("Configuring host for headless multi-user target... ")
+	if err := runCmd(localHeadlessSystemdCmd()); err != nil {
+		return fmt.Errorf("configure headless systemd target: %w", err)
+	}
+	fmt.Println("OK")
+
 	// 1. Check if octoposd is already running
 	if out, _ := exec.Command("pgrep", "octoposd").Output(); len(out) > 0 {
 		fmt.Println("octoposd is already running. Skipping bootstrap.")
