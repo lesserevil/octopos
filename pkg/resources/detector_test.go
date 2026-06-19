@@ -263,9 +263,9 @@ Cached:          8192000 kB
 		t.Errorf("Expected memory %d, got %d", expectedMem, spec.Memory)
 	}
 
-	// Should detect 1 GPU (VGA class)
-	if spec.GPUCount != 1 {
-		t.Errorf("Expected 1 GPU, got %d", spec.GPUCount)
+	// Generic VGA devices are not schedulable NVIDIA GPUs.
+	if spec.GPUCount != 0 {
+		t.Errorf("Expected 0 NVIDIA GPUs, got %d", spec.GPUCount)
 	}
 
 	// Should detect 2 NUMA nodes

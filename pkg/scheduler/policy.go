@@ -49,16 +49,7 @@ func (b *BinPackPolicy) Filter(nodes []*cluster.NodeInfo, req cluster.Requiremen
 				continue
 			}
 		}
-		// Check CPU
-		if n.Allocated.CPU+req.CPU > n.Resources.CPU {
-			continue
-		}
-		// Check Memory
-		if n.Allocated.Memory+req.Memory > n.Resources.Memory {
-			continue
-		}
-		// Check GPUs
-		if n.Allocated.GPUCount+req.GPUs > n.Resources.GPUCount {
+		if !n.CanReserve(req) {
 			continue
 		}
 		eligible = append(eligible, n)
@@ -132,9 +123,14 @@ func (s *Scheduler) ListNodes() []*cluster.NodeInfo {
 }
 
 func (s *Scheduler) Schedule(req cluster.Requirements) (*cluster.NodeInfo, error) {
+	node, _, err := s.ScheduleWithAllocation(req)
+	return node, err
+}
+
+func (s *Scheduler) ScheduleWithAllocation(req cluster.Requirements) (*cluster.NodeInfo, cluster.Requirements, error) {
 	eligible := s.policy.Filter(s.listNodesSlice(), req)
 	if len(eligible) == 0 {
-		return nil, ErrNoEligibleNode
+		return nil, req, ErrNoEligibleNode
 	}
 
 	// Score and pick best
@@ -147,10 +143,10 @@ func (s *Scheduler) Schedule(req cluster.Requirements) (*cluster.NodeInfo, error
 	}
 
 	// Reserve resources
-	if !best.Reserve(req) {
-		return s.Schedule(req) // Retry
+	if allocatedReq, ok := best.ReserveWithAllocation(req); ok {
+		return best, allocatedReq, nil
 	}
-	return best, nil
+	return s.ScheduleWithAllocation(req) // Retry
 }
 
 func (s *Scheduler) listNodesSlice() []*cluster.NodeInfo {

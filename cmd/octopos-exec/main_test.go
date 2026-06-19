@@ -3,8 +3,10 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
+	"github.com/octopos/octopos/pkg/cluster"
 	"golang.org/x/sys/unix"
 )
 
@@ -62,5 +64,35 @@ func TestCreateDeviceNodeRestoresModeAfterUmask(t *testing.T) {
 	}
 	if got := info.Mode().Perm(); got != 0666 {
 		t.Fatalf("final mode = %#o, want 0666", got)
+	}
+}
+
+func TestApplyNVIDIAEnv(t *testing.T) {
+	env := []string{
+		"PATH=/usr/bin:/bin",
+		"LD_LIBRARY_PATH=/lib",
+		"NVIDIA_VISIBLE_DEVICES=all",
+	}
+	got := applyNVIDIAEnv(env, nvidiaRuntimeConfig{
+		devices: []cluster.GPUDevice{
+			{Index: 2, UUID: "GPU-two"},
+		},
+		capabilities: "compute,utility",
+	})
+
+	if value := envValue(got, "NVIDIA_VISIBLE_DEVICES"); value != "GPU-two" {
+		t.Fatalf("NVIDIA_VISIBLE_DEVICES = %q, want GPU-two", value)
+	}
+	if value := envValue(got, "CUDA_VISIBLE_DEVICES"); value != "GPU-two" {
+		t.Fatalf("CUDA_VISIBLE_DEVICES = %q, want GPU-two", value)
+	}
+	if value := envValue(got, "NVIDIA_DRIVER_CAPABILITIES"); value != "compute,utility" {
+		t.Fatalf("NVIDIA_DRIVER_CAPABILITIES = %q, want compute,utility", value)
+	}
+	if value := envValue(got, "PATH"); !strings.HasPrefix(value, "/usr/local/nvidia/bin:/usr/local/cuda/bin:") {
+		t.Fatalf("PATH = %q, missing NVIDIA/CUDA prefixes", value)
+	}
+	if value := envValue(got, "LD_LIBRARY_PATH"); !strings.HasPrefix(value, "/usr/local/nvidia/lib64:/usr/local/cuda/lib64:") {
+		t.Fatalf("LD_LIBRARY_PATH = %q, missing NVIDIA/CUDA prefixes", value)
 	}
 }

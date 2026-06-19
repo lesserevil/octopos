@@ -1,6 +1,9 @@
 package cluster
 
-import "time"
+import (
+	"strconv"
+	"time"
+)
 
 // NodeID uniquely identifies a cluster node
 type NodeID string
@@ -19,8 +22,18 @@ type ResourceSpec struct {
 	CPU        int64 // millicores (1000 = 1 core)
 	Memory     int64 // bytes
 	GPUCount   int
+	GPUDevices []GPUDevice
 	NUMANodes  int
 	PCIDevices []PCIDevice
+}
+
+// GPUDevice represents one NVIDIA GPU device visible on a node.
+type GPUDevice struct {
+	Index int    `json:"index"`
+	UUID  string `json:"uuid,omitempty"`
+	Path  string `json:"path,omitempty"`
+	Major uint32 `json:"major,omitempty"`
+	Minor uint32 `json:"minor,omitempty"`
 }
 
 // PCIDevice represents a PCI device
@@ -51,6 +64,7 @@ type Requirements struct {
 	Memory       int64 // bytes
 	GPUs         int
 	GPUMem       int64 // bytes per GPU
+	GPUDevices   []GPUDevice
 	VFIODevs     []VFIORequirement
 	NodeAffinity map[string]string // key=value labels
 	SessionID    SessionID
@@ -166,17 +180,18 @@ type JobInfo struct {
 
 // NodeInfo describes a cluster node
 type NodeInfo struct {
-	ID            NodeID            `json:"id"`
-	Address       string            `json:"address"` // WireGuard IP
-	State         NodeState         `json:"state"`
-	Resources     ResourceSpec      `json:"resources"`
-	Allocated     ResourceSpec      `json:"allocated"`
-	Labels        map[string]string `json:"labels"`
-	LastHeartbeat time.Time         `json:"last_heartbeat"`
+	ID             NodeID            `json:"id"`
+	Address        string            `json:"address"` // WireGuard IP
+	State          NodeState         `json:"state"`
+	Resources      ResourceSpec      `json:"resources"`
+	Allocated      ResourceSpec      `json:"allocated"`
+	Labels         map[string]string `json:"labels"`
+	LastHeartbeat  time.Time         `json:"last_heartbeat"`
+	GPUAllocations map[int]JobID     `json:"-"`
 }
 
-// Reserve attempts to reserve resources atomically
-func (n *NodeInfo) Reserve(req Requirements) bool {
+// CanReserve reports whether this node has enough available resources.
+func (n *NodeInfo) CanReserve(req Requirements) bool {
 	if n.State != NodeStateActive {
 		return false
 	}
@@ -190,15 +205,45 @@ func (n *NodeInfo) Reserve(req Requirements) bool {
 		return false
 	}
 	// Check GPUs
-	if n.Allocated.GPUCount+req.GPUs > n.Resources.GPUCount {
+	if n.Allocated.GPUCount+req.GPUs > n.gpuCapacity() {
 		return false
+	}
+	if req.GPUs > 0 && len(n.freeGPUDevices()) < req.GPUs {
+		return false
+	}
+
+	return true
+}
+
+// Reserve attempts to reserve resources atomically.
+func (n *NodeInfo) Reserve(req Requirements) bool {
+	_, ok := n.ReserveWithAllocation(req)
+	return ok
+}
+
+// ReserveWithAllocation reserves resources and returns any concrete devices selected.
+func (n *NodeInfo) ReserveWithAllocation(req Requirements) (Requirements, bool) {
+	if !n.CanReserve(req) {
+		return Requirements{}, false
+	}
+
+	allocated := req
+	if req.GPUs > 0 {
+		selected := n.freeGPUDevices()[:req.GPUs]
+		allocated.GPUDevices = append([]GPUDevice(nil), selected...)
+		if n.GPUAllocations == nil {
+			n.GPUAllocations = make(map[int]JobID)
+		}
+		for _, dev := range selected {
+			n.GPUAllocations[dev.Index] = req.JobID
+		}
 	}
 
 	// Reserve
 	n.Allocated.CPU += req.CPU
 	n.Allocated.Memory += req.Memory
 	n.Allocated.GPUCount += req.GPUs
-	return true
+	return allocated, true
 }
 
 // Release releases reserved resources
@@ -214,5 +259,68 @@ func (n *NodeInfo) Release(req Requirements) {
 	n.Allocated.GPUCount -= req.GPUs
 	if n.Allocated.GPUCount < 0 {
 		n.Allocated.GPUCount = 0
+	}
+	n.releaseGPUAllocations(req)
+}
+
+func (n *NodeInfo) gpuCapacity() int {
+	if len(n.Resources.GPUDevices) > 0 {
+		return len(n.Resources.GPUDevices)
+	}
+	return n.Resources.GPUCount
+}
+
+func (n *NodeInfo) freeGPUDevices() []GPUDevice {
+	devices := n.Resources.GPUDevices
+	if len(devices) == 0 && n.Resources.GPUCount > 0 {
+		devices = make([]GPUDevice, 0, n.Resources.GPUCount)
+		for i := 0; i < n.Resources.GPUCount; i++ {
+			devices = append(devices, GPUDevice{
+				Index: i,
+				Path:  "/dev/nvidia" + strconv.Itoa(i),
+			})
+		}
+	}
+
+	free := make([]GPUDevice, 0, len(devices))
+	for _, dev := range devices {
+		if _, allocated := n.GPUAllocations[dev.Index]; !allocated {
+			free = append(free, dev)
+		}
+	}
+	return free
+}
+
+func (n *NodeInfo) releaseGPUAllocations(req Requirements) {
+	if len(n.GPUAllocations) == 0 || req.GPUs <= 0 {
+		return
+	}
+	if len(req.GPUDevices) > 0 {
+		for _, dev := range req.GPUDevices {
+			delete(n.GPUAllocations, dev.Index)
+		}
+		return
+	}
+
+	released := 0
+	for index, owner := range n.GPUAllocations {
+		if req.JobID != "" && owner != req.JobID {
+			continue
+		}
+		delete(n.GPUAllocations, index)
+		released++
+		if released >= req.GPUs {
+			return
+		}
+	}
+	if req.JobID != "" {
+		return
+	}
+	for index := range n.GPUAllocations {
+		delete(n.GPUAllocations, index)
+		released++
+		if released >= req.GPUs {
+			return
+		}
 	}
 }

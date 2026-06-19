@@ -239,9 +239,13 @@ octoposctl exec [flags] -- <command> [args...]
 | `--session` | auto | Session ID |
 | `--cpu` | `1` | CPU cores required |
 | `--mem` | `1` | Memory required (GB) |
-| `--gpus` | `0` | GPUs required |
+| `--gpus`, `--gpu` | `0` | NVIDIA GPUs required |
 | `--wait` | `false` | Wait for completion |
 | `--node` | "" | Node affinity |
+
+When a command requests GPUs, OctopOS schedules it onto a node with local NVIDIA
+devices, projects the host driver files into `/usr/local/nvidia`, and prepends
+`/usr/local/nvidia/bin` and `/usr/local/nvidia/lib64` to the command environment.
 
 ## Testing
 

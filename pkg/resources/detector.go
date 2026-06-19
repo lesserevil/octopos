@@ -8,25 +8,36 @@ import (
 	"strings"
 
 	"github.com/octopos/octopos/pkg/cluster"
+	"github.com/octopos/octopos/pkg/nvidia"
 )
 
 // Detector gathers hardware resource information
 type Detector struct {
 	procPath string
 	sysPath  string
+	devPath  string
 }
 
 // NewDetector creates a new resource detector
 func NewDetector(procPath, sysPath string) *Detector {
+	return NewDetectorWithDev(procPath, sysPath, "")
+}
+
+// NewDetectorWithDev creates a detector with an explicit /dev path for tests.
+func NewDetectorWithDev(procPath, sysPath, devPath string) *Detector {
 	if procPath == "" {
 		procPath = "/proc"
 	}
 	if sysPath == "" {
 		sysPath = "/sys"
 	}
+	if devPath == "" {
+		devPath = "/dev"
+	}
 	return &Detector{
 		procPath: procPath,
 		sysPath:  sysPath,
+		devPath:  devPath,
 	}
 }
 
@@ -107,9 +118,10 @@ func (d *Detector) DetectAll() (*cluster.ResourceSpec, error) {
 	numaNodes, _ := d.detectNUMANodes()
 	cpuSpec.NUMANodes = numaNodes
 
-	// Detect GPUs
-	gpuCount, _ := d.detectGPUs()
-	cpuSpec.GPUCount = gpuCount
+	// Detect NVIDIA GPUs
+	gpuDevices, _ := d.detectGPUs()
+	cpuSpec.GPUDevices = gpuDevices
+	cpuSpec.GPUCount = len(gpuDevices)
 
 	return cpuSpec, nil
 }
@@ -129,30 +141,6 @@ func (d *Detector) detectNUMANodes() (int, error) {
 	return count, nil
 }
 
-func (d *Detector) detectGPUs() (int, error) {
-	// Check for NVIDIA GPUs via nvidia-smi or /proc/driver/nvidia
-	if _, err := os.Stat("/usr/bin/nvidia-smi"); err == nil {
-		// Could run nvidia-smi --query-gpu=count --format=csv,noheader
-		// For now return 0, will be enhanced with PCI detection
-	}
-
-	// Check PCI devices for GPU class
-	pciPath := filepath.Join(d.sysPath, "bus", "pci", "devices")
-	entries, err := os.ReadDir(pciPath)
-	if err != nil {
-		return 0, nil
-	}
-
-	count := 0
-	for _, e := range entries {
-		classPath := filepath.Join(pciPath, e.Name(), "class")
-		if data, err := os.ReadFile(classPath); err == nil {
-			class := strings.TrimSpace(string(data))
-			// 0x030000 = VGA compatible controller, 0x030200 = 3D controller
-			if class == "0x030000" || class == "0x030200" {
-				count++
-			}
-		}
-	}
-	return count, nil
+func (d *Detector) detectGPUs() ([]cluster.GPUDevice, error) {
+	return nvidia.DiscoverDevices(d.devPath)
 }

@@ -145,3 +145,60 @@ func TestNodeInfoReserveRelease(t *testing.T) {
 		t.Error("Inactive node should not allow reserve")
 	}
 }
+
+func TestNodeInfoReserveWithGPUAllocation(t *testing.T) {
+	node := &NodeInfo{
+		ID:    "node-1",
+		State: NodeStateActive,
+		Resources: ResourceSpec{
+			CPU:      8000,
+			Memory:   32_000_000_000,
+			GPUCount: 2,
+			GPUDevices: []GPUDevice{
+				{Index: 0, UUID: "GPU-0", Path: "/dev/nvidia0", Major: 195, Minor: 0},
+				{Index: 1, UUID: "GPU-1", Path: "/dev/nvidia1", Major: 195, Minor: 1},
+			},
+		},
+	}
+
+	req1 := Requirements{CPU: 1000, Memory: 1_000_000_000, GPUs: 1, JobID: "job-1"}
+	alloc1, ok := node.ReserveWithAllocation(req1)
+	if !ok {
+		t.Fatal("first GPU reserve failed")
+	}
+	if len(alloc1.GPUDevices) != 1 || alloc1.GPUDevices[0].Index != 0 {
+		t.Fatalf("first allocation = %+v, want GPU index 0", alloc1.GPUDevices)
+	}
+
+	req2 := Requirements{CPU: 1000, Memory: 1_000_000_000, GPUs: 1, JobID: "job-2"}
+	alloc2, ok := node.ReserveWithAllocation(req2)
+	if !ok {
+		t.Fatal("second GPU reserve failed")
+	}
+	if len(alloc2.GPUDevices) != 1 || alloc2.GPUDevices[0].Index != 1 {
+		t.Fatalf("second allocation = %+v, want GPU index 1", alloc2.GPUDevices)
+	}
+
+	req3 := Requirements{CPU: 1000, Memory: 1_000_000_000, GPUs: 1, JobID: "job-3"}
+	if _, ok := node.ReserveWithAllocation(req3); ok {
+		t.Fatal("third GPU reserve should fail while both GPUs are allocated")
+	}
+
+	node.Release(alloc1)
+	alloc3, ok := node.ReserveWithAllocation(req3)
+	if !ok {
+		t.Fatal("reserve after releasing GPU 0 failed")
+	}
+	if len(alloc3.GPUDevices) != 1 || alloc3.GPUDevices[0].Index != 0 {
+		t.Fatalf("allocation after release = %+v, want GPU index 0", alloc3.GPUDevices)
+	}
+
+	node.Release(alloc2)
+	node.Release(alloc3)
+	if node.Allocated.GPUCount != 0 {
+		t.Fatalf("allocated GPU count = %d, want 0", node.Allocated.GPUCount)
+	}
+	if len(node.GPUAllocations) != 0 {
+		t.Fatalf("GPU allocations = %+v, want empty", node.GPUAllocations)
+	}
+}

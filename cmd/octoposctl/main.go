@@ -294,6 +294,13 @@ var execCmd = &cobra.Command{
 		cpu, _ := cmd.Flags().GetInt("cpu")
 		mem, _ := cmd.Flags().GetInt("mem")
 		gpus, _ := cmd.Flags().GetInt("gpus")
+		gpuAlias, _ := cmd.Flags().GetInt("gpu")
+		if cmd.Flags().Changed("gpu") {
+			if cmd.Flags().Changed("gpus") && gpuAlias != gpus {
+				return fmt.Errorf("--gpu and --gpus specify different values")
+			}
+			gpus = gpuAlias
+		}
 		node, _ := cmd.Flags().GetString("node")
 		cwd, _ := cmd.Flags().GetString("cwd")
 		background, _ := cmd.Flags().GetBool("background")
@@ -779,6 +786,7 @@ func main() {
 	execCmd.Flags().Int("cpu", 1, "CPU cores required")
 	execCmd.Flags().Int("mem", 1, "Memory required (GB)")
 	execCmd.Flags().Int("gpus", 0, "GPUs required")
+	execCmd.Flags().Int("gpu", 0, "GPUs required (alias for --gpus)")
 	execCmd.Flags().String("node", "", "Node affinity")
 	execCmd.Flags().String("cwd", "", "Working directory inside the SSI root (default: /)")
 	execCmd.Flags().BoolP("interactive", "i", false, "Keep stdin open for interactive commands")

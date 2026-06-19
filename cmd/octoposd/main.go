@@ -16,6 +16,7 @@ import (
 
 	"github.com/octopos/octopos/pkg/cluster"
 	octoebpf "github.com/octopos/octopos/pkg/ebpf"
+	"github.com/octopos/octopos/pkg/nvidia"
 	"github.com/octopos/octopos/pkg/resources"
 	"github.com/octopos/octopos/pkg/rpc"
 	"github.com/octopos/octopos/pkg/scheduler"
@@ -157,6 +158,16 @@ func (s *Server) init() error {
 	// Create node info
 	wgIP := s.getWGIP()
 	labels := map[string]string{"role": "compute"}
+	if resSpec.GPUCount > 0 {
+		if err := nvidia.EnsureProjection(nvidia.DefaultProjectionRoot); err != nil {
+			return fmt.Errorf("prepare NVIDIA projection: %w", err)
+		}
+		labels["octopos.io/nvidia"] = "true"
+		labels["octopos.io/nvidia-gpus"] = fmt.Sprint(resSpec.GPUCount)
+		if version := nvidia.DriverVersion(); version != "" {
+			labels["octopos.io/nvidia-driver-version"] = version
+		}
+	}
 	ssiCfg := s.ssiConfig()
 	if s.config.RequireSSI {
 		if err := ssi.Validate(ssiCfg); err != nil {
@@ -397,6 +408,21 @@ func (s *Server) resourceUpdateLoop() {
 			if err != nil {
 				log.Printf("Resource detection failed: %v", err)
 				continue
+			}
+			if resSpec.GPUCount > 0 {
+				if err := nvidia.EnsureProjection(nvidia.DefaultProjectionRoot); err != nil {
+					log.Printf("NVIDIA projection refresh failed: %v", err)
+					continue
+				}
+				s.nodeInfo.Labels["octopos.io/nvidia"] = "true"
+				s.nodeInfo.Labels["octopos.io/nvidia-gpus"] = fmt.Sprint(resSpec.GPUCount)
+				if version := nvidia.DriverVersion(); version != "" {
+					s.nodeInfo.Labels["octopos.io/nvidia-driver-version"] = version
+				}
+			} else {
+				delete(s.nodeInfo.Labels, "octopos.io/nvidia")
+				delete(s.nodeInfo.Labels, "octopos.io/nvidia-gpus")
+				delete(s.nodeInfo.Labels, "octopos.io/nvidia-driver-version")
 			}
 			s.nodeInfo.Resources = *resSpec
 		}

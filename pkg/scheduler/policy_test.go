@@ -117,6 +117,52 @@ func TestScheduler(t *testing.T) {
 	}
 }
 
+func TestSchedulerReturnsGPUAllocation(t *testing.T) {
+	s := NewScheduler(&BinPackPolicy{})
+	node := &cluster.NodeInfo{
+		ID:    "node-1",
+		State: cluster.NodeStateActive,
+		Resources: cluster.ResourceSpec{
+			CPU:      8000,
+			Memory:   32 * 1024 * 1024 * 1024,
+			GPUCount: 2,
+			GPUDevices: []cluster.GPUDevice{
+				{Index: 0, UUID: "GPU-0", Path: "/dev/nvidia0"},
+				{Index: 1, UUID: "GPU-1", Path: "/dev/nvidia1"},
+			},
+		},
+	}
+	s.AddNode(node)
+
+	req := cluster.Requirements{
+		CPU:    1000,
+		Memory: 1 * 1024 * 1024 * 1024,
+		GPUs:   1,
+		JobID:  "job-1",
+	}
+	selected, allocated, err := s.ScheduleWithAllocation(req)
+	if err != nil {
+		t.Fatalf("ScheduleWithAllocation failed: %v", err)
+	}
+	if selected.ID != "node-1" {
+		t.Fatalf("selected node = %s, want node-1", selected.ID)
+	}
+	if len(allocated.GPUDevices) != 1 {
+		t.Fatalf("allocated GPUs = %+v, want 1 GPU", allocated.GPUDevices)
+	}
+	if allocated.GPUDevices[0].UUID != "GPU-0" {
+		t.Fatalf("allocated GPU = %+v, want GPU-0", allocated.GPUDevices[0])
+	}
+	if node.GPUAllocations[0] != "job-1" {
+		t.Fatalf("GPU allocation owner = %q, want job-1", node.GPUAllocations[0])
+	}
+
+	s.Release("node-1", allocated)
+	if len(node.GPUAllocations) != 0 {
+		t.Fatalf("GPU allocations = %+v, want empty", node.GPUAllocations)
+	}
+}
+
 func TestBinPackPolicyExcludesSSIUnreadyNodes(t *testing.T) {
 	policy := &BinPackPolicy{}
 	nodes := []*cluster.NodeInfo{

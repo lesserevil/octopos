@@ -15,9 +15,11 @@ import (
 
 	"github.com/creack/pty"
 	"github.com/octopos/octopos/pkg/cluster"
+	"github.com/octopos/octopos/pkg/nvidia"
 	"github.com/octopos/octopos/pkg/ssi"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
 )
 
 const streamResizeSignal = -1
@@ -96,7 +98,7 @@ func (s *ClusterServerImpl) executeRemoteBackground(ctx context.Context, req *Ex
 }
 
 func (s *ClusterServerImpl) executeLocalBackground(req *ExecuteRequest, jobID cluster.JobID, node *cluster.NodeInfo, reqs cluster.Requirements) (*ExecuteResponse, error) {
-	cmd, err := s.buildCommand(context.Background(), req)
+	cmd, err := s.buildCommand(context.Background(), req, reqs)
 	if err != nil {
 		s.failJob(jobID, node.ID, reqs, err.Error())
 		return &ExecuteResponse{JobId: string(jobID), ExitCode: -1, Error: err.Error()}, nil
@@ -125,7 +127,7 @@ func (s *ClusterServerImpl) executeLocalStream(stream Cluster_ExecStreamServer, 
 	ctx, cancel := context.WithCancel(stream.Context())
 	defer cancel()
 
-	cmd, err := s.buildCommand(ctx, req)
+	cmd, err := s.buildCommand(ctx, req, reqs)
 	if err != nil {
 		s.failJob(jobID, node.ID, reqs, err.Error())
 		return sendStreamError(stream, err.Error())
@@ -226,7 +228,7 @@ func (s *ClusterServerImpl) executeLocalPTYStream(stream Cluster_ExecStreamServe
 	ctx, cancel := context.WithCancel(stream.Context())
 	defer cancel()
 
-	cmd, err := s.buildPTYCommand(ctx, req)
+	cmd, err := s.buildPTYCommand(ctx, req, reqs)
 	if err != nil {
 		s.failJob(jobID, node.ID, reqs, err.Error())
 		return sendStreamError(stream, err.Error())
@@ -427,10 +429,11 @@ func (s *ClusterServerImpl) scheduleJob(req *ExecuteRequest) (*cluster.NodeInfo,
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	node, err := s.scheduler.Schedule(reqs)
+	node, allocatedReqs, err := s.scheduler.ScheduleWithAllocation(reqs)
 	if err != nil {
 		return nil, reqs, jobID, err
 	}
+	reqs = allocatedReqs
 
 	s.cluster.jobs[jobID] = &cluster.JobInfo{
 		ID:          jobID,
@@ -525,9 +528,9 @@ func (s *ClusterServerImpl) followRemoteJob(ctx context.Context, client ClusterC
 	}
 }
 
-func (s *ClusterServerImpl) buildCommand(ctx context.Context, req *ExecuteRequest) (*exec.Cmd, error) {
+func (s *ClusterServerImpl) buildCommand(ctx context.Context, req *ExecuteRequest, reqs cluster.Requirements) (*exec.Cmd, error) {
 	if s.ssiConfig.Required {
-		return s.buildSSICommand(ctx, req, true)
+		return s.buildSSICommand(ctx, req, reqs, true)
 	}
 	dir, err := s.localExecDir(req)
 	if err != nil {
@@ -542,9 +545,9 @@ func (s *ClusterServerImpl) buildCommand(ctx context.Context, req *ExecuteReques
 	return cmd, nil
 }
 
-func (s *ClusterServerImpl) buildPTYCommand(ctx context.Context, req *ExecuteRequest) (*exec.Cmd, error) {
+func (s *ClusterServerImpl) buildPTYCommand(ctx context.Context, req *ExecuteRequest, reqs cluster.Requirements) (*exec.Cmd, error) {
 	if s.ssiConfig.Required {
-		return s.buildSSICommand(ctx, req, false)
+		return s.buildSSICommand(ctx, req, reqs, false)
 	}
 	dir, err := s.localExecDir(req)
 	if err != nil {
@@ -558,7 +561,7 @@ func (s *ClusterServerImpl) buildPTYCommand(ctx context.Context, req *ExecuteReq
 	return cmd, nil
 }
 
-func (s *ClusterServerImpl) buildSSICommand(ctx context.Context, req *ExecuteRequest, setProcessGroup bool) (*exec.Cmd, error) {
+func (s *ClusterServerImpl) buildSSICommand(ctx context.Context, req *ExecuteRequest, reqs cluster.Requirements, setProcessGroup bool) (*exec.Cmd, error) {
 	cfg := s.ssiConfig.WithDefaults()
 	if err := ssi.Validate(cfg); err != nil {
 		return nil, fmt.Errorf("SSI is not ready on node %s: %w", s.nodeID, err)
@@ -579,8 +582,15 @@ func (s *ClusterServerImpl) buildSSICommand(ctx context.Context, req *ExecuteReq
 		"--rootfs", cfg.RootFS,
 		"--mount-base", cfg.MountBase,
 		"--cwd", logicalDir,
-		"--",
 	}
+	if len(reqs.GPUDevices) > 0 {
+		args = append(args,
+			"--nvidia-gpus", nvidia.EncodeDeviceSpec(reqs.GPUDevices),
+			"--nvidia-projection", nvidia.DefaultProjectionRoot,
+			"--nvidia-capabilities", nvidia.DefaultDriverCapabilities,
+		)
+	}
+	args = append(args, "--")
 	args = append(args, req.Command...)
 	cmd := exec.CommandContext(ctx, cfg.Executor, args...)
 	cmd.Env = append(os.Environ(), req.Env...)
@@ -661,27 +671,17 @@ func upsertEnv(env []string, values ...string) []string {
 }
 
 func cloneExecuteRequestForNode(req *ExecuteRequest, nodeID cluster.NodeID) *ExecuteRequest {
-	forwarded := *req
-	if req.Resources != nil {
-		resources := *req.Resources
-		resources.NodeAffinity = make(map[string]string, len(req.Resources.NodeAffinity)+1)
-		for key, value := range req.Resources.NodeAffinity {
-			resources.NodeAffinity[key] = value
-		}
-		resources.NodeAffinity["node_id"] = string(nodeID)
-		forwarded.Resources = &resources
-	} else {
-		forwarded.Resources = &Requirements{
-			NodeAffinity: map[string]string{"node_id": string(nodeID)},
-		}
+	forwarded := proto.Clone(req).(*ExecuteRequest)
+	if forwarded.Resources == nil {
+		forwarded.Resources = &Requirements{}
 	}
-	if req.PipeMap != nil {
-		forwarded.PipeMap = make(map[int32]int32, len(req.PipeMap))
-		for k, v := range req.PipeMap {
-			forwarded.PipeMap[k] = v
-		}
+	affinity := make(map[string]string, len(forwarded.Resources.NodeAffinity)+1)
+	for key, value := range forwarded.Resources.NodeAffinity {
+		affinity[key] = value
 	}
-	return &forwarded
+	affinity["node_id"] = string(nodeID)
+	forwarded.Resources.NodeAffinity = affinity
+	return forwarded
 }
 
 func copyStreamOutput(wg *sync.WaitGroup, reader io.Reader, send func([]byte) error) {

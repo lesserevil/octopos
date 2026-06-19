@@ -106,7 +106,7 @@ octoposctl --addr <mgmt-ip>:50051 session delete <session-id>
 octoposctl --addr <mgmt-ip>:50051 ps [--node <node>] [--session <id>] [--job <id>]
 
 # Execute commands
-octoposctl --addr <mgmt-ip>:50051 exec [--cpu N] [--mem N] [--gpus N] [--wait] -- <command> [args...]
+octoposctl --addr <mgmt-ip>:50051 exec [--cpu N] [--mem N] [--gpus N|--gpu N] [--wait] -- <command> [args...]
 ```
 
 ---
@@ -189,22 +189,19 @@ bpftool prog show pinned /sys/fs/bpf/proc_aggregator
 
 ---
 
-## GPU Passthrough (Future)
+## NVIDIA GPU Exec Support
 
-When GPU hardware available:
+GPU jobs request local NVIDIA devices from the scheduler:
 
-```xml
-<!-- libvirt XML snippet -->
-<hostdev mode='subsystem' type='pci' managed='yes'>
-  <source>
-    <address domain='0x0000' bus='0x01' slot='0x00' function='0x0'/>
-  </source>
-  <driver name='vfio'/>
-</hostdev>
-<cpu mode='host-passthrough' check='none'/>
+```bash
+octoposctl --addr <mgmt-ip>:50051 exec --gpu 1 -- nvidia-smi
 ```
 
-Requires host IOMMU/VT-d enabled.
+On GPU hosts, `octoposd` detects `/dev/nvidia[0-9]+`, prepares
+`/run/octopos/nvidia/{bin,lib64,etc}`, and `octopos-exec` bind mounts that
+projection into `/usr/local/nvidia` inside the SSI namespace. GPU execs get
+`CUDA_VISIBLE_DEVICES`, `NVIDIA_VISIBLE_DEVICES`, `NVIDIA_DRIVER_CAPABILITIES`,
+`PATH`, and `LD_LIBRARY_PATH` set automatically.
 
 ---
 
