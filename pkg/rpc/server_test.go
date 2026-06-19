@@ -4,12 +4,15 @@ import (
 	"context"
 	"io"
 	"net"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/octopos/octopos/pkg/cluster"
 	"github.com/octopos/octopos/pkg/scheduler"
+	"github.com/octopos/octopos/pkg/ssi"
 	"github.com/octopos/octopos/pkg/tracker"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/test/bufconn"
@@ -191,6 +194,70 @@ func TestExecStreamStreamsStdio(t *testing.T) {
 	}
 }
 
+func TestExecStreamTTYAllocatesPTY(t *testing.T) {
+	client, cleanup := newTestClusterClient(t)
+	defer cleanup()
+
+	registerTestNode(t, client)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	stream, err := client.ExecStream(ctx)
+	if err != nil {
+		t.Fatalf("ExecStream: %v", err)
+	}
+
+	if err := stream.Send(&ExecStreamRequest{Payload: &ExecStreamRequest_Exec{Exec: &ExecuteRequest{
+		SessionId: "sess-tty",
+		JobId:     "job-tty",
+		Command:   []string{"/bin/sh", "-c", "test -t 0 && echo tty-ok"},
+		Stdin:     true,
+		Stdout:    true,
+		Stderr:    true,
+		Tty:       true,
+		Env:       []string{"TERM=xterm", "OCTOPOS_TTY_ROWS=33", "OCTOPOS_TTY_COLS=101"},
+		Resources: &Requirements{
+			CpuMillicores: 1000,
+			MemoryBytes:   1000000000,
+		},
+	}}}); err != nil {
+		t.Fatalf("send exec: %v", err)
+	}
+	if err := stream.CloseSend(); err != nil {
+		t.Fatalf("close send: %v", err)
+	}
+
+	var output strings.Builder
+	var exitCode int32
+	for {
+		resp, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("recv: %v", err)
+		}
+		switch payload := resp.Payload.(type) {
+		case *ExecStreamResponse_StdoutData:
+			output.Write(payload.StdoutData)
+		case *ExecStreamResponse_StderrData:
+			output.Write(payload.StderrData)
+		case *ExecStreamResponse_Error:
+			t.Fatalf("stream error: %s", payload.Error)
+		case *ExecStreamResponse_ExitCode:
+			exitCode = payload.ExitCode
+		}
+	}
+
+	if !strings.Contains(output.String(), "tty-ok") {
+		t.Fatalf("PTY output missing tty-ok: %q", output.String())
+	}
+	if exitCode != 0 {
+		t.Fatalf("exit code = %d, want 0", exitCode)
+	}
+}
+
 func TestExecuteBackgroundAndWait(t *testing.T) {
 	client, cleanup := newTestClusterClient(t)
 	defer cleanup()
@@ -228,6 +295,48 @@ func TestExecuteBackgroundAndWait(t *testing.T) {
 	}
 	if waitResp.ExitCode != 7 {
 		t.Fatalf("exit code = %d, want 7", waitResp.ExitCode)
+	}
+}
+
+func TestStrictSSIRequestUsesConfiguredRoot(t *testing.T) {
+	root := t.TempDir()
+	for _, dir := range []string{"usr/bin", "usr/lib"} {
+		if err := os.MkdirAll(filepath.Join(root, dir), 0755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	executor := filepath.Join(t.TempDir(), "octopos-exec")
+	if err := os.WriteFile(executor, []byte("#!/bin/sh\n"), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	server := NewClusterServerImplWithOptions(
+		cluster.NodeID("test-node"),
+		scheduler.NewScheduler(&scheduler.BinPackPolicy{}),
+		tracker.NewTracker(),
+		nil,
+		ServerOptions{SSI: ssi.Config{
+			ClusterRoot:  root,
+			RootFS:       root,
+			Executor:     executor,
+			RequireMount: false,
+			Required:     true,
+		}},
+	)
+
+	req := &ExecuteRequest{Command: []string{"pwd"}}
+	if err := server.normalizeScheduledRequest(req); err != nil {
+		t.Fatalf("normalizeScheduledRequest: %v", err)
+	}
+	if req.Cwd != "/" {
+		t.Fatalf("cwd = %q, want /", req.Cwd)
+	}
+	dir, err := server.localExecDir(req)
+	if err != nil {
+		t.Fatalf("localExecDir: %v", err)
+	}
+	if dir != root {
+		t.Fatalf("local dir = %q, want %q", dir, root)
 	}
 }
 

@@ -5,6 +5,8 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+
+	"github.com/octopos/octopos/pkg/ssi"
 )
 
 type bootstrapConfig struct {
@@ -16,9 +18,18 @@ type bootstrapConfig struct {
 	GrpcPort      int
 	EnableGateway bool
 	VipIP         string
+	ClusterRoot   string
+	SSIRootFS     string
+	RequireSSI    bool
+	ClusterFSMeta string
+	ClusterFSOpts string
 }
 
 func bootstrapCluster(cfg *bootstrapConfig) error {
+	ssiCfg := ssi.Config{ClusterRoot: cfg.ClusterRoot, RootFS: cfg.SSIRootFS, Required: cfg.RequireSSI}.WithDefaults()
+	cfg.ClusterRoot = ssiCfg.ClusterRoot
+	cfg.SSIRootFS = ssiCfg.RootFS
+
 	fmt.Println("=== OctopOS Cluster Bootstrap ===")
 	fmt.Printf("Bootstrapping cluster as node %s (%s)...\n", cfg.NodeID, cfg.WgIP)
 
@@ -28,12 +39,19 @@ func bootstrapCluster(cfg *bootstrapConfig) error {
 		return nil
 	}
 
-	// 2. Ensure WireGuard tools are installed
+	// 2. Ensure WireGuard and SSI tools are installed
 	if _, err := exec.LookPath("wg"); err != nil {
 		fmt.Println("WireGuard tools not found. Installing...")
 		if err := runCmd(exec.Command("sudo", "apt", "install", "-y", "-qq", "wireguard")); err != nil {
 			return fmt.Errorf("install wireguard: %w", err)
 		}
+	}
+	if cfg.RequireSSI {
+		fmt.Print("Installing SSI runtime dependencies... ")
+		if err := runCmd(exec.Command("sudo", "apt", "install", "-y", "-qq", "fuse3")); err != nil {
+			return fmt.Errorf("install SSI dependencies: %w", err)
+		}
+		fmt.Println("OK")
 	}
 
 	// 3. Generate WireGuard keys if needed
@@ -92,20 +110,46 @@ SaveConfig = true
 	}
 	fmt.Println("OK")
 
-	// 7. Build octoposd if not already built
-	if _, err := os.Stat("bin/octoposd"); os.IsNotExist(err) {
-		if _, err := os.Stat("/usr/local/bin/octoposd"); os.IsNotExist(err) {
-			fmt.Print("Building octoposd... ")
-			if err := runCmd(exec.Command("go", "build", "-o", "bin/octoposd", "./cmd/octoposd")); err != nil {
-				return fmt.Errorf("build octoposd: %w", err)
+	if cfg.RequireSSI {
+		if cfg.ClusterFSMeta != "" {
+			fmt.Print("Installing cluster filesystem service... ")
+			if err := installLocalClusterFSService(cfg.ClusterRoot, cfg.ClusterFSMeta, cfg.ClusterFSOpts); err != nil {
+				return fmt.Errorf("install cluster filesystem service: %w", err)
 			}
 			fmt.Println("OK")
-			if err := runCmd(exec.Command("sudo", "cp", "bin/octoposd", "/usr/local/bin/octoposd")); err != nil {
+		} else if !localSystemdUnitExists("octopos-clusterfs.service") {
+			return fmt.Errorf("strict SSI requires octopos-clusterfs.service; pass --clusterfs-meta or install the service before bootstrapping")
+		} else {
+			fmt.Print("Starting cluster filesystem service... ")
+			if err := runCmd(exec.Command("sudo", "systemctl", "enable", "octopos-clusterfs")); err != nil {
 				return err
 			}
+			if err := runCmd(exec.Command("sudo", "systemctl", "start", "octopos-clusterfs")); err != nil {
+				return err
+			}
+			fmt.Println("OK")
 		}
-	} else {
-		if err := runCmd(exec.Command("sudo", "cp", "bin/octoposd", "/usr/local/bin/octoposd")); err != nil {
+	}
+
+	// 7. Build and install core binaries.
+	coreTargets := []struct{ bin, pkg string }{
+		{"octoposd", "./cmd/octoposd"},
+		{"octopos-exec", "./cmd/octopos-exec"},
+	}
+	if cfg.RequireSSI {
+		coreTargets = append(coreTargets,
+			struct{ bin, pkg string }{"octopos-procfs", "./fuse/procfs"},
+			struct{ bin, pkg string }{"octopos-devfs", "./fuse/devfs"},
+			struct{ bin, pkg string }{"octopos-sysfs", "./fuse/sysfs"},
+		)
+	}
+	for _, target := range coreTargets {
+		fmt.Printf("Building %s... ", target.bin)
+		if err := runCmd(exec.Command("go", "build", "-o", "bin/"+target.bin, target.pkg)); err != nil {
+			return fmt.Errorf("build %s: %w", target.bin, err)
+		}
+		fmt.Println("OK")
+		if err := runCmd(exec.Command("sudo", "cp", "bin/"+target.bin, "/usr/local/bin/"+target.bin)); err != nil {
 			return err
 		}
 	}
@@ -113,18 +157,19 @@ SaveConfig = true
 	// 8. Install systemd service
 	svcContent := fmt.Sprintf(`[Unit]
 Description=OctopOS Cluster Daemon
-After=network.target wg-quick@wg-octopos.service
-Wants=wg-quick@wg-octopos.service
+After=network.target wg-quick@wg-octopos.service octopos-clusterfs.service
+Wants=wg-quick@wg-octopos.service octopos-clusterfs.service
+Requires=octopos-clusterfs.service
 
 [Service]
-ExecStart=/usr/local/bin/octoposd --node-id %s --grpc-addr %s --wg-interface wg-octopos
+ExecStart=/usr/local/bin/octoposd --node-id %s --grpc-addr %s --wg-interface wg-octopos --cluster-root %s --ssi-rootfs %s --require-ssi=%t
 Restart=always
 RestartSec=5
 User=root
 
 [Install]
 WantedBy=multi-user.target
-`, cfg.NodeID, cfg.GrpcAddr)
+`, cfg.NodeID, cfg.GrpcAddr, cfg.ClusterRoot, cfg.SSIRootFS, cfg.RequireSSI)
 
 	tmpSvc := "/tmp/octoposd.service"
 	if err := os.WriteFile(tmpSvc, []byte(svcContent), 0644); err != nil {

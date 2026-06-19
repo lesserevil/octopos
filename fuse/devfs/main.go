@@ -12,6 +12,7 @@ import (
 
 	"github.com/hanwen/go-fuse/v2/fs"
 	"github.com/hanwen/go-fuse/v2/fuse"
+	"golang.org/x/sys/unix"
 )
 
 var (
@@ -128,7 +129,7 @@ func (d *devDir) Readdir(ctx context.Context) (fs.DirStream, syscall.Errno) {
 
 func (n *devNode) Getattr(ctx context.Context, fh fs.FileHandle, out *fuse.AttrOut) syscall.Errno {
 	out.Mode = syscall.S_IFCHR | 0666
-	out.Rdev = (n.dev.major << 20) | n.dev.minor
+	out.Rdev = uint32(unix.Mkdev(n.dev.major, n.dev.minor))
 	return 0
 }
 

@@ -7,6 +7,7 @@ import (
 
 	"github.com/hanwen/go-fuse/v2/fs"
 	"github.com/hanwen/go-fuse/v2/fuse"
+	"golang.org/x/sys/unix"
 )
 
 func TestNewDevRootAddsBaseAndVFIODevices(t *testing.T) {
@@ -48,7 +49,7 @@ func TestDevNodeGetattrUsesCharacterDeviceMetadata(t *testing.T) {
 	if attrs.Mode != syscall.S_IFCHR|0666 {
 		t.Fatalf("mode = %#o", attrs.Mode)
 	}
-	if got, want := attrs.Rdev, uint32(10<<20|232); got != want {
+	if got, want := attrs.Rdev, uint32(unix.Mkdev(10, 232)); got != want {
 		t.Fatalf("rdev = %d, want %d", got, want)
 	}
 }

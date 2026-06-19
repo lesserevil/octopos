@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/octopos/octopos/pkg/cluster"
+	"github.com/octopos/octopos/pkg/ssi"
 )
 
 func TestBinPackPolicy(t *testing.T) {
@@ -113,5 +114,31 @@ func TestScheduler(t *testing.T) {
 	_, err = s.Schedule(reqLarge)
 	if err == nil {
 		t.Error("Schedule should fail when no capacity")
+	}
+}
+
+func TestBinPackPolicyExcludesSSIUnreadyNodes(t *testing.T) {
+	policy := &BinPackPolicy{}
+	nodes := []*cluster.NodeInfo{
+		{
+			ID:        "node-ready",
+			State:     cluster.NodeStateActive,
+			Resources: cluster.ResourceSpec{CPU: 8000, Memory: 32_000_000_000},
+			Labels:    map[string]string{ssi.LabelReady: "true"},
+		},
+		{
+			ID:        "node-unready",
+			State:     cluster.NodeStateActive,
+			Resources: cluster.ResourceSpec{CPU: 8000, Memory: 32_000_000_000},
+			Labels:    map[string]string{ssi.LabelReady: "false"},
+		},
+	}
+
+	eligible := policy.Filter(nodes, cluster.Requirements{CPU: 1000, Memory: 1_000_000_000})
+	if len(eligible) != 1 {
+		t.Fatalf("eligible nodes = %d, want 1", len(eligible))
+	}
+	if eligible[0].ID != "node-ready" {
+		t.Fatalf("eligible node = %s, want node-ready", eligible[0].ID)
 	}
 }

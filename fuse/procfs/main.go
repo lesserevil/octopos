@@ -8,21 +8,27 @@ import (
 	"os"
 	"strconv"
 	"syscall"
+	"time"
 
 	"github.com/hanwen/go-fuse/v2/fs"
 	"github.com/hanwen/go-fuse/v2/fuse"
+	octopospb "github.com/octopos/octopos/pkg/rpc"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
 )
 
 var (
 	mountPoint = flag.String("mount", "/tmp/octopos-proc", "Mount point")
 	ebpfPin    = flag.String("ebpf-pin", "/sys/fs/bpf", "eBPF pin path")
 	nodeID     = flag.Int("node-id", 1, "Node ID")
+	grpcAddr   = flag.String("grpc-addr", "", "octoposd gRPC address for cluster process data")
 )
 
 type procRoot struct {
 	fs.Inode
 	nodeID int
 	pidMap map[uint32]procInfo
+	client octopospb.ClusterClient
 }
 
 type procInfo struct {
@@ -31,6 +37,8 @@ type procInfo struct {
 	uid     uint32
 	comm    string
 	cmdline string
+	rss     uint64
+	state   string
 }
 
 type procDir struct {
@@ -42,6 +50,7 @@ type procFile struct {
 	fs.Inode
 	name string
 	info procInfo
+	root *procRoot
 }
 
 func (r *procRoot) OnAdd(ctx context.Context) {
@@ -53,7 +62,7 @@ func (r *procRoot) OnAdd(ctx context.Context) {
 
 func (r *procRoot) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (*fs.Inode, syscall.Errno) {
 	if pid, err := strconv.ParseUint(name, 10, 32); err == nil {
-		info, ok := r.pidMap[uint32(pid)]
+		info, ok := r.procInfo(ctx, uint32(pid))
 		if !ok {
 			info = procInfo{pid: uint32(pid), ppid: 1, comm: "proc-" + name, cmdline: name}
 		}
@@ -63,7 +72,7 @@ func (r *procRoot) Lookup(ctx context.Context, name string, out *fuse.EntryOut) 
 
 	switch name {
 	case "cpuinfo", "meminfo", "uptime", "stat", "loadavg", "version", "self":
-		child := &procFile{name: name}
+		child := &procFile{name: name, root: r}
 		return r.NewInode(ctx, child, fs.StableAttr{Mode: syscall.S_IFREG}), 0
 	}
 
@@ -86,7 +95,72 @@ func (r *procRoot) Readdir(ctx context.Context) (fs.DirStream, syscall.Errno) {
 			Mode: syscall.S_IFDIR,
 		})
 	}
+	for _, info := range r.clusterProcesses(ctx) {
+		entries = append(entries, fuse.DirEntry{
+			Name: strconv.FormatUint(uint64(info.pid), 10),
+			Mode: syscall.S_IFDIR,
+		})
+	}
 	return fs.NewListDirStream(entries), 0
+}
+
+func (r *procRoot) procInfo(ctx context.Context, pid uint32) (procInfo, bool) {
+	if info, ok := r.pidMap[pid]; ok {
+		return info, true
+	}
+	for _, info := range r.clusterProcesses(ctx) {
+		if info.pid == pid {
+			return info, true
+		}
+	}
+	return procInfo{}, false
+}
+
+func (r *procRoot) clusterProcesses(ctx context.Context) []procInfo {
+	if r.client == nil {
+		return nil
+	}
+	callCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	resp, err := r.client.ListProcesses(callCtx, &octopospb.ListProcessesRequest{})
+	if err != nil {
+		return nil
+	}
+	infos := make([]procInfo, 0, len(resp.Processes))
+	for _, p := range resp.Processes {
+		infos = append(infos, procInfo{
+			pid:     uint32(p.GlobalPid),
+			ppid:    uint32(p.Ppid),
+			uid:     p.Uid,
+			comm:    p.Comm,
+			cmdline: p.Cmdline,
+			rss:     p.RssBytes,
+			state:   p.State,
+		})
+	}
+	return infos
+}
+
+func (r *procRoot) clusterMemory(ctx context.Context) uint64 {
+	if r.client == nil {
+		return 32 * 1024 * 1024 * 1024
+	}
+	callCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	resp, err := r.client.GetClusterState(callCtx, &octopospb.GetClusterStateRequest{})
+	if err != nil {
+		return 32 * 1024 * 1024 * 1024
+	}
+	var total uint64
+	for _, node := range resp.Nodes {
+		if node.Capacity != nil && node.Capacity.MemoryBytes > 0 {
+			total += uint64(node.Capacity.MemoryBytes)
+		}
+	}
+	if total == 0 {
+		return 32 * 1024 * 1024 * 1024
+	}
+	return total
 }
 
 func (d *procDir) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (*fs.Inode, syscall.Errno) {
@@ -140,7 +214,10 @@ func (f *procFile) content() []byte {
 	case "cpuinfo":
 		return []byte("processor\t: 0\nmodel name\t: OctopOS Virtual CPU\ncpu MHz\t\t: 2400.000\n")
 	case "meminfo":
-		total := 32 * 1024 * 1024 * 1024
+		total := uint64(32 * 1024 * 1024 * 1024)
+		if f.root != nil {
+			total = f.root.clusterMemory(context.Background())
+		}
 		return []byte(fmt.Sprintf("MemTotal:       %12d kB\nMemFree:        %12d kB\n", total/1024, total/1024/2))
 	case "uptime":
 		return []byte("3600.00 1800.00\n")
@@ -151,8 +228,8 @@ func (f *procFile) content() []byte {
 	case "version":
 		return []byte("OctopOS virtual kernel version 6.8.0-octopos\n")
 	case "status":
-		return []byte(fmt.Sprintf("Name:\t%s\nPid:\t%d\nPPid:\t%d\nUid:\t%d\n",
-			f.info.comm, f.info.pid, f.info.ppid, f.info.uid))
+		return []byte(fmt.Sprintf("Name:\t%s\nState:\t%s\nPid:\t%d\nPPid:\t%d\nUid:\t%d\nVmRSS:\t%d kB\n",
+			f.info.comm, f.info.state, f.info.pid, f.info.ppid, f.info.uid, f.info.rss/1024))
 	case "comm":
 		return []byte(f.info.comm + "\n")
 	case "cmdline":
@@ -170,9 +247,22 @@ func main() {
 		log.Fatalf("mkdir mount point: %v", err)
 	}
 
+	var client octopospb.ClusterClient
+	var conn *grpc.ClientConn
+	if *grpcAddr != "" {
+		var err error
+		conn, err = grpc.Dial(*grpcAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+		if err != nil {
+			log.Fatalf("connect to octoposd: %v", err)
+		}
+		defer conn.Close()
+		client = octopospb.NewClusterClient(conn)
+	}
+
 	root := &procRoot{
 		nodeID: *nodeID,
 		pidMap: make(map[uint32]procInfo),
+		client: client,
 	}
 
 	server, err := fs.Mount(*mountPoint, root, &fs.Options{

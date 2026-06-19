@@ -8,8 +8,10 @@ import (
 	"io"
 	"log"
 	"os"
+	"os/signal"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -17,6 +19,7 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 
 	octopospb "github.com/octopos/octopos/pkg/rpc"
+	"github.com/octopos/octopos/pkg/ssi"
 )
 
 var (
@@ -28,6 +31,8 @@ var (
 type commandExitError struct {
 	code int
 }
+
+const execStreamResizeSignal = -1
 
 func (e *commandExitError) Error() string {
 	return fmt.Sprintf("exit status %d", e.code)
@@ -161,6 +166,11 @@ Example:
 		grpcPort, _ := cmd.Flags().GetInt("grpc-port")
 		ebpfEnabled, _ := cmd.Flags().GetBool("ebpf")
 		fuseEnabled, _ := cmd.Flags().GetBool("fuse")
+		clusterRoot, _ := cmd.Flags().GetString("cluster-root")
+		ssiRootFS, _ := cmd.Flags().GetString("ssi-rootfs")
+		requireSSI, _ := cmd.Flags().GetBool("require-ssi")
+		clusterFSMeta, _ := cmd.Flags().GetString("clusterfs-meta")
+		clusterFSOpts, _ := cmd.Flags().GetString("clusterfs-options")
 
 		cfg := &provisionConfig{
 			NodeID:        args[0],
@@ -176,6 +186,11 @@ Example:
 			BinDir:        "bin",
 			EBPFEnabled:   ebpfEnabled,
 			FUSEEnabled:   fuseEnabled,
+			ClusterRoot:   clusterRoot,
+			SSIRootFS:     ssiRootFS,
+			RequireSSI:    requireSSI,
+			ClusterFSMeta: clusterFSMeta,
+			ClusterFSOpts: clusterFSOpts,
 		}
 		return provisionNode(cfg)
 	},
@@ -280,15 +295,19 @@ var execCmd = &cobra.Command{
 		mem, _ := cmd.Flags().GetInt("mem")
 		gpus, _ := cmd.Flags().GetInt("gpus")
 		node, _ := cmd.Flags().GetString("node")
+		cwd, _ := cmd.Flags().GetString("cwd")
 		background, _ := cmd.Flags().GetBool("background")
+		tty, _ := cmd.Flags().GetBool("tty")
 
 		req := &octopospb.ExecuteRequest{
 			SessionId: sessionID,
 			JobId:     fmt.Sprintf("job-%d", time.Now().UnixNano()),
 			Command:   args,
+			Cwd:       cwd,
 			Stdin:     !background,
 			Stdout:    !background,
 			Stderr:    !background,
+			Tty:       !background && tty,
 			Resources: &octopospb.Requirements{
 				CpuMillicores: int64(cpu * 1000),
 				MemoryBytes:   int64(mem * 1024 * 1024 * 1024),
@@ -336,18 +355,42 @@ var execCmd = &cobra.Command{
 }
 
 func runExecForeground(ctx context.Context, req *octopospb.ExecuteRequest) error {
+	if req.Tty {
+		if !isTerminal(os.Stdin.Fd()) {
+			return fmt.Errorf("--tty requires stdin to be a terminal")
+		}
+		state, err := makeTerminalRaw(os.Stdin.Fd())
+		if err != nil {
+			return fmt.Errorf("enable raw terminal mode: %w", err)
+		}
+		defer restoreTerminal(os.Stdin.Fd(), state)
+		req.Env = appendTTYEnv(req.Env, os.Stdin.Fd())
+	}
+
 	stream, err := client.ExecStream(ctx)
 	if err != nil {
 		return fmt.Errorf("ExecStream failed: %w", err)
 	}
 
-	if err := stream.Send(&octopospb.ExecStreamRequest{
+	var sendMu sync.Mutex
+	send := func(req *octopospb.ExecStreamRequest) error {
+		sendMu.Lock()
+		defer sendMu.Unlock()
+		return stream.Send(req)
+	}
+
+	if err := send(&octopospb.ExecStreamRequest{
 		Payload: &octopospb.ExecStreamRequest_Exec{Exec: req},
 	}); err != nil {
 		return fmt.Errorf("send exec request: %w", err)
 	}
 
-	var sendMu sync.Mutex
+	if req.Tty {
+		stopResize := forwardTerminalResize(os.Stdin.Fd(), send)
+		defer stopResize()
+		_ = sendTerminalResize(os.Stdin.Fd(), send)
+	}
+
 	go func() {
 		buf := make([]byte, 32*1024)
 		for {
@@ -355,20 +398,18 @@ func runExecForeground(ctx context.Context, req *octopospb.ExecuteRequest) error
 			if n > 0 {
 				data := make([]byte, n)
 				copy(data, buf[:n])
-				sendMu.Lock()
-				err := stream.Send(&octopospb.ExecStreamRequest{
+				err := send(&octopospb.ExecStreamRequest{
 					Payload: &octopospb.ExecStreamRequest_StdinData{StdinData: data},
 				})
-				sendMu.Unlock()
 				if err != nil {
 					return
 				}
 			}
 			if readErr != nil {
-				sendMu.Lock()
-				_ = stream.Send(&octopospb.ExecStreamRequest{
+				_ = send(&octopospb.ExecStreamRequest{
 					Payload: &octopospb.ExecStreamRequest_CloseStdin{CloseStdin: true},
 				})
+				sendMu.Lock()
 				_ = stream.CloseSend()
 				sendMu.Unlock()
 				return
@@ -407,6 +448,58 @@ func runExecForeground(ctx context.Context, req *octopospb.ExecuteRequest) error
 			return nil
 		}
 	}
+}
+
+func appendTTYEnv(env []string, fd uintptr) []string {
+	if term := os.Getenv("TERM"); term != "" {
+		env = append(env, "TERM="+term)
+	}
+	if size, err := getTerminalSize(fd); err == nil {
+		env = append(env,
+			fmt.Sprintf("OCTOPOS_TTY_ROWS=%d", size.rows),
+			fmt.Sprintf("OCTOPOS_TTY_COLS=%d", size.cols),
+		)
+	}
+	return env
+}
+
+func forwardTerminalResize(fd uintptr, send func(*octopospb.ExecStreamRequest) error) func() {
+	ch := make(chan os.Signal, 1)
+	signal.Notify(ch, syscall.SIGWINCH)
+	done := make(chan struct{})
+	go func() {
+		for {
+			select {
+			case <-done:
+				return
+			case <-ch:
+				_ = sendTerminalResize(fd, send)
+			}
+		}
+	}()
+	return func() {
+		signal.Stop(ch)
+		close(done)
+	}
+}
+
+func sendTerminalResize(fd uintptr, send func(*octopospb.ExecStreamRequest) error) error {
+	size, err := getTerminalSize(fd)
+	if err != nil || size.rows == 0 || size.cols == 0 {
+		return err
+	}
+	return send(&octopospb.ExecStreamRequest{
+		Payload: &octopospb.ExecStreamRequest_Signal{
+			Signal: &octopospb.SignalRequest{
+				GlobalPid: encodeTerminalSize(size),
+				Signal:    execStreamResizeSignal,
+			},
+		},
+	})
+}
+
+func encodeTerminalSize(size terminalSize) uint64 {
+	return uint64(size.rows)<<32 | uint64(size.cols)
 }
 
 var sessionCmd = &cobra.Command{
@@ -554,6 +647,45 @@ var clusterStatusCmd = &cobra.Command{
 	},
 }
 
+var clusterDoctorCmd = &cobra.Command{
+	Use:   "doctor",
+	Short: "Validate SSI cluster readiness",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		resp, err := client.GetClusterState(ctx, &octopospb.GetClusterStateRequest{})
+		if err != nil {
+			return fmt.Errorf("GetClusterState failed: %w", err)
+		}
+		if len(resp.Nodes) == 0 {
+			return fmt.Errorf("cluster has no registered nodes")
+		}
+
+		fmt.Printf("%-20s %-8s %-16s %s\n", "NODE", "SSI", "ROOT", "ROOTFS")
+		var failed []string
+		for _, node := range resp.Nodes {
+			ready := node.Labels[ssi.LabelReady]
+			if ready == "" {
+				ready = "unknown"
+			}
+			fmt.Printf("%-20s %-8s %-16s %s\n",
+				node.NodeId,
+				ready,
+				node.Labels[ssi.LabelClusterRoot],
+				node.Labels[ssi.LabelRootFS],
+			)
+			if ready != "true" {
+				failed = append(failed, node.NodeId)
+			}
+		}
+		if len(failed) > 0 {
+			return fmt.Errorf("SSI is not ready on: %s", strings.Join(failed, ", "))
+		}
+		return nil
+	},
+}
+
 var clusterBootstrapCmd = &cobra.Command{
 	Use:   "bootstrap",
 	Short: "Bootstrap the first cluster node",
@@ -582,6 +714,11 @@ Example:
 
 		enableGateway, _ := cmd.Flags().GetBool("enable-gateway")
 		vipIP, _ := cmd.Flags().GetString("vip-ip")
+		clusterRoot, _ := cmd.Flags().GetString("cluster-root")
+		ssiRootFS, _ := cmd.Flags().GetString("ssi-rootfs")
+		requireSSI, _ := cmd.Flags().GetBool("require-ssi")
+		clusterFSMeta, _ := cmd.Flags().GetString("clusterfs-meta")
+		clusterFSOpts, _ := cmd.Flags().GetString("clusterfs-options")
 
 		cfg := &bootstrapConfig{
 			NodeID:        nodeID,
@@ -592,6 +729,11 @@ Example:
 			GrpcPort:      grpcPort,
 			EnableGateway: enableGateway,
 			VipIP:         vipIP,
+			ClusterRoot:   clusterRoot,
+			SSIRootFS:     ssiRootFS,
+			RequireSSI:    requireSSI,
+			ClusterFSMeta: clusterFSMeta,
+			ClusterFSOpts: clusterFSOpts,
 		}
 		return bootstrapCluster(cfg)
 	},
@@ -610,6 +752,11 @@ func main() {
 	nodeAddCmd.Flags().Int("grpc-port", 50051, "gRPC port")
 	nodeAddCmd.Flags().Bool("ebpf", false, "Build and deploy eBPF programs")
 	nodeAddCmd.Flags().Bool("fuse", false, "Build and deploy FUSE daemons")
+	nodeAddCmd.Flags().String("cluster-root", "/cluster", "JuiceFS cluster filesystem mount point")
+	nodeAddCmd.Flags().String("ssi-rootfs", "", "SSI root filesystem path (default: <cluster-root>)")
+	nodeAddCmd.Flags().Bool("require-ssi", true, "Require cluster filesystem and SSI rootfs before serving jobs")
+	nodeAddCmd.Flags().String("clusterfs-meta", "", "JuiceFS metadata URL for octopos-clusterfs.service (for example tikv://10.0.0.1:2379/octopos)")
+	nodeAddCmd.Flags().String("clusterfs-options", defaultClusterFSOptions, "JuiceFS mount options for octopos-clusterfs.service")
 	nodeAddCmd.Flags().Int64("cpu", 0, "Override CPU capacity in millicores (0 = auto-detect)")
 	nodeAddCmd.Flags().Int64("mem", 0, "Override memory capacity in bytes (0 = auto-detect)")
 	nodeAddCmd.Flags().Int32("gpus", 0, "Override GPU count")
@@ -620,6 +767,11 @@ func main() {
 	clusterBootstrapCmd.Flags().Int("grpc-port", 50051, "gRPC port")
 	clusterBootstrapCmd.Flags().Bool("enable-gateway", true, "Deploy VIP gateway (octopos-gw) on this node")
 	clusterBootstrapCmd.Flags().String("vip-ip", "10.0.0.100", "Virtual IP for cluster gateway")
+	clusterBootstrapCmd.Flags().String("cluster-root", "/cluster", "JuiceFS cluster filesystem mount point")
+	clusterBootstrapCmd.Flags().String("ssi-rootfs", "", "SSI root filesystem path (default: <cluster-root>)")
+	clusterBootstrapCmd.Flags().Bool("require-ssi", true, "Require cluster filesystem and SSI rootfs before serving jobs")
+	clusterBootstrapCmd.Flags().String("clusterfs-meta", "", "JuiceFS metadata URL for octopos-clusterfs.service (for example tikv://10.0.0.1:2379/octopos)")
+	clusterBootstrapCmd.Flags().String("clusterfs-options", defaultClusterFSOptions, "JuiceFS mount options for octopos-clusterfs.service")
 
 	nodeListCmd.Flags().StringP("output", "o", "", "Output format (json|wide)")
 
@@ -628,6 +780,9 @@ func main() {
 	execCmd.Flags().Int("mem", 1, "Memory required (GB)")
 	execCmd.Flags().Int("gpus", 0, "GPUs required")
 	execCmd.Flags().String("node", "", "Node affinity")
+	execCmd.Flags().String("cwd", "", "Working directory inside the SSI root (default: /)")
+	execCmd.Flags().BoolP("interactive", "i", false, "Keep stdin open for interactive commands")
+	execCmd.Flags().BoolP("tty", "t", false, "Allocate a pseudo-TTY")
 	execCmd.Flags().Bool("background", false, "Submit the command as a background job")
 	execCmd.Flags().Bool("wait", false, "With --background, wait for the detached job to finish")
 
@@ -639,7 +794,7 @@ func main() {
 	nodeCmd.AddCommand(nodeListCmd, nodeAddCmd, nodeDrainCmd, nodeRemoveCmd)
 	jobCmd.AddCommand(jobListCmd, jobStatusCmd)
 	sessionCmd.AddCommand(sessionListCmd, sessionCreateCmd, sessionDeleteCmd)
-	clusterCmd.AddCommand(clusterStatusCmd, clusterBootstrapCmd)
+	clusterCmd.AddCommand(clusterStatusCmd, clusterDoctorCmd, clusterBootstrapCmd)
 
 	rootCmd.AddCommand(nodeCmd, jobCmd, execCmd, sessionCmd, psCmd, clusterCmd)
 

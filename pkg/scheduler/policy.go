@@ -4,6 +4,7 @@ import (
 	"sort"
 
 	"github.com/octopos/octopos/pkg/cluster"
+	"github.com/octopos/octopos/pkg/ssi"
 )
 
 // Policy defines scheduling policy interface
@@ -22,6 +23,9 @@ func (b *BinPackPolicy) Filter(nodes []*cluster.NodeInfo, req cluster.Requiremen
 	var eligible []*cluster.NodeInfo
 	for _, n := range nodes {
 		if n.State != cluster.NodeStateActive {
+			continue
+		}
+		if !ssi.IsReady(n.Labels) {
 			continue
 		}
 		if req.NodeAffinity != nil {

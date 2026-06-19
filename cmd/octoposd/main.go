@@ -7,7 +7,9 @@ import (
 	"log"
 	"net"
 	"os"
+	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -17,6 +19,7 @@ import (
 	"github.com/octopos/octopos/pkg/resources"
 	"github.com/octopos/octopos/pkg/rpc"
 	"github.com/octopos/octopos/pkg/scheduler"
+	"github.com/octopos/octopos/pkg/ssi"
 	"github.com/octopos/octopos/pkg/tracker"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/health"
@@ -25,11 +28,16 @@ import (
 )
 
 var (
-	configFile  = flag.String("config", "/etc/octopos/octoposd.yaml", "Config file path")
-	nodeID      = flag.String("node-id", "", "Node ID (default: hostname)")
-	grpcAddr    = flag.String("grpc-addr", "0.0.0.0:50051", "gRPC listen address")
-	wgInterface = flag.String("wg-interface", "wg-octopos", "WireGuard interface")
-	peers       = flag.String("peers", "", "Comma-separated seed peer addresses (e.g., 10.0.0.2:50051,10.0.0.3:50051)")
+	configFile   = flag.String("config", "/etc/octopos/octoposd.yaml", "Config file path")
+	nodeID       = flag.String("node-id", "", "Node ID (default: hostname)")
+	grpcAddr     = flag.String("grpc-addr", "0.0.0.0:50051", "gRPC listen address")
+	wgInterface  = flag.String("wg-interface", "wg-octopos", "WireGuard interface")
+	peers        = flag.String("peers", "", "Comma-separated seed peer addresses (e.g., 10.0.0.2:50051,10.0.0.3:50051)")
+	clusterRoot  = flag.String("cluster-root", ssi.DefaultClusterRoot, "JuiceFS cluster filesystem mount point")
+	ssiRootFS    = flag.String("ssi-rootfs", "", "SSI root filesystem path (default: <cluster-root>)")
+	ssiMountBase = flag.String("ssi-mount-base", ssi.DefaultMountBase, "Base directory for SSI virtual filesystem mounts")
+	ssiExecutor  = flag.String("ssi-executor", ssi.DefaultExecutor, "Privileged SSI command launcher")
+	requireSSI   = flag.Bool("require-ssi", true, "Require a mounted cluster filesystem and bootstrapped SSI rootfs before serving jobs")
 )
 
 type Config struct {
@@ -38,6 +46,11 @@ type Config struct {
 	WGInterface  string `yaml:"wg_interface"`
 	RedisAddrs   string `yaml:"redis_addrs"`
 	JuiceFSMount string `yaml:"juicefs_mount"`
+	SSIRootFS    string `yaml:"ssi_rootfs"`
+	SSIMountBase string `yaml:"ssi_mount_base"`
+	SSIExecutor  string `yaml:"ssi_executor"`
+	RequireSSI   bool   `yaml:"require_ssi"`
+	Peers        string `yaml:"peers"`
 	VFIOEnabled  bool   `yaml:"vfio_enabled"`
 }
 
@@ -52,6 +65,7 @@ type Server struct {
 	ebpfLoader   *octoebpf.Loader
 	grpcServer   *grpc.Server
 	healthServer *health.Server
+	ssiProcs     []*exec.Cmd
 	ctx          context.Context
 	cancel       context.CancelFunc
 }
@@ -65,7 +79,12 @@ func main() {
 		GRPCAddr:     *grpcAddr,
 		WGInterface:  *wgInterface,
 		RedisAddrs:   "10.0.0.1:6379,10.0.0.2:6379,10.0.0.3:6379",
-		JuiceFSMount: "/cluster",
+		JuiceFSMount: *clusterRoot,
+		SSIRootFS:    *ssiRootFS,
+		SSIMountBase: *ssiMountBase,
+		SSIExecutor:  *ssiExecutor,
+		RequireSSI:   *requireSSI,
+		Peers:        *peers,
 		VFIOEnabled:  true,
 	}
 
@@ -95,6 +114,12 @@ func main() {
 	// Start gRPC server
 	if err := s.startGRPC(); err != nil {
 		log.Fatalf("Failed to start gRPC: %v", err)
+	}
+	if err := s.startSSIVirtualFS(); err != nil {
+		log.Fatalf("Failed to start SSI virtual filesystems: %v", err)
+	}
+	if s.config.Peers != "" {
+		go s.connectToPeers(s.config.Peers)
 	}
 
 	// Start background tasks
@@ -131,12 +156,20 @@ func (s *Server) init() error {
 
 	// Create node info
 	wgIP := s.getWGIP()
+	labels := map[string]string{"role": "compute"}
+	ssiCfg := s.ssiConfig()
+	if s.config.RequireSSI {
+		if err := ssi.Validate(ssiCfg); err != nil {
+			return fmt.Errorf("SSI validation failed: %w", err)
+		}
+		labels = ssi.MergeLabels(labels, ssiCfg.Labels())
+	}
 	s.nodeInfo = &cluster.NodeInfo{
 		ID:        cluster.NodeID(s.config.NodeID),
 		Address:   wgIP,
 		State:     cluster.NodeStateActive,
 		Resources: *resSpec,
-		Labels:    map[string]string{"role": "compute"},
+		Labels:    labels,
 	}
 
 	// Initialize scheduler and tracker
@@ -158,12 +191,18 @@ func (s *Server) init() error {
 	log.Printf("Node %s initialized: CPU=%d, Mem=%d, GPUs=%d",
 		s.nodeInfo.ID, s.nodeInfo.Resources.CPU, s.nodeInfo.Resources.Memory, s.nodeInfo.Resources.GPUCount)
 
-	// Connect to seed peers and register
-	if *peers != "" {
-		go s.connectToPeers(*peers)
-	}
-
 	return nil
+}
+
+func (s *Server) ssiConfig() ssi.Config {
+	return ssi.Config{
+		ClusterRoot:  s.config.JuiceFSMount,
+		RootFS:       s.config.SSIRootFS,
+		MountBase:    s.config.SSIMountBase,
+		Executor:     s.config.SSIExecutor,
+		RequireMount: true,
+		Required:     s.config.RequireSSI,
+	}.WithDefaults()
 }
 
 func (s *Server) connectToPeers(peerList string) {
@@ -232,7 +271,9 @@ func (s *Server) startGRPC() error {
 	reflection.Register(s.grpcServer)
 
 	// Register Cluster service
-	rpc.RegisterClusterServerImpl(s.grpcServer, s.nodeInfo.ID, s.scheduler, s.tracker, s.grpcPort, s.clientPool)
+	rpc.RegisterClusterServerImplWithOptions(s.grpcServer, s.nodeInfo.ID, s.scheduler, s.tracker, s.grpcPort, s.clientPool, rpc.ServerOptions{
+		SSI: s.ssiConfig(),
+	})
 
 	go func() {
 		log.Printf("gRPC server listening on %s", s.config.GRPCAddr)
@@ -242,6 +283,78 @@ func (s *Server) startGRPC() error {
 	}()
 
 	return nil
+}
+
+func (s *Server) startSSIVirtualFS() error {
+	if !s.config.RequireSSI {
+		return nil
+	}
+	cfg := s.ssiConfig()
+	if err := os.MkdirAll(cfg.MountBase, 0755); err != nil {
+		return fmt.Errorf("create SSI mount base: %w", err)
+	}
+
+	mounts := []struct {
+		name string
+		bin  string
+		args []string
+	}{
+		{"proc", "octopos-procfs", []string{"--grpc-addr", net.JoinHostPort("127.0.0.1", fmt.Sprint(s.grpcPort))}},
+		{"sys", "octopos-sysfs", []string{"--grpc-addr", net.JoinHostPort("127.0.0.1", fmt.Sprint(s.grpcPort))}},
+	}
+	for _, item := range mounts {
+		mountPoint := filepath.Join(cfg.MountBase, item.name)
+		if mounted, _ := ssi.IsMountPoint(mountPoint); mounted {
+			if isUsableMount(mountPoint) {
+				continue
+			}
+			log.Printf("Unmounting stale SSI virtual /%s at %s", item.name, mountPoint)
+			if err := lazyUnmount(mountPoint); err != nil {
+				return fmt.Errorf("unmount stale %s mount at %s: %w", item.name, mountPoint, err)
+			}
+		}
+		if err := os.MkdirAll(mountPoint, 0755); err != nil {
+			return fmt.Errorf("create %s mount point: %w", item.name, err)
+		}
+		binPath, err := exec.LookPath(item.bin)
+		if err != nil {
+			return fmt.Errorf("%s is required for SSI mode: %w", item.bin, err)
+		}
+		args := []string{"--mount", mountPoint}
+		args = append(args, item.args...)
+		cmd := exec.CommandContext(s.ctx, binPath, args...)
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		if err := cmd.Start(); err != nil {
+			return fmt.Errorf("start %s: %w", item.bin, err)
+		}
+		s.ssiProcs = append(s.ssiProcs, cmd)
+		if err := waitForUsableMount(mountPoint, 3*time.Second); err != nil {
+			return fmt.Errorf("%s did not mount at %s: %w", item.bin, mountPoint, err)
+		}
+		log.Printf("SSI virtual /%s mounted at %s", item.name, mountPoint)
+	}
+	return nil
+}
+
+func waitForUsableMount(path string, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if mounted, _ := ssi.IsMountPoint(path); mounted && isUsableMount(path) {
+			return nil
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	return fmt.Errorf("timeout")
+}
+
+func isUsableMount(path string) bool {
+	_, err := os.ReadDir(path)
+	return err == nil
+}
+
+func lazyUnmount(path string) error {
+	return exec.Command("umount", "-l", path).Run()
 }
 
 func (s *Server) heartbeatLoop() {
@@ -291,6 +404,7 @@ func (s *Server) resourceUpdateLoop() {
 }
 
 func (s *Server) shutdown() {
+	s.stopSSIVirtualFS()
 	if s.clientPool != nil {
 		s.clientPool.Close()
 	}
@@ -304,4 +418,33 @@ func (s *Server) shutdown() {
 		s.healthServer.Shutdown()
 	}
 	s.cancel()
+}
+
+func (s *Server) stopSSIVirtualFS() {
+	for _, cmd := range s.ssiProcs {
+		if cmd.Process != nil {
+			_ = cmd.Process.Signal(syscall.SIGTERM)
+			done := make(chan struct{})
+			go func(cmd *exec.Cmd) {
+				_ = cmd.Wait()
+				close(done)
+			}(cmd)
+			select {
+			case <-done:
+			case <-time.After(2 * time.Second):
+				_ = cmd.Process.Kill()
+				<-done
+			}
+		}
+	}
+	if !s.config.RequireSSI {
+		return
+	}
+	base := s.ssiConfig().MountBase
+	for _, name := range []string{"proc", "dev", "sys"} {
+		mountPoint := filepath.Join(base, name)
+		if mounted, _ := ssi.IsMountPoint(mountPoint); mounted {
+			_ = lazyUnmount(mountPoint)
+		}
+	}
 }

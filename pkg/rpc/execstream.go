@@ -4,16 +4,23 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
+	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
 
+	"github.com/creack/pty"
 	"github.com/octopos/octopos/pkg/cluster"
+	"github.com/octopos/octopos/pkg/ssi"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
+
+const streamResizeSignal = -1
 
 // ExecStream handles foreground execution with stdin/stdout/stderr attached.
 func (s *ClusterServerImpl) ExecStream(stream Cluster_ExecStreamServer) error {
@@ -37,6 +44,9 @@ func (s *ClusterServerImpl) ExecStream(stream Cluster_ExecStreamServer) error {
 
 	if node.ID != s.nodeID {
 		return s.proxyExecStream(stream, req, jobID, node, reqs)
+	}
+	if req.Tty {
+		return s.executeLocalPTYStream(stream, req, jobID, node, reqs)
 	}
 	return s.executeLocalStream(stream, req, jobID, node, reqs)
 }
@@ -86,7 +96,11 @@ func (s *ClusterServerImpl) executeRemoteBackground(ctx context.Context, req *Ex
 }
 
 func (s *ClusterServerImpl) executeLocalBackground(req *ExecuteRequest, jobID cluster.JobID, node *cluster.NodeInfo, reqs cluster.Requirements) (*ExecuteResponse, error) {
-	cmd := buildCommand(context.Background(), req)
+	cmd, err := s.buildCommand(context.Background(), req)
+	if err != nil {
+		s.failJob(jobID, node.ID, reqs, err.Error())
+		return &ExecuteResponse{JobId: string(jobID), ExitCode: -1, Error: err.Error()}, nil
+	}
 	if err := cmd.Start(); err != nil {
 		s.failJob(jobID, node.ID, reqs, fmt.Sprintf("start: %v", err))
 		return &ExecuteResponse{JobId: string(jobID), ExitCode: -1, Error: fmt.Sprintf("start: %v", err)}, nil
@@ -111,7 +125,11 @@ func (s *ClusterServerImpl) executeLocalStream(stream Cluster_ExecStreamServer, 
 	ctx, cancel := context.WithCancel(stream.Context())
 	defer cancel()
 
-	cmd := buildCommand(ctx, req)
+	cmd, err := s.buildCommand(ctx, req)
+	if err != nil {
+		s.failJob(jobID, node.ID, reqs, err.Error())
+		return sendStreamError(stream, err.Error())
+	}
 	stdinPipe, err := cmd.StdinPipe()
 	if err != nil {
 		s.failJob(jobID, node.ID, reqs, fmt.Sprintf("stdin pipe: %v", err))
@@ -197,6 +215,83 @@ func (s *ClusterServerImpl) executeLocalStream(stream Cluster_ExecStreamServer, 
 
 	exitCode := waitExitCode(cmd.Wait())
 	closeStdin()
+	cancel()
+	wg.Wait()
+
+	s.finishJob(jobID, node.ID, reqs, exitCode)
+	return send(&ExecStreamResponse{Payload: &ExecStreamResponse_ExitCode{ExitCode: exitCode}})
+}
+
+func (s *ClusterServerImpl) executeLocalPTYStream(stream Cluster_ExecStreamServer, req *ExecuteRequest, jobID cluster.JobID, node *cluster.NodeInfo, reqs cluster.Requirements) error {
+	ctx, cancel := context.WithCancel(stream.Context())
+	defer cancel()
+
+	cmd, err := s.buildPTYCommand(ctx, req)
+	if err != nil {
+		s.failJob(jobID, node.ID, reqs, err.Error())
+		return sendStreamError(stream, err.Error())
+	}
+	ptmx, err := pty.StartWithSize(cmd, initialPTYSize(req.Env))
+	if err != nil {
+		s.failJob(jobID, node.ID, reqs, fmt.Sprintf("start pty: %v", err))
+		return sendStreamError(stream, fmt.Sprintf("start pty: %v", err))
+	}
+	defer ptmx.Close()
+
+	globalPID := s.registerProcess(req, jobID, cmd.Process.Pid)
+	s.markJobStarted(jobID)
+	defer s.tracker.Unregister(globalPID)
+
+	var sendMu sync.Mutex
+	send := func(resp *ExecStreamResponse) error {
+		sendMu.Lock()
+		defer sendMu.Unlock()
+		return stream.Send(resp)
+	}
+
+	if err := send(&ExecStreamResponse{Payload: &ExecStreamResponse_Exec{
+		Exec: &ExecuteResponse{
+			JobId:     string(jobID),
+			GlobalPid: uint64(globalPID),
+		},
+	}}); err != nil {
+		cancel()
+		s.failJob(jobID, node.ID, reqs, err.Error())
+		return err
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go copyStreamOutput(&wg, ptmx, func(data []byte) error {
+		return send(&ExecStreamResponse{Payload: &ExecStreamResponse_StdoutData{StdoutData: data}})
+	})
+
+	go func() {
+		for {
+			msg, err := stream.Recv()
+			if err != nil {
+				return
+			}
+			switch payload := msg.Payload.(type) {
+			case *ExecStreamRequest_StdinData:
+				if len(payload.StdinData) == 0 {
+					continue
+				}
+				if _, err := ptmx.Write(payload.StdinData); err != nil {
+					return
+				}
+			case *ExecStreamRequest_CloseStdin:
+				return
+			case *ExecStreamRequest_Signal:
+				if handlePTYSignal(ptmx, cmd, payload.Signal) {
+					continue
+				}
+			}
+		}
+	}()
+
+	exitCode := waitExitCode(cmd.Wait())
+	_ = ptmx.Close()
 	cancel()
 	wg.Wait()
 
@@ -317,6 +412,9 @@ func (s *ClusterServerImpl) scheduleJob(req *ExecuteRequest) (*cluster.NodeInfo,
 	if req.JobId == "" {
 		req.JobId = fmt.Sprintf("job-%d", time.Now().UnixNano())
 	}
+	if err := s.normalizeScheduledRequest(req); err != nil {
+		return nil, cluster.Requirements{}, cluster.JobID(req.JobId), err
+	}
 	if req.Resources == nil {
 		req.Resources = &Requirements{}
 	}
@@ -427,14 +525,129 @@ func (s *ClusterServerImpl) followRemoteJob(ctx context.Context, client ClusterC
 	}
 }
 
-func buildCommand(ctx context.Context, req *ExecuteRequest) *exec.Cmd {
+func (s *ClusterServerImpl) buildCommand(ctx context.Context, req *ExecuteRequest) (*exec.Cmd, error) {
+	if s.ssiConfig.Required {
+		return s.buildSSICommand(ctx, req, true)
+	}
+	dir, err := s.localExecDir(req)
+	if err != nil {
+		return nil, err
+	}
 	cmd := exec.CommandContext(ctx, req.Command[0], req.Command[1:]...)
-	cmd.Dir = req.Cwd
+	cmd.Dir = dir
 	if len(req.Env) > 0 {
-		cmd.Env = req.Env
+		cmd.Env = append(os.Environ(), req.Env...)
 	}
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	return cmd
+	return cmd, nil
+}
+
+func (s *ClusterServerImpl) buildPTYCommand(ctx context.Context, req *ExecuteRequest) (*exec.Cmd, error) {
+	if s.ssiConfig.Required {
+		return s.buildSSICommand(ctx, req, false)
+	}
+	dir, err := s.localExecDir(req)
+	if err != nil {
+		return nil, err
+	}
+	cmd := exec.CommandContext(ctx, req.Command[0], req.Command[1:]...)
+	cmd.Dir = dir
+	if len(req.Env) > 0 {
+		cmd.Env = append(os.Environ(), req.Env...)
+	}
+	return cmd, nil
+}
+
+func (s *ClusterServerImpl) buildSSICommand(ctx context.Context, req *ExecuteRequest, setProcessGroup bool) (*exec.Cmd, error) {
+	cfg := s.ssiConfig.WithDefaults()
+	if err := ssi.Validate(cfg); err != nil {
+		return nil, fmt.Errorf("SSI is not ready on node %s: %w", s.nodeID, err)
+	}
+	hostDir, logicalDir, err := ssi.ResolveClusterCWD(cfg.ClusterRoot, cfg.RootFS, req.Cwd)
+	if err != nil {
+		return nil, err
+	}
+	info, err := os.Stat(hostDir)
+	if err != nil {
+		return nil, fmt.Errorf("cwd %s is unavailable in SSI root: %w", logicalDir, err)
+	}
+	if !info.IsDir() {
+		return nil, fmt.Errorf("cwd %s is not a directory in SSI root", logicalDir)
+	}
+
+	args := []string{
+		"--rootfs", cfg.RootFS,
+		"--mount-base", cfg.MountBase,
+		"--cwd", logicalDir,
+		"--",
+	}
+	args = append(args, req.Command...)
+	cmd := exec.CommandContext(ctx, cfg.Executor, args...)
+	cmd.Env = append(os.Environ(), req.Env...)
+	if setProcessGroup {
+		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	}
+	return cmd, nil
+}
+
+func (s *ClusterServerImpl) normalizeScheduledRequest(req *ExecuteRequest) error {
+	if !s.ssiConfig.Required {
+		return nil
+	}
+	cfg := s.ssiConfig.WithDefaults()
+	_, logicalDir, err := ssi.ResolveClusterCWD(cfg.ClusterRoot, cfg.RootFS, req.Cwd)
+	if err != nil {
+		return err
+	}
+	req.Cwd = logicalDir
+	req.Env = appendMissingEnv(req.Env,
+		"OCTOPOS_SSI=1",
+		"OCTOPOS_CLUSTER_ROOT=/",
+		"OCTOPOS_CLUSTER_HOSTNAME="+ssi.DefaultHostname,
+		"OCTOPOS_HOST_CLUSTER_ROOT="+cfg.ClusterRoot,
+		"OCTOPOS_NODE_ID="+string(s.nodeID),
+	)
+	return nil
+}
+
+func (s *ClusterServerImpl) localExecDir(req *ExecuteRequest) (string, error) {
+	if !s.ssiConfig.Required {
+		return req.Cwd, nil
+	}
+	cfg := s.ssiConfig.WithDefaults()
+	if err := ssi.Validate(cfg); err != nil {
+		return "", fmt.Errorf("SSI is not ready on node %s: %w", s.nodeID, err)
+	}
+	hostDir, _, err := ssi.ResolveClusterCWD(cfg.ClusterRoot, cfg.RootFS, req.Cwd)
+	if err != nil {
+		return "", err
+	}
+	info, err := os.Stat(hostDir)
+	if err != nil {
+		return "", fmt.Errorf("cwd %s is unavailable in SSI root: %w", req.Cwd, err)
+	}
+	if !info.IsDir() {
+		return "", fmt.Errorf("cwd %s is not a directory in SSI root", req.Cwd)
+	}
+	return hostDir, nil
+}
+
+func appendMissingEnv(env []string, values ...string) []string {
+	seen := make(map[string]bool, len(env))
+	for _, entry := range env {
+		key, _, ok := strings.Cut(entry, "=")
+		if ok {
+			seen[key] = true
+		}
+	}
+	for _, entry := range values {
+		key, _, ok := strings.Cut(entry, "=")
+		if ok && seen[key] {
+			continue
+		}
+		env = append(env, entry)
+	}
+	return env
 }
 
 func cloneExecuteRequestForNode(req *ExecuteRequest, nodeID cluster.NodeID) *ExecuteRequest {
@@ -485,4 +698,48 @@ func waitExitCode(err error) int32 {
 
 func sendStreamError(stream Cluster_ExecStreamServer, msg string) error {
 	return stream.Send(&ExecStreamResponse{Payload: &ExecStreamResponse_Error{Error: msg}})
+}
+
+func initialPTYSize(env []string) *pty.Winsize {
+	size := &pty.Winsize{Rows: 24, Cols: 80}
+	for _, entry := range env {
+		key, value, ok := strings.Cut(entry, "=")
+		if !ok {
+			continue
+		}
+		switch key {
+		case "OCTOPOS_TTY_ROWS":
+			if rows, err := strconv.ParseUint(value, 10, 16); err == nil && rows > 0 {
+				size.Rows = uint16(rows)
+			}
+		case "OCTOPOS_TTY_COLS":
+			if cols, err := strconv.ParseUint(value, 10, 16); err == nil && cols > 0 {
+				size.Cols = uint16(cols)
+			}
+		}
+	}
+	return size
+}
+
+func handlePTYSignal(ptmx *os.File, cmd *exec.Cmd, signal *SignalRequest) bool {
+	if signal == nil {
+		return true
+	}
+	if signal.Signal == streamResizeSignal {
+		rows, cols := decodePTYResize(signal.GlobalPid)
+		if rows > 0 && cols > 0 {
+			_ = pty.Setsize(ptmx, &pty.Winsize{Rows: rows, Cols: cols})
+		}
+		return true
+	}
+	if cmd.Process != nil {
+		_ = syscall.Kill(-cmd.Process.Pid, syscall.Signal(signal.Signal))
+	}
+	return true
+}
+
+func decodePTYResize(encoded uint64) (uint16, uint16) {
+	rows := uint16(encoded >> 32)
+	cols := uint16(encoded)
+	return rows, cols
 }

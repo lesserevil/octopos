@@ -7,9 +7,13 @@ import (
 	"log"
 	"os"
 	"syscall"
+	"time"
 
 	"github.com/hanwen/go-fuse/v2/fs"
 	"github.com/hanwen/go-fuse/v2/fuse"
+	octopospb "github.com/octopos/octopos/pkg/rpc"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
 )
 
 var (
@@ -17,6 +21,7 @@ var (
 	cpuCount    = flag.Int("cpus", 8, "Number of CPUs to expose")
 	memoryBytes = flag.Int64("memory", 34359738368, "Memory in bytes (default 32GB)")
 	gpuCount    = flag.Int("gpus", 0, "Number of GPUs")
+	grpcAddr    = flag.String("grpc-addr", "", "octoposd gRPC address for cluster resource data")
 )
 
 type sysRoot struct {
@@ -24,6 +29,7 @@ type sysRoot struct {
 	cpus   int
 	memory int64
 	gpus   int
+	client octopospb.ClusterClient
 }
 
 type sysDir struct {
@@ -39,6 +45,36 @@ type sysFile struct {
 
 func newSysRoot(cpus int, memory int64, gpus int) *sysRoot {
 	return &sysRoot{cpus: cpus, memory: memory, gpus: gpus}
+}
+
+func (r *sysRoot) resources(ctx context.Context) (int, int64, int) {
+	if r.client == nil {
+		return r.cpus, r.memory, r.gpus
+	}
+	callCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	resp, err := r.client.GetClusterState(callCtx, &octopospb.GetClusterStateRequest{})
+	if err != nil {
+		return r.cpus, r.memory, r.gpus
+	}
+	var cpus int64
+	var memory int64
+	var gpus int32
+	for _, node := range resp.Nodes {
+		if node.Capacity == nil {
+			continue
+		}
+		cpus += node.Capacity.CpuMillicores / 1000
+		memory += node.Capacity.MemoryBytes
+		gpus += node.Capacity.GpuCount
+	}
+	if cpus <= 0 {
+		cpus = int64(r.cpus)
+	}
+	if memory <= 0 {
+		memory = r.memory
+	}
+	return int(cpus), memory, int(gpus)
 }
 
 func (r *sysRoot) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (*fs.Inode, syscall.Errno) {
@@ -120,14 +156,15 @@ func (d *sysDir) Readdir(ctx context.Context) (fs.DirStream, syscall.Errno) {
 		}
 		return fs.NewListDirStream(entries), 0
 	case "cpu":
-		entries := make([]fuse.DirEntry, root.cpus+1)
-		for i := 0; i < root.cpus; i++ {
+		cpus, _, _ := root.resources(ctx)
+		entries := make([]fuse.DirEntry, cpus+1)
+		for i := 0; i < cpus; i++ {
 			entries[i] = fuse.DirEntry{
 				Name: fmt.Sprintf("cpu%d", i),
 				Mode: syscall.S_IFDIR,
 			}
 		}
-		entries[root.cpus] = fuse.DirEntry{Name: "online", Mode: syscall.S_IFREG}
+		entries[cpus] = fuse.DirEntry{Name: "online", Mode: syscall.S_IFREG}
 		return fs.NewListDirStream(entries), 0
 	}
 
@@ -168,7 +205,12 @@ func (f *sysFile) content() []byte {
 	case "version":
 		return []byte("#1 OctopOS SMP PREEMPT_DYNAMIC\n")
 	case "online":
-		return []byte("0-7\n")
+		root := f.Root().Operations().(*sysRoot)
+		cpus, _, _ := root.resources(context.Background())
+		if cpus <= 1 {
+			return []byte("0\n")
+		}
+		return []byte(fmt.Sprintf("0-%d\n", cpus-1))
 	}
 	return nil
 }
@@ -180,7 +222,20 @@ func main() {
 		log.Fatalf("mkdir mount point: %v", err)
 	}
 
+	var client octopospb.ClusterClient
+	var conn *grpc.ClientConn
+	if *grpcAddr != "" {
+		var err error
+		conn, err = grpc.Dial(*grpcAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+		if err != nil {
+			log.Fatalf("connect to octoposd: %v", err)
+		}
+		defer conn.Close()
+		client = octopospb.NewClusterClient(conn)
+	}
+
 	root := newSysRoot(*cpuCount, *memoryBytes, *gpuCount)
+	root.client = client
 
 	server, err := fs.Mount(*mountPoint, root, &fs.Options{
 		MountOptions: fuse.MountOptions{

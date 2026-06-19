@@ -12,6 +12,7 @@ import (
 	"time"
 
 	octopospb "github.com/octopos/octopos/pkg/rpc"
+	"github.com/octopos/octopos/pkg/ssi"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 )
@@ -30,6 +31,11 @@ type provisionConfig struct {
 	BinDir        string
 	EBPFEnabled   bool
 	FUSEEnabled   bool
+	ClusterRoot   string
+	SSIRootFS     string
+	RequireSSI    bool
+	ClusterFSMeta string
+	ClusterFSOpts string
 }
 
 func (p *provisionConfig) sshCmd(cmd string) *exec.Cmd {
@@ -89,6 +95,22 @@ func (p *provisionConfig) runOutput(cmd *exec.Cmd) (string, error) {
 	return strings.TrimSpace(out.String()), nil
 }
 
+func (p *provisionConfig) installRemoteClusterFSService() error {
+	tmpSvc := "/tmp/octopos-clusterfs.service"
+	if err := os.WriteFile(tmpSvc, []byte(clusterFSUnitContent(p.ClusterRoot, p.ClusterFSMeta, p.ClusterFSOpts)), 0644); err != nil {
+		return fmt.Errorf("write clusterfs service file: %w", err)
+	}
+	defer os.Remove(tmpSvc)
+	if err := p.run("scp clusterfs systemd unit", p.scpCmd(tmpSvc, "/tmp/octopos-clusterfs.service")); err != nil {
+		return err
+	}
+	if err := p.run("install clusterfs systemd unit",
+		p.sshCmd("sudo cp /tmp/octopos-clusterfs.service /etc/systemd/system/ && sudo systemctl daemon-reload")); err != nil {
+		return err
+	}
+	return nil
+}
+
 func runLocalOutput(cmd *exec.Cmd) (string, error) {
 	var out bytes.Buffer
 	cmd.Stdout = &out
@@ -118,6 +140,13 @@ func localInterfaceIPv4(name string) (string, error) {
 }
 
 func provisionNode(cfg *provisionConfig) error {
+	ssiCfg := ssi.Config{ClusterRoot: cfg.ClusterRoot, RootFS: cfg.SSIRootFS, Required: cfg.RequireSSI}.WithDefaults()
+	cfg.ClusterRoot = ssiCfg.ClusterRoot
+	cfg.SSIRootFS = ssiCfg.RootFS
+	if cfg.RequireSSI {
+		cfg.FUSEEnabled = true
+	}
+
 	fmt.Printf("Provisioning node %s (WG: %s, SSH: %s@%s)...\n",
 		cfg.NodeID, cfg.WgIP, cfg.SSHUser, cfg.Address)
 
@@ -137,6 +166,18 @@ func provisionNode(cfg *provisionConfig) error {
 	for _, cmd := range installCMDs {
 		if err := cfg.run(cmd, cfg.sshCmd(cmd)); err != nil {
 			return err
+		}
+	}
+	if cfg.RequireSSI {
+		if cfg.ClusterFSMeta != "" {
+			if _, err := cfg.runOutput(cfg.sshCmd("command -v juicefs")); err != nil {
+				return fmt.Errorf("juicefs is required on %s for strict SSI clusterfs mounts", cfg.Address)
+			}
+			if err := cfg.installRemoteClusterFSService(); err != nil {
+				return err
+			}
+		} else if err := cfg.run("verify octopos-clusterfs.service", cfg.sshCmd("systemctl cat octopos-clusterfs.service >/dev/null")); err != nil {
+			return fmt.Errorf("strict SSI requires octopos-clusterfs.service on %s; pass --clusterfs-meta or install the service first: %w", cfg.Address, err)
 		}
 	}
 
@@ -213,6 +254,7 @@ PersistentKeepalive = 25
 	buildTargets := []struct{ bin, pkg string }{
 		{"octoposd", "./cmd/octoposd"},
 		{"octoposctl", "./cmd/octoposctl"},
+		{"octopos-exec", "./cmd/octopos-exec"},
 	}
 	for _, t := range buildTargets {
 		if err := cfg.run(fmt.Sprintf("go build %s", t.bin),
@@ -247,8 +289,8 @@ PersistentKeepalive = 25
 
 	// 6. Deploy binaries to node
 	fmt.Println("[5/7] Deploying binaries...")
-	binaries := []string{"octoposd", "octoposctl"}
-	if cfg.EBPFEnabled {
+	binaries := []string{"octoposd", "octoposctl", "octopos-exec"}
+	if cfg.FUSEEnabled {
 		binaries = append(binaries, "octopos-procfs", "octopos-devfs", "octopos-sysfs")
 	}
 	for _, bin := range binaries {
@@ -276,18 +318,19 @@ PersistentKeepalive = 25
 
 	svcContent := fmt.Sprintf(`[Unit]
 Description=OctopOS Cluster Daemon
-After=network.target wg-quick@wg-octopos.service
-Wants=wg-quick@wg-octopos.service
+After=network.target wg-quick@wg-octopos.service octopos-clusterfs.service
+Wants=wg-quick@wg-octopos.service octopos-clusterfs.service
+Requires=octopos-clusterfs.service
 
 [Service]
-ExecStart=/usr/local/bin/octoposd --node-id %s --grpc-addr 0.0.0.0:%d --wg-interface wg-octopos%s
+ExecStart=/usr/local/bin/octoposd --node-id %s --grpc-addr 0.0.0.0:%d --wg-interface wg-octopos --cluster-root %s --ssi-rootfs %s --require-ssi=%t%s
 Restart=always
 RestartSec=5
 User=root
 
 [Install]
 WantedBy=multi-user.target
-`, cfg.NodeID, cfg.GrpcPort, peerArgs)
+`, cfg.NodeID, cfg.GrpcPort, cfg.ClusterRoot, cfg.SSIRootFS, cfg.RequireSSI, peerArgs)
 
 	tmpSvc := "/tmp/octoposd.service"
 	if err := os.WriteFile(tmpSvc, []byte(svcContent), 0644); err != nil {
@@ -330,9 +373,17 @@ WantedBy=multi-user.target
 	fmt.Println("[7/7] Starting services...")
 	startCommands := []string{
 		"sudo systemctl enable wg-quick@wg-octopos 2>/dev/null; sudo wg-quick up wg-octopos 2>/dev/null || true",
+	}
+	if cfg.RequireSSI {
+		startCommands = append(startCommands,
+			"sudo systemctl enable octopos-clusterfs",
+			"sudo systemctl start octopos-clusterfs",
+		)
+	}
+	startCommands = append(startCommands,
 		"sudo systemctl enable octoposd",
 		"sudo systemctl start octoposd",
-	}
+	)
 	for _, cmd := range startCommands {
 		if err := cfg.run(cmd, cfg.sshCmd(cmd)); err != nil {
 			return err
@@ -396,6 +447,13 @@ func registerNodeWithCluster(cfg *provisionConfig) error {
 	fmt.Sscanf(gpus, "%d", &gpuCount)
 	cpuMillicores *= 1000 // nproc gives cores, convert to millicores
 
+	labels := map[string]string{"role": "compute"}
+	if cfg.RequireSSI {
+		labels[ssi.LabelReady] = "true"
+		labels[ssi.LabelClusterRoot] = cfg.ClusterRoot
+		labels[ssi.LabelRootFS] = cfg.SSIRootFS
+	}
+
 	resp, err := client.RegisterNode(ctx, &octopospb.RegisterNodeRequest{
 		NodeId:  cfg.NodeID,
 		Address: cfg.WgIP,
@@ -404,7 +462,7 @@ func registerNodeWithCluster(cfg *provisionConfig) error {
 			MemoryBytes:   memoryBytes,
 			GpuCount:      int32(gpuCount),
 		},
-		Labels: map[string]string{"role": "compute"},
+		Labels: labels,
 	})
 	if err != nil {
 		return fmt.Errorf("RegisterNode RPC: %w", err)

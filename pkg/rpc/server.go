@@ -9,6 +9,7 @@ import (
 
 	"github.com/octopos/octopos/pkg/cluster"
 	"github.com/octopos/octopos/pkg/scheduler"
+	"github.com/octopos/octopos/pkg/ssi"
 	"github.com/octopos/octopos/pkg/tracker"
 	"google.golang.org/grpc"
 )
@@ -23,6 +24,7 @@ type ClusterServerImpl struct {
 	scheduler       *scheduler.Scheduler
 	tracker         *tracker.Tracker
 	clientPool      *ClusterClientPool
+	ssiConfig       ssi.Config
 	localPIDCounter uint64
 	mu              sync.RWMutex
 }
@@ -34,8 +36,16 @@ type ClusterState struct {
 	jobs     map[cluster.JobID]*cluster.JobInfo
 }
 
+type ServerOptions struct {
+	SSI ssi.Config
+}
+
 // NewClusterServerImpl creates a new cluster gRPC server implementation
 func NewClusterServerImpl(nodeID cluster.NodeID, sched *scheduler.Scheduler, trk *tracker.Tracker, pool *ClusterClientPool) *ClusterServerImpl {
+	return NewClusterServerImplWithOptions(nodeID, sched, trk, pool, ServerOptions{})
+}
+
+func NewClusterServerImplWithOptions(nodeID cluster.NodeID, sched *scheduler.Scheduler, trk *tracker.Tracker, pool *ClusterClientPool, opts ServerOptions) *ClusterServerImpl {
 	server := &ClusterServerImpl{
 		nodeID: nodeID,
 		cluster: &ClusterState{
@@ -46,6 +56,7 @@ func NewClusterServerImpl(nodeID cluster.NodeID, sched *scheduler.Scheduler, trk
 		scheduler:       sched,
 		tracker:         trk,
 		clientPool:      pool,
+		ssiConfig:       opts.SSI.WithDefaults(),
 		localPIDCounter: 0,
 	}
 	if sched != nil {
@@ -540,7 +551,11 @@ func int32SliceToProto(s []int) []int32 {
 
 // RegisterClusterServerImpl registers the cluster server implementation with gRPC
 func RegisterClusterServerImpl(grpcServer *grpc.Server, nodeID cluster.NodeID, sched *scheduler.Scheduler, trk *tracker.Tracker, grpcPort int32, pool *ClusterClientPool) {
-	server := NewClusterServerImpl(nodeID, sched, trk, pool)
+	RegisterClusterServerImplWithOptions(grpcServer, nodeID, sched, trk, grpcPort, pool, ServerOptions{})
+}
+
+func RegisterClusterServerImplWithOptions(grpcServer *grpc.Server, nodeID cluster.NodeID, sched *scheduler.Scheduler, trk *tracker.Tracker, grpcPort int32, pool *ClusterClientPool, opts ServerOptions) {
+	server := NewClusterServerImplWithOptions(nodeID, sched, trk, pool, opts)
 	server.grpcPort = grpcPort
 	RegisterClusterServer(grpcServer, server)
 }
