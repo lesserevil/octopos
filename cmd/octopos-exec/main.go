@@ -17,6 +17,9 @@ var (
 	mountBase  = flag.String("mount-base", ssi.DefaultMountBase, "SSI virtual filesystem mount base")
 	cwd        = flag.String("cwd", "/", "Working directory inside the SSI root")
 	requireVFS = flag.Bool("require-vfs", true, "Require virtual /proc and /sys mounts")
+
+	mknod = unix.Mknod
+	chmod = os.Chmod
 )
 
 func main() {
@@ -124,11 +127,7 @@ func mountPrivateDev(target string) error {
 			return fmt.Errorf("create /dev/%s: %w", dir, err)
 		}
 	}
-	devices := []struct {
-		name         string
-		mode         uint32
-		major, minor uint32
-	}{
+	devices := []deviceNode{
 		{"null", 0666, 1, 3},
 		{"zero", 0666, 1, 5},
 		{"full", 0666, 1, 7},
@@ -138,10 +137,8 @@ func mountPrivateDev(target string) error {
 		{"kvm", 0666, 10, 232},
 	}
 	for _, dev := range devices {
-		path := filepath.Join(target, dev.name)
-		mode := uint32(unix.S_IFCHR) | dev.mode
-		if err := unix.Mknod(path, mode, int(unix.Mkdev(dev.major, dev.minor))); err != nil && err != unix.EEXIST {
-			return fmt.Errorf("create /dev/%s: %w", dev.name, err)
+		if err := createDeviceNode(filepath.Join(target, dev.name), dev); err != nil {
+			return err
 		}
 	}
 	if err := unix.Mount("devpts", filepath.Join(target, "pts"), "devpts", unix.MS_NOSUID|unix.MS_NOEXEC, "newinstance,ptmxmode=0666,mode=0620"); err != nil {
@@ -165,6 +162,23 @@ func mountPrivateDev(target string) error {
 	}
 	if err := unix.Mount("tmpfs", shm, "tmpfs", unix.MS_NOSUID|unix.MS_NODEV, "mode=1777,size=64m"); err != nil {
 		return fmt.Errorf("mount /dev/shm: %w", err)
+	}
+	return nil
+}
+
+type deviceNode struct {
+	name         string
+	mode         uint32
+	major, minor uint32
+}
+
+func createDeviceNode(path string, dev deviceNode) error {
+	mode := uint32(unix.S_IFCHR) | dev.mode
+	if err := mknod(path, mode, int(unix.Mkdev(dev.major, dev.minor))); err != nil && err != unix.EEXIST {
+		return fmt.Errorf("create /dev/%s: %w", dev.name, err)
+	}
+	if err := chmod(path, os.FileMode(dev.mode)); err != nil {
+		return fmt.Errorf("chmod /dev/%s: %w", dev.name, err)
 	}
 	return nil
 }
