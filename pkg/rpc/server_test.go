@@ -340,6 +340,93 @@ func TestStrictSSIRequestUsesConfiguredRoot(t *testing.T) {
 	}
 }
 
+func TestStrictSSIEnvIsAuthoritativePerExecutingNode(t *testing.T) {
+	root := t.TempDir()
+	for _, dir := range []string{"usr/bin", "usr/lib"} {
+		if err := os.MkdirAll(filepath.Join(root, dir), 0755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	executor := filepath.Join(t.TempDir(), "octopos-exec")
+	if err := os.WriteFile(executor, []byte("#!/bin/sh\n"), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	server := NewClusterServerImplWithOptions(
+		cluster.NodeID("worker-node"),
+		scheduler.NewScheduler(&scheduler.BinPackPolicy{}),
+		tracker.NewTracker(),
+		nil,
+		ServerOptions{SSI: ssi.Config{
+			ClusterRoot:  root,
+			RootFS:       root,
+			Executor:     executor,
+			RequireMount: false,
+			Required:     true,
+		}},
+	)
+
+	req := &ExecuteRequest{
+		Command: []string{"env"},
+		Env: []string{
+			"OCTOPOS_NODE_ID=ingress-node",
+			"OCTOPOS_SSI=0",
+			"USER_VALUE=preserved",
+		},
+	}
+	if err := server.normalizeScheduledRequest(req); err != nil {
+		t.Fatalf("normalizeScheduledRequest: %v", err)
+	}
+
+	if got, want := envValue(req.Env, "OCTOPOS_NODE_ID"), "worker-node"; got != want {
+		t.Fatalf("OCTOPOS_NODE_ID = %q, want %q; env=%v", got, want, req.Env)
+	}
+	if got, want := envValue(req.Env, "OCTOPOS_SSI"), "1"; got != want {
+		t.Fatalf("OCTOPOS_SSI = %q, want %q; env=%v", got, want, req.Env)
+	}
+	if got, want := envValue(req.Env, "USER_VALUE"), "preserved"; got != want {
+		t.Fatalf("USER_VALUE = %q, want %q; env=%v", got, want, req.Env)
+	}
+}
+
+func TestCloneExecuteRequestForNodePinsNodeAndPreservesAffinity(t *testing.T) {
+	req := &ExecuteRequest{
+		Resources: &Requirements{
+			NodeAffinity: map[string]string{
+				"rack":    "r1",
+				"node_id": "old-node",
+			},
+		},
+		PipeMap: map[int32]int32{1: 2},
+	}
+
+	forwarded := cloneExecuteRequestForNode(req, cluster.NodeID("new-node"))
+
+	if got, want := forwarded.Resources.NodeAffinity["node_id"], "new-node"; got != want {
+		t.Fatalf("forwarded node_id = %q, want %q", got, want)
+	}
+	if got, want := forwarded.Resources.NodeAffinity["rack"], "r1"; got != want {
+		t.Fatalf("forwarded rack = %q, want %q", got, want)
+	}
+	if got, want := req.Resources.NodeAffinity["node_id"], "old-node"; got != want {
+		t.Fatalf("original node_id mutated to %q, want %q", got, want)
+	}
+	forwarded.PipeMap[1] = 3
+	if got, want := req.PipeMap[1], int32(2); got != want {
+		t.Fatalf("original pipe map mutated to %d, want %d", got, want)
+	}
+}
+
+func envValue(env []string, key string) string {
+	prefix := key + "="
+	for _, entry := range env {
+		if strings.HasPrefix(entry, prefix) {
+			return strings.TrimPrefix(entry, prefix)
+		}
+	}
+	return ""
+}
+
 func newTestClusterClient(t *testing.T) (ClusterClient, func()) {
 	t.Helper()
 

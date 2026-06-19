@@ -600,7 +600,7 @@ func (s *ClusterServerImpl) normalizeScheduledRequest(req *ExecuteRequest) error
 		return err
 	}
 	req.Cwd = logicalDir
-	req.Env = appendMissingEnv(req.Env,
+	req.Env = upsertEnv(req.Env,
 		"OCTOPOS_SSI=1",
 		"OCTOPOS_CLUSTER_ROOT=/",
 		"OCTOPOS_CLUSTER_HOSTNAME="+ssi.DefaultHostname,
@@ -632,30 +632,48 @@ func (s *ClusterServerImpl) localExecDir(req *ExecuteRequest) (string, error) {
 	return hostDir, nil
 }
 
-func appendMissingEnv(env []string, values ...string) []string {
-	seen := make(map[string]bool, len(env))
+func upsertEnv(env []string, values ...string) []string {
+	overrides := make(map[string]string, len(values))
+	for _, entry := range values {
+		key, _, ok := strings.Cut(entry, "=")
+		if !ok {
+			continue
+		}
+		overrides[key] = entry
+	}
+
+	out := make([]string, 0, len(env)+len(values))
 	for _, entry := range env {
 		key, _, ok := strings.Cut(entry, "=")
-		if ok {
-			seen[key] = true
+		if ok && overrides[key] != "" {
+			continue
 		}
+		out = append(out, entry)
 	}
 	for _, entry := range values {
 		key, _, ok := strings.Cut(entry, "=")
-		if ok && seen[key] {
+		if !ok || overrides[key] == "" {
 			continue
 		}
-		env = append(env, entry)
+		out = append(out, entry)
 	}
-	return env
+	return out
 }
 
 func cloneExecuteRequestForNode(req *ExecuteRequest, nodeID cluster.NodeID) *ExecuteRequest {
 	forwarded := *req
 	if req.Resources != nil {
 		resources := *req.Resources
-		resources.NodeAffinity = map[string]string{"node_id": string(nodeID)}
+		resources.NodeAffinity = make(map[string]string, len(req.Resources.NodeAffinity)+1)
+		for key, value := range req.Resources.NodeAffinity {
+			resources.NodeAffinity[key] = value
+		}
+		resources.NodeAffinity["node_id"] = string(nodeID)
 		forwarded.Resources = &resources
+	} else {
+		forwarded.Resources = &Requirements{
+			NodeAffinity: map[string]string{"node_id": string(nodeID)},
+		}
 	}
 	if req.PipeMap != nil {
 		forwarded.PipeMap = make(map[int32]int32, len(req.PipeMap))

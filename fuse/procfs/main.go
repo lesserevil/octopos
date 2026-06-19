@@ -71,7 +71,10 @@ func (r *procRoot) Lookup(ctx context.Context, name string, out *fuse.EntryOut) 
 	}
 
 	switch name {
-	case "cpuinfo", "meminfo", "uptime", "stat", "loadavg", "version", "self":
+	case "self":
+		child := &procDir{info: procInfo{pid: uint32(os.Getpid()), ppid: uint32(os.Getppid()), comm: "self", cmdline: "self"}}
+		return r.NewInode(ctx, child, fs.StableAttr{Mode: syscall.S_IFDIR}), 0
+	case "cpuinfo", "meminfo", "uptime", "stat", "loadavg", "version", "mounts", "filesystems":
 		child := &procFile{name: name, root: r}
 		return r.NewInode(ctx, child, fs.StableAttr{Mode: syscall.S_IFREG}), 0
 	}
@@ -81,13 +84,15 @@ func (r *procRoot) Lookup(ctx context.Context, name string, out *fuse.EntryOut) 
 
 func (r *procRoot) Readdir(ctx context.Context) (fs.DirStream, syscall.Errno) {
 	entries := []fuse.DirEntry{
-		{Name: "self", Mode: syscall.S_IFLNK},
+		{Name: "self", Mode: syscall.S_IFDIR},
 		{Name: "cpuinfo", Mode: syscall.S_IFREG},
 		{Name: "meminfo", Mode: syscall.S_IFREG},
 		{Name: "uptime", Mode: syscall.S_IFREG},
 		{Name: "stat", Mode: syscall.S_IFREG},
 		{Name: "loadavg", Mode: syscall.S_IFREG},
 		{Name: "version", Mode: syscall.S_IFREG},
+		{Name: "mounts", Mode: syscall.S_IFREG},
+		{Name: "filesystems", Mode: syscall.S_IFREG},
 	}
 	for pid := range r.pidMap {
 		entries = append(entries, fuse.DirEntry{
@@ -165,7 +170,7 @@ func (r *procRoot) clusterMemory(ctx context.Context) uint64 {
 
 func (d *procDir) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (*fs.Inode, syscall.Errno) {
 	switch name {
-	case "status", "comm", "cmdline", "exe":
+	case "status", "comm", "cmdline", "exe", "mounts", "mountinfo", "mountstats":
 		child := &procFile{name: name, info: d.info}
 		return d.NewInode(ctx, child, fs.StableAttr{Mode: syscall.S_IFREG}), 0
 	case "fd", "fdinfo", "ns":
@@ -181,6 +186,9 @@ func (d *procDir) Readdir(ctx context.Context) (fs.DirStream, syscall.Errno) {
 		{Name: "comm", Mode: syscall.S_IFREG},
 		{Name: "cmdline", Mode: syscall.S_IFREG},
 		{Name: "exe", Mode: syscall.S_IFLNK},
+		{Name: "mounts", Mode: syscall.S_IFREG},
+		{Name: "mountinfo", Mode: syscall.S_IFREG},
+		{Name: "mountstats", Mode: syscall.S_IFREG},
 		{Name: "fd", Mode: syscall.S_IFDIR},
 		{Name: "ns", Mode: syscall.S_IFDIR},
 	}
@@ -227,6 +235,24 @@ func (f *procFile) content() []byte {
 		return []byte("0.00 0.00 0.00 1/1 1\n")
 	case "version":
 		return []byte("OctopOS virtual kernel version 6.8.0-octopos\n")
+	case "mounts":
+		return []byte("JuiceFS:octopos / fuse.juicefs rw,relatime 0 0\n" +
+			"octopos-procfs /proc proc rw,nosuid,nodev,noexec,relatime 0 0\n" +
+			"octopos-sysfs /sys sysfs rw,nosuid,nodev,noexec,relatime 0 0\n" +
+			"tmpfs /dev tmpfs rw,nosuid,mode=755 0 0\n" +
+			"devpts /dev/pts devpts rw,nosuid,noexec,relatime,mode=620,ptmxmode=666 0 0\n" +
+			"shm /dev/shm tmpfs rw,nosuid,nodev,noexec,relatime 0 0\n")
+	case "mountinfo":
+		return []byte("1 0 0:1 / / rw,relatime - fuse.juicefs JuiceFS:octopos rw\n" +
+			"2 1 0:2 / /proc rw,nosuid,nodev,noexec,relatime - proc octopos-procfs rw\n" +
+			"3 1 0:3 / /sys rw,nosuid,nodev,noexec,relatime - sysfs octopos-sysfs rw\n" +
+			"4 1 0:4 / /dev rw,nosuid - tmpfs tmpfs rw,mode=755\n" +
+			"5 4 0:5 / /dev/pts rw,nosuid,noexec,relatime - devpts devpts rw,mode=620,ptmxmode=666\n" +
+			"6 4 0:6 / /dev/shm rw,nosuid,nodev,noexec,relatime - tmpfs shm rw\n")
+	case "mountstats":
+		return []byte("")
+	case "filesystems":
+		return []byte("nodev\tsysfs\nnodev\tproc\nnodev\tdevpts\nnodev\ttmpfs\nfuse.juicefs\n")
 	case "status":
 		return []byte(fmt.Sprintf("Name:\t%s\nState:\t%s\nPid:\t%d\nPPid:\t%d\nUid:\t%d\nVmRSS:\t%d kB\n",
 			f.info.comm, f.info.state, f.info.pid, f.info.ppid, f.info.uid, f.info.rss/1024))

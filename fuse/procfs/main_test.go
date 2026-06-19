@@ -36,7 +36,7 @@ func TestProcRootReaddirIncludesStaticFilesAndProcesses(t *testing.T) {
 	stream, errno := root.Readdir(context.Background())
 	names := dirEntryNames(t, stream, errno)
 
-	for _, want := range []string{"self", "cpuinfo", "meminfo", "uptime", "stat", "loadavg", "version", "42"} {
+	for _, want := range []string{"self", "cpuinfo", "meminfo", "uptime", "stat", "loadavg", "version", "mounts", "filesystems", "42"} {
 		if !names[want] {
 			t.Fatalf("directory listing missing %q: %#v", want, names)
 		}
@@ -49,7 +49,7 @@ func TestProcDirReaddirIncludesExpectedProcessFiles(t *testing.T) {
 	stream, errno := dir.Readdir(context.Background())
 	names := dirEntryNames(t, stream, errno)
 
-	for _, want := range []string{"status", "comm", "cmdline", "exe", "fd", "ns"} {
+	for _, want := range []string{"status", "comm", "cmdline", "exe", "mounts", "mountinfo", "mountstats", "fd", "ns"} {
 		if !names[want] {
 			t.Fatalf("process directory listing missing %q: %#v", want, names)
 		}
@@ -83,6 +83,24 @@ func TestProcFileReadAndAttributes(t *testing.T) {
 	offsetData := readResultBytes(t, result, errno)
 	if got, want := string(offsetData), "ork"; got != want {
 		t.Fatalf("offset read = %q, want %q", got, want)
+	}
+
+	mounts := &procFile{name: "mounts"}
+	result, errno = mounts.Read(context.Background(), nil, make([]byte, 512), 0)
+	mountData := readResultBytes(t, result, errno)
+	for _, want := range []string{"fuse.juicefs", "/proc proc", "/sys sysfs", "/dev tmpfs"} {
+		if !strings.Contains(string(mountData), want) {
+			t.Fatalf("mounts content missing %q:\n%s", want, mountData)
+		}
+	}
+
+	filesystems := &procFile{name: "filesystems"}
+	result, errno = filesystems.Read(context.Background(), nil, make([]byte, 128), 0)
+	fsData := readResultBytes(t, result, errno)
+	for _, want := range []string{"nodev\tproc", "fuse.juicefs"} {
+		if !strings.Contains(string(fsData), want) {
+			t.Fatalf("filesystems content missing %q:\n%s", want, fsData)
+		}
 	}
 }
 
