@@ -3,8 +3,11 @@ package main
 import (
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/spf13/cobra"
 
 	"github.com/octopos/octopos/pkg/remotechild"
 )
@@ -63,6 +66,77 @@ func TestRemoteChildrenEnvironmentRejectsUnknownPolicy(t *testing.T) {
 	if _, err := remoteChildrenEnvironment("safe", "loose"); err == nil {
 		t.Fatal("accepted invalid IPC compatibility mode")
 	}
+}
+
+func TestExecResourceDefaultsUsesClusterConfig(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "octoposd.yaml")
+	if err := os.WriteFile(path, []byte("exec_defaults:\n  cpu_cores: 4\n  memory_gb: 12\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	cmd := resourceDefaultsTestCommand()
+	if err := cmd.Flags().Parse(nil); err != nil {
+		t.Fatal(err)
+	}
+
+	cpu, mem, err := execResourceDefaults(cmd, path)
+	if err != nil {
+		t.Fatalf("execResourceDefaults: %v", err)
+	}
+	if cpu != 4 || mem != 12 {
+		t.Fatalf("defaults = cpu %d mem %d, want 4/12", cpu, mem)
+	}
+}
+
+func TestExecResourceDefaultsFlagsOverrideClusterConfig(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "octoposd.yaml")
+	if err := os.WriteFile(path, []byte("exec_defaults:\n  cpu_cores: 4\n  memory_gb: 12\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	cmd := resourceDefaultsTestCommand()
+	if err := cmd.Flags().Parse([]string{"--cpu", "2"}); err != nil {
+		t.Fatal(err)
+	}
+
+	cpu, mem, err := execResourceDefaults(cmd, path)
+	if err != nil {
+		t.Fatalf("execResourceDefaults: %v", err)
+	}
+	if cpu != 2 || mem != 12 {
+		t.Fatalf("defaults = cpu %d mem %d, want 2/12", cpu, mem)
+	}
+}
+
+func TestClusterExecDefaultsForCommandUsesConfigAndFlagOverrides(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "octoposd.yaml")
+	if err := os.WriteFile(path, []byte("exec_defaults:\n  cpu_cores: 4\n  memory_gb: 12\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	cmd := clusterDefaultsTestCommand()
+	if err := cmd.Flags().Parse([]string{"--default-exec-mem", "6"}); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := clusterExecDefaultsForCommand(cmd, path)
+	if err != nil {
+		t.Fatalf("clusterExecDefaultsForCommand: %v", err)
+	}
+	if got.CPUCores != 4 || got.MemoryGB != 6 {
+		t.Fatalf("defaults = %+v, want 4 CPU / 6 GB", got)
+	}
+}
+
+func resourceDefaultsTestCommand() *cobra.Command {
+	cmd := &cobra.Command{}
+	cmd.Flags().Int("cpu", 1, "")
+	cmd.Flags().Int("mem", 1, "")
+	return cmd
+}
+
+func clusterDefaultsTestCommand() *cobra.Command {
+	cmd := &cobra.Command{}
+	cmd.Flags().Int("default-exec-cpu", 1, "")
+	cmd.Flags().Int("default-exec-mem", 1, "")
+	return cmd
 }
 
 func stringSliceContains(values []string, want string) bool {

@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/octopos/octopos/pkg/clusterconfig"
 	octopospb "github.com/octopos/octopos/pkg/rpc"
 	"github.com/octopos/octopos/pkg/ssi"
 	"google.golang.org/grpc"
@@ -39,6 +40,7 @@ type provisionConfig struct {
 	ObjectProxy   bool
 	ObjectListen  string
 	ObjectTargets string
+	ExecDefaults  clusterconfig.ExecDefaults
 }
 
 func (p *provisionConfig) sshCmd(cmd string) *exec.Cmd {
@@ -272,6 +274,19 @@ PersistentKeepalive = 25
 	if err := cfg.run("install WireGuard config", cfg.sshCmd(
 		"sudo cp /tmp/wg-octopos.conf /etc/wireguard/wg-octopos.conf && sudo chmod 600 /etc/wireguard/wg-octopos.conf",
 	)); err != nil {
+		return err
+	}
+	clusterCfg := buildClusterConfig(
+		cfg.NodeID,
+		fmt.Sprintf("0.0.0.0:%d", cfg.GrpcPort),
+		"wg-octopos",
+		cfg.ClusterRoot,
+		cfg.SSIRootFS,
+		cfg.RequireSSI,
+		seedPeer,
+		cfg.ExecDefaults,
+	)
+	if err := cfg.installRemoteClusterConfig(clusterCfg); err != nil {
 		return err
 	}
 

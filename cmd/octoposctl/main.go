@@ -14,6 +14,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 
+	"github.com/octopos/octopos/pkg/clusterconfig"
 	"github.com/octopos/octopos/pkg/execclient"
 	"github.com/octopos/octopos/pkg/remotechild"
 	octopospb "github.com/octopos/octopos/pkg/rpc"
@@ -21,9 +22,10 @@ import (
 )
 
 var (
-	grpcAddr string
-	client   octopospb.ClusterClient
-	conn     *grpc.ClientConn
+	grpcAddr          string
+	clusterConfigPath string
+	client            octopospb.ClusterClient
+	conn              *grpc.ClientConn
 )
 
 var rootCmd = &cobra.Command{
@@ -89,8 +91,51 @@ func remoteChildrenEnvironment(remoteChildren string, ipcCompat string) ([]strin
 	}, nil
 }
 
+func execResourceDefaults(cmd *cobra.Command, configPath string) (int, int, error) {
+	defaults, err := clusterconfig.LoadExecDefaults(configPath)
+	if err != nil {
+		return 0, 0, err
+	}
+	cpu := defaults.CPUCores
+	mem := defaults.MemoryGB
+	if cmd.Flags().Changed("cpu") {
+		cpu, err = cmd.Flags().GetInt("cpu")
+		if err != nil {
+			return 0, 0, err
+		}
+	}
+	if cmd.Flags().Changed("mem") {
+		mem, err = cmd.Flags().GetInt("mem")
+		if err != nil {
+			return 0, 0, err
+		}
+	}
+	return cpu, mem, nil
+}
+
+func clusterExecDefaultsForCommand(cmd *cobra.Command, configPath string) (clusterconfig.ExecDefaults, error) {
+	defaults, err := clusterconfig.LoadExecDefaults(configPath)
+	if err != nil {
+		return clusterconfig.ExecDefaults{}, err
+	}
+	if cmd.Flags().Changed("default-exec-cpu") {
+		defaults.CPUCores, err = cmd.Flags().GetInt("default-exec-cpu")
+		if err != nil {
+			return clusterconfig.ExecDefaults{}, err
+		}
+	}
+	if cmd.Flags().Changed("default-exec-mem") {
+		defaults.MemoryGB, err = cmd.Flags().GetInt("default-exec-mem")
+		if err != nil {
+			return clusterconfig.ExecDefaults{}, err
+		}
+	}
+	return defaults.WithDefaults(), nil
+}
+
 func init() {
 	rootCmd.PersistentFlags().StringVar(&grpcAddr, "addr", "10.0.0.1:50051", "gRPC server address")
+	rootCmd.PersistentFlags().StringVar(&clusterConfigPath, "config", clusterconfig.DefaultPath, "Cluster config file path")
 }
 
 var nodeCmd = &cobra.Command{
@@ -186,6 +231,10 @@ Example:
 		objectProxy, _ := cmd.Flags().GetBool("objectstore-proxy")
 		objectListen, _ := cmd.Flags().GetString("objectstore-proxy-listen")
 		objectTargets, _ := cmd.Flags().GetString("objectstore-proxy-targets")
+		execDefaults, err := clusterExecDefaultsForCommand(cmd, clusterConfigPath)
+		if err != nil {
+			return err
+		}
 
 		cfg := &provisionConfig{
 			NodeID:        args[0],
@@ -209,6 +258,7 @@ Example:
 			ObjectProxy:   objectProxy,
 			ObjectListen:  objectListen,
 			ObjectTargets: objectTargets,
+			ExecDefaults:  execDefaults,
 		}
 		return provisionNode(cfg)
 	},
@@ -350,8 +400,10 @@ var execCmd = &cobra.Command{
 			sessionID = fmt.Sprintf("cli-%d", time.Now().Unix())
 		}
 
-		cpu, _ := cmd.Flags().GetInt("cpu")
-		mem, _ := cmd.Flags().GetInt("mem")
+		cpu, mem, err := execResourceDefaults(cmd, clusterConfigPath)
+		if err != nil {
+			return err
+		}
 		gpus, _ := cmd.Flags().GetInt("gpus")
 		gpuAlias, _ := cmd.Flags().GetInt("gpu")
 		if cmd.Flags().Changed("gpu") {
@@ -660,6 +712,10 @@ Example:
 		objectProxy, _ := cmd.Flags().GetBool("objectstore-proxy")
 		objectListen, _ := cmd.Flags().GetString("objectstore-proxy-listen")
 		objectTargets, _ := cmd.Flags().GetString("objectstore-proxy-targets")
+		execDefaults, err := clusterExecDefaultsForCommand(cmd, clusterConfigPath)
+		if err != nil {
+			return err
+		}
 
 		cfg := &bootstrapConfig{
 			NodeID:        nodeID,
@@ -678,6 +734,7 @@ Example:
 			ObjectProxy:   objectProxy,
 			ObjectListen:  objectListen,
 			ObjectTargets: objectTargets,
+			ExecDefaults:  execDefaults,
 		}
 		return bootstrapCluster(cfg)
 	},
@@ -704,6 +761,8 @@ func main() {
 	nodeAddCmd.Flags().Bool("objectstore-proxy", true, "Install node-local HA proxy for MinIO/JuiceFS object storage")
 	nodeAddCmd.Flags().String("objectstore-proxy-listen", defaultObjectStoreProxyListen, "Node-local object-store proxy listen address")
 	nodeAddCmd.Flags().String("objectstore-proxy-targets", defaultObjectStoreProxyTargets, "Comma-separated MinIO backend addresses for the object-store proxy")
+	nodeAddCmd.Flags().Int("default-exec-cpu", clusterconfig.DefaultExecDefaults().CPUCores, "Default CPU cores for exec when --cpu is omitted")
+	nodeAddCmd.Flags().Int("default-exec-mem", clusterconfig.DefaultExecDefaults().MemoryGB, "Default memory in GB for exec when --mem is omitted")
 	nodeAddCmd.Flags().Int64("cpu", 0, "Override CPU capacity in millicores (0 = auto-detect)")
 	nodeAddCmd.Flags().Int64("mem", 0, "Override memory capacity in bytes (0 = auto-detect)")
 	nodeAddCmd.Flags().Int32("gpus", 0, "Override GPU count")
@@ -722,6 +781,8 @@ func main() {
 	clusterBootstrapCmd.Flags().Bool("objectstore-proxy", true, "Install node-local HA proxy for MinIO/JuiceFS object storage")
 	clusterBootstrapCmd.Flags().String("objectstore-proxy-listen", defaultObjectStoreProxyListen, "Node-local object-store proxy listen address")
 	clusterBootstrapCmd.Flags().String("objectstore-proxy-targets", defaultObjectStoreProxyTargets, "Comma-separated MinIO backend addresses for the object-store proxy")
+	clusterBootstrapCmd.Flags().Int("default-exec-cpu", clusterconfig.DefaultExecDefaults().CPUCores, "Default CPU cores for exec when --cpu is omitted")
+	clusterBootstrapCmd.Flags().Int("default-exec-mem", clusterconfig.DefaultExecDefaults().MemoryGB, "Default memory in GB for exec when --mem is omitted")
 
 	nodeListCmd.Flags().StringP("output", "o", "", "Output format (json|wide)")
 

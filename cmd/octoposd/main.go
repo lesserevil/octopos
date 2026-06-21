@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
@@ -15,6 +16,7 @@ import (
 	"time"
 
 	"github.com/octopos/octopos/pkg/cluster"
+	"github.com/octopos/octopos/pkg/clusterconfig"
 	octoebpf "github.com/octopos/octopos/pkg/ebpf"
 	"github.com/octopos/octopos/pkg/nvidia"
 	"github.com/octopos/octopos/pkg/remotechild"
@@ -31,6 +33,7 @@ import (
 	"google.golang.org/grpc/peer"
 	"google.golang.org/grpc/reflection"
 	"google.golang.org/grpc/status"
+	"gopkg.in/yaml.v3"
 )
 
 var (
@@ -51,21 +54,22 @@ var (
 )
 
 type Config struct {
-	NodeID        string `yaml:"node_id"`
-	GRPCAddr      string `yaml:"grpc_addr"`
-	WGInterface   string `yaml:"wg_interface"`
-	RedisAddrs    string `yaml:"redis_addrs"`
-	JuiceFSMount  string `yaml:"juicefs_mount"`
-	SSIRootFS     string `yaml:"ssi_rootfs"`
-	SSIMountBase  string `yaml:"ssi_mount_base"`
-	SSIExecutor   string `yaml:"ssi_executor"`
-	RequireSSI    bool   `yaml:"require_ssi"`
-	ChildSocket   string `yaml:"child_socket"`
-	ChildState    string `yaml:"remote_child_state"`
-	ChildLease    time.Duration
-	ChildTokenTTL time.Duration
-	Peers         string `yaml:"peers"`
-	VFIOEnabled   bool   `yaml:"vfio_enabled"`
+	NodeID        string                     `yaml:"node_id"`
+	GRPCAddr      string                     `yaml:"grpc_addr"`
+	WGInterface   string                     `yaml:"wg_interface"`
+	RedisAddrs    string                     `yaml:"redis_addrs"`
+	JuiceFSMount  string                     `yaml:"juicefs_mount"`
+	SSIRootFS     string                     `yaml:"ssi_rootfs"`
+	SSIMountBase  string                     `yaml:"ssi_mount_base"`
+	SSIExecutor   string                     `yaml:"ssi_executor"`
+	RequireSSI    bool                       `yaml:"require_ssi"`
+	ChildSocket   string                     `yaml:"child_socket"`
+	ChildState    string                     `yaml:"remote_child_state"`
+	ChildLease    time.Duration              `yaml:"remote_child_lease_timeout"`
+	ChildTokenTTL time.Duration              `yaml:"remote_child_token_ttl"`
+	Peers         string                     `yaml:"peers"`
+	VFIOEnabled   bool                       `yaml:"vfio_enabled"`
+	ExecDefaults  clusterconfig.ExecDefaults `yaml:"exec_defaults"`
 }
 
 type Server struct {
@@ -106,11 +110,16 @@ func main() {
 		ChildTokenTTL: *childTokenTTL,
 		Peers:         *peers,
 		VFIOEnabled:   true,
+		ExecDefaults:  clusterconfig.DefaultExecDefaults(),
 	}
 
 	if *configFile != "" {
-		// TODO: Load from YAML
+		if err := loadConfigFile(*configFile, cfg); err != nil {
+			log.Fatalf("load config: %v", err)
+		}
+		applyExplicitConfigFlags(cfg)
 	}
+	cfg.ExecDefaults = cfg.ExecDefaults.WithDefaults()
 
 	if cfg.NodeID == "" {
 		hostname, _ := os.Hostname()
@@ -153,6 +162,53 @@ func main() {
 
 	log.Println("Shutting down...")
 	s.shutdown()
+}
+
+func loadConfigFile(path string, cfg *Config) error {
+	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("read %s: %w", path, err)
+	}
+	if err := yaml.Unmarshal(data, cfg); err != nil {
+		return fmt.Errorf("parse %s: %w", path, err)
+	}
+	return nil
+}
+
+func applyExplicitConfigFlags(cfg *Config) {
+	flag.Visit(func(f *flag.Flag) {
+		switch f.Name {
+		case "node-id":
+			cfg.NodeID = *nodeID
+		case "grpc-addr":
+			cfg.GRPCAddr = *grpcAddr
+		case "wg-interface":
+			cfg.WGInterface = *wgInterface
+		case "peers":
+			cfg.Peers = *peers
+		case "cluster-root":
+			cfg.JuiceFSMount = *clusterRoot
+		case "ssi-rootfs":
+			cfg.SSIRootFS = *ssiRootFS
+		case "ssi-mount-base":
+			cfg.SSIMountBase = *ssiMountBase
+		case "ssi-executor":
+			cfg.SSIExecutor = *ssiExecutor
+		case "require-ssi":
+			cfg.RequireSSI = *requireSSI
+		case "child-socket":
+			cfg.ChildSocket = *childSocket
+		case "remote-child-state":
+			cfg.ChildState = *childState
+		case "remote-child-lease-timeout":
+			cfg.ChildLease = *childLease
+		case "remote-child-token-ttl":
+			cfg.ChildTokenTTL = *childTokenTTL
+		}
+	})
 }
 
 func (s *Server) init() error {

@@ -79,6 +79,18 @@ octoposctl --addr 127.0.0.1:50051 node add node-3 --address <ssh-host>
 `multi-user.target` and stop common display managers. OctopOS hosts should not
 run a local desktop or X/Wayland display server.
 
+Cluster defaults are written to `/etc/octopos/octoposd.yaml`. To change the
+resources used by `octoposctl exec` when `--cpu` or `--mem` are omitted, set:
+
+```yaml
+exec_defaults:
+  cpu_cores: 2
+  memory_gb: 4
+```
+
+`cluster bootstrap` and `node add` also accept `--default-exec-cpu` and
+`--default-exec-mem` to write these values during setup.
+
 ## Usage
 
 List nodes:

@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/octopos/octopos/pkg/clusterconfig"
 	"github.com/octopos/octopos/pkg/ssi"
 )
 
@@ -27,6 +28,7 @@ type bootstrapConfig struct {
 	ObjectProxy   bool
 	ObjectListen  string
 	ObjectTargets string
+	ExecDefaults  clusterconfig.ExecDefaults
 }
 
 func bootstrapCluster(cfg *bootstrapConfig) error {
@@ -109,6 +111,13 @@ SaveConfig = true
 	}
 	if err := runCmd(exec.Command("sudo", "chmod", "600", "/etc/wireguard/wg-octopos.conf")); err != nil {
 		return err
+	}
+	fmt.Println("OK")
+
+	fmt.Print("Installing OctopOS cluster config... ")
+	clusterCfg := buildClusterConfig(cfg.NodeID, cfg.GrpcAddr, cfg.WgInterface, cfg.ClusterRoot, cfg.SSIRootFS, cfg.RequireSSI, "", cfg.ExecDefaults)
+	if err := installLocalClusterConfig(clusterCfg); err != nil {
+		return fmt.Errorf("install cluster config: %w", err)
 	}
 	fmt.Println("OK")
 
