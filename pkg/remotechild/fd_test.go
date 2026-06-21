@@ -509,6 +509,48 @@ func TestPrepareFDPlansDoesNotReopenDevShm(t *testing.T) {
 	}
 }
 
+func TestClassifyInheritedFDsReportsFileLock(t *testing.T) {
+	file, err := os.OpenFile(filepath.Join(t.TempDir(), "locked-file"), os.O_CREATE|os.O_RDWR, 0600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	clearCloseOnExec(t, file)
+	if err := unix.Flock(int(file.Fd()), unix.LOCK_EX|unix.LOCK_NB); err != nil {
+		t.Fatalf("flock: %v", err)
+	}
+	defer unix.Flock(int(file.Fd()), unix.LOCK_UN)
+
+	plans, err := ClassifyInheritedFDs(os.Getpid())
+	if err != nil {
+		t.Fatalf("ClassifyInheritedFDs: %v", err)
+	}
+	plan, ok := findPlan(plans, int(file.Fd()))
+	if !ok {
+		t.Fatalf("fd %d missing from plan: %#v", file.Fd(), plans)
+	}
+	if plan.ReasonCode != FDReasonFileLock {
+		t.Fatalf("reason code = %q, want %q; plan=%#v", plan.ReasonCode, FDReasonFileLock, plan)
+	}
+	if len(plan.FileLockTypes) == 0 {
+		t.Fatalf("file lock types missing: %#v", plan)
+	}
+	prepared := PrepareFDPlans([]FDPlan{plan}, FDPlanOptions{AllowReopen: true})
+	if prepared[0].Action == FDActionReopen {
+		t.Fatalf("locked fd became reopenable: %#v", prepared[0])
+	}
+}
+
+func TestProcLocksInode(t *testing.T) {
+	inode, ok := procLocksInode("08:01:12345")
+	if !ok || inode != 12345 {
+		t.Fatalf("procLocksInode = %d/%t, want 12345/true", inode, ok)
+	}
+	if _, ok := procLocksInode("bad"); ok {
+		t.Fatal("procLocksInode accepted invalid token")
+	}
+}
+
 func TestClassifyInheritedFDsReportsDeletedFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "deleted-file")
 	file, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0600)

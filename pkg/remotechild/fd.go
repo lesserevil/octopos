@@ -46,6 +46,7 @@ const (
 	FDReasonDeleted                 FDReasonCode = "fd.deleted"
 	FDReasonSharedMemoryDeleted     FDReasonCode = "ipc.shared_memory.deleted"
 	FDReasonSharedMemory            FDReasonCode = "ipc.shared_memory"
+	FDReasonFileLock                FDReasonCode = "ipc.file_lock"
 	FDReasonRegularRequiresReopen   FDReasonCode = "fd.regular.requires_reopen"
 	FDReasonRegularNoPath           FDReasonCode = "fd.regular.no_reopen_path"
 	FDReasonDirectoryRequiresReopen FDReasonCode = "fd.directory.requires_reopen"
@@ -78,6 +79,7 @@ type FDPlan struct {
 	SocketID      string
 	SocketFamily  string
 	SocketAddress string
+	FileLockTypes []string
 	OpenFlags     int
 	Offset        int64
 	Deleted       bool
@@ -297,6 +299,9 @@ func reopenableFDPlan(plan FDPlan) bool {
 	}
 	switch plan.Kind {
 	case FDKindRegular:
+		if len(plan.FileLockTypes) > 0 {
+			return false
+		}
 		return !strings.HasPrefix(plan.ReopenPath, "/dev/shm/") &&
 			!strings.HasPrefix(plan.ReopenPath, "/proc/") &&
 			!strings.HasPrefix(plan.ReopenPath, "/sys/") &&
@@ -332,6 +337,8 @@ func enrichFDPlan(plan *FDPlan, fd int, target string, currentProcess bool) {
 		var st unix.Stat_t
 		if err := unix.Fstat(fd, &st); err == nil {
 			switch st.Mode & unix.S_IFMT {
+			case unix.S_IFREG:
+				plan.FileLockTypes = currentProcessLockTypes(st.Ino)
 			case unix.S_IFCHR, unix.S_IFBLK:
 				plan.DeviceMajor = uint32(unix.Major(uint64(st.Rdev)))
 				plan.DeviceMinor = uint32(unix.Minor(uint64(st.Rdev)))
@@ -423,6 +430,54 @@ func socketDomainName(domain int) string {
 	}
 }
 
+func currentProcessLockTypes(inode uint64) []string {
+	data, err := os.ReadFile("/proc/locks")
+	if err != nil {
+		return nil
+	}
+	pid := strconv.Itoa(os.Getpid())
+	seen := make(map[string]bool)
+	var out []string
+	for _, line := range strings.Split(string(data), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 6 {
+			continue
+		}
+		ownerPID := fields[4]
+		if ownerPID != pid && ownerPID != "-1" {
+			continue
+		}
+		lockInode, ok := procLocksInode(fields[5])
+		if !ok || lockInode != inode {
+			continue
+		}
+		lockType := fields[1]
+		if lockType == "" || seen[lockType] {
+			continue
+		}
+		seen[lockType] = true
+		out = append(out, lockType)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func procLocksInode(raw string) (uint64, bool) {
+	_, inodeRaw, ok := strings.Cut(strings.TrimSpace(raw), ":")
+	if !ok {
+		return 0, false
+	}
+	_, inodeRaw, ok = strings.Cut(inodeRaw, ":")
+	if !ok {
+		return 0, false
+	}
+	inode, err := strconv.ParseUint(inodeRaw, 10, 64)
+	if err != nil {
+		return 0, false
+	}
+	return inode, true
+}
+
 func forceLocalReason(plan FDPlan) (string, FDReasonCode) {
 	if plan.Deleted {
 		if strings.Contains(plan.Path, "/dev/shm/") || strings.HasPrefix(plan.Path, "/memfd:") || strings.HasPrefix(plan.Path, "memfd:") {
@@ -432,6 +487,9 @@ func forceLocalReason(plan FDPlan) (string, FDReasonCode) {
 	}
 	switch plan.Kind {
 	case FDKindRegular:
+		if len(plan.FileLockTypes) > 0 {
+			return "file lock descriptor requires local kernel lock state and is not distributed", FDReasonFileLock
+		}
 		if strings.HasPrefix(plan.Path, "/dev/shm/") || strings.HasPrefix(plan.Path, "/memfd:") || strings.HasPrefix(plan.Path, "memfd:") {
 			return "shared-memory descriptor is local kernel state and is not distributed", FDReasonSharedMemory
 		}
@@ -520,6 +578,9 @@ func fdPlanDetailSuffix(plan FDPlan) string {
 	}
 	if plan.SocketAddress != "" {
 		parts = append(parts, "addr="+plan.SocketAddress)
+	}
+	if len(plan.FileLockTypes) > 0 {
+		parts = append(parts, "locks="+strings.Join(plan.FileLockTypes, "|"))
 	}
 	if plan.Deleted {
 		parts = append(parts, "deleted")

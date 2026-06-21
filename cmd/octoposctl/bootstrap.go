@@ -154,6 +154,7 @@ SaveConfig = true
 		{"octopos-exec", "./cmd/octopos-exec"},
 		{"octopos-remote-child", "./cmd/octopos-remote-child"},
 		{"octopos-child-supervisor", "./cmd/octopos-child-supervisor"},
+		{"octopos-lockcheck", "./cmd/octopos-lockcheck"},
 	}
 	if cfg.RequireSSI {
 		coreTargets = append(coreTargets,
@@ -196,6 +197,9 @@ SaveConfig = true
 			return err
 		}
 		if err := runCmd(exec.Command("sudo", "install", "-m", "0755", "bin/octopos-child-supervisor", filepath.Join(ssiBinDir, "octopos-child-supervisor"))); err != nil {
+			return err
+		}
+		if err := runCmd(exec.Command("sudo", "install", "-m", "0755", "bin/octopos-lockcheck", filepath.Join(ssiBinDir, "octopos-lockcheck"))); err != nil {
 			return err
 		}
 		ssiLibDir := filepath.Join(cfg.SSIRootFS, "usr/local/lib/octopos")
