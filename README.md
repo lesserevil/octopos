@@ -172,6 +172,12 @@ namespace when possible. Anonymous pipes and already-open FIFO endpoints on
 stdin/stdout/stderr are proxied through the OctopOS pipe graph; FIFO opens
 performed after process start are still local kernel operations.
 
+Inspect pipe proxy counters with:
+
+```bash
+octoposctl --addr 10.0.0.1:50051 pipe stats
+```
+
 Inherited locked regular files force local by default. After validating the
 active SSI filesystem lock behavior across nodes, opt in with:
 

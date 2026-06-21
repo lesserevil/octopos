@@ -440,6 +440,28 @@ var vfioCmd = &cobra.Command{
 	Short: "Manage VFIO device groups",
 }
 
+var pipeCmd = &cobra.Command{
+	Use:   "pipe",
+	Short: "Inspect distributed pipe graph state",
+}
+
+var pipeStatsCmd = &cobra.Command{
+	Use:   "stats",
+	Short: "Show distributed pipe graph proxy counters",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		resp, err := client.GetPipeStats(context.Background(), &octopospb.GetPipeStatsRequest{})
+		if err != nil {
+			return fmt.Errorf("GetPipeStats failed: %w", err)
+		}
+		fmt.Printf("active_streams: %d\n", resp.ActiveStreams)
+		fmt.Printf("total_streams: %d\n", resp.TotalStreams)
+		fmt.Printf("bytes_from_writers: %d\n", resp.BytesFromWriters)
+		fmt.Printf("bytes_to_readers: %d\n", resp.BytesToReaders)
+		fmt.Printf("broken_pipes: %d\n", resp.BrokenPipes)
+		return nil
+	},
+}
+
 var vfioListCmd = &cobra.Command{
 	Use:   "list",
 	Short: "List VFIO device groups",
@@ -1007,10 +1029,11 @@ func main() {
 	nodeCmd.AddCommand(nodeListCmd, nodeAddCmd, nodeDrainCmd, nodeRemoveCmd)
 	jobCmd.AddCommand(jobListCmd, jobStatusCmd, jobChildrenCmd)
 	vfioCmd.AddCommand(vfioListCmd, vfioAllocateCmd, vfioReleaseCmd)
+	pipeCmd.AddCommand(pipeStatsCmd)
 	sessionCmd.AddCommand(sessionListCmd, sessionCreateCmd, sessionDeleteCmd)
 	clusterCmd.AddCommand(clusterStatusCmd, clusterDoctorCmd, clusterBootstrapCmd)
 
-	rootCmd.AddCommand(nodeCmd, jobCmd, execCmd, sessionCmd, psCmd, vfioCmd, clusterCmd)
+	rootCmd.AddCommand(nodeCmd, jobCmd, execCmd, sessionCmd, psCmd, vfioCmd, pipeCmd, clusterCmd)
 
 	if err := rootCmd.Execute(); err != nil {
 		var exitErr *execclient.ExitError

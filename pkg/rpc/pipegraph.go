@@ -17,14 +17,27 @@ import (
 )
 
 type pipeCoordinator struct {
-	mu        sync.Mutex
-	placement map[string]cluster.NodeID
-	local     map[string]*localPipe
+	mu               sync.Mutex
+	placement        map[string]cluster.NodeID
+	local            map[string]*localPipe
+	activeStreams    uint64
+	totalStreams     uint64
+	bytesFromWriters uint64
+	bytesToReaders   uint64
+	brokenPipes      uint64
 }
 
 type localPipe struct {
 	read  *os.File
 	write *os.File
+}
+
+type pipeStats struct {
+	ActiveStreams    uint64
+	TotalStreams     uint64
+	BytesFromWriters uint64
+	BytesToReaders   uint64
+	BrokenPipes      uint64
 }
 
 func newPipeCoordinator() *pipeCoordinator {
@@ -163,6 +176,69 @@ func (p *pipeCoordinator) attachLocal(key string, fd int) (*os.File, error) {
 	return file, nil
 }
 
+func (p *pipeCoordinator) beginProxyStream() {
+	if p == nil {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.activeStreams++
+	p.totalStreams++
+}
+
+func (p *pipeCoordinator) endProxyStream() {
+	if p == nil {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.activeStreams > 0 {
+		p.activeStreams--
+	}
+}
+
+func (p *pipeCoordinator) addBytesFromWriter(n int) {
+	if p == nil || n <= 0 {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.bytesFromWriters += uint64(n)
+}
+
+func (p *pipeCoordinator) addBytesToReader(n int) {
+	if p == nil || n <= 0 {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.bytesToReaders += uint64(n)
+}
+
+func (p *pipeCoordinator) recordBrokenPipe() {
+	if p == nil {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.brokenPipes++
+}
+
+func (p *pipeCoordinator) stats() pipeStats {
+	if p == nil {
+		return pipeStats{}
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return pipeStats{
+		ActiveStreams:    p.activeStreams,
+		TotalStreams:     p.totalStreams,
+		BytesFromWriters: p.bytesFromWriters,
+		BytesToReaders:   p.bytesToReaders,
+		BrokenPipes:      p.brokenPipes,
+	}
+}
+
 func dupFile(file *os.File, name string) (*os.File, error) {
 	fd, err := syscall.Dup(int(file.Fd()))
 	if err != nil {
@@ -274,6 +350,8 @@ func (s *ClusterServerImpl) PipeStream(stream Cluster_PipeStreamServer) error {
 	if fd < 0 || fd > 2 {
 		return status.Errorf(codes.InvalidArgument, "unsupported pipe fd %d", fd)
 	}
+	s.pipes.beginProxyStream()
+	defer s.pipes.endProxyStream()
 	file, err := s.pipes.attachLocal(first.Key, fd)
 	if err != nil {
 		_ = stream.Send(&PipeFrame{Error: err.Error(), Close: true})
@@ -283,15 +361,26 @@ func (s *ClusterServerImpl) PipeStream(stream Cluster_PipeStreamServer) error {
 
 	switch fd {
 	case 0:
-		return pipeFileToStream(file, stream)
+		return s.pipeFileToStream(file, stream)
 	case 1, 2:
-		return pipeStreamToFile(stream, file)
+		return s.pipeStreamToFile(stream, file)
 	default:
 		return status.Errorf(codes.InvalidArgument, "unsupported pipe fd %d", fd)
 	}
 }
 
-func pipeFileToStream(reader *os.File, stream Cluster_PipeStreamServer) error {
+func (s *ClusterServerImpl) GetPipeStats(ctx context.Context, req *GetPipeStatsRequest) (*GetPipeStatsResponse, error) {
+	stats := s.pipes.stats()
+	return &GetPipeStatsResponse{
+		ActiveStreams:    stats.ActiveStreams,
+		TotalStreams:     stats.TotalStreams,
+		BytesFromWriters: stats.BytesFromWriters,
+		BytesToReaders:   stats.BytesToReaders,
+		BrokenPipes:      stats.BrokenPipes,
+	}, nil
+}
+
+func (s *ClusterServerImpl) pipeFileToStream(reader *os.File, stream Cluster_PipeStreamServer) error {
 	buf := make([]byte, 32*1024)
 	for {
 		n, err := reader.Read(buf)
@@ -299,8 +388,10 @@ func pipeFileToStream(reader *os.File, stream Cluster_PipeStreamServer) error {
 			data := make([]byte, n)
 			copy(data, buf[:n])
 			if sendErr := stream.Send(&PipeFrame{Data: data}); sendErr != nil {
+				s.pipes.recordBrokenPipe()
 				return sendErr
 			}
+			s.pipes.addBytesToReader(n)
 		}
 		if err != nil {
 			if err == io.EOF {
@@ -308,12 +399,13 @@ func pipeFileToStream(reader *os.File, stream Cluster_PipeStreamServer) error {
 				return nil
 			}
 			_ = stream.Send(&PipeFrame{Error: err.Error(), Close: true})
+			s.pipes.recordBrokenPipe()
 			return nil
 		}
 	}
 }
 
-func pipeStreamToFile(stream Cluster_PipeStreamServer, writer *os.File) error {
+func (s *ClusterServerImpl) pipeStreamToFile(stream Cluster_PipeStreamServer, writer *os.File) error {
 	for {
 		frame, err := stream.Recv()
 		if err != nil {
@@ -328,8 +420,10 @@ func pipeStreamToFile(stream Cluster_PipeStreamServer, writer *os.File) error {
 		if len(frame.Data) > 0 {
 			if _, err := writer.Write(frame.Data); err != nil {
 				_ = stream.Send(&PipeFrame{Error: err.Error(), Close: true})
+				s.pipes.recordBrokenPipe()
 				return nil
 			}
+			s.pipes.addBytesFromWriter(len(frame.Data))
 		}
 		if frame.Close {
 			return nil

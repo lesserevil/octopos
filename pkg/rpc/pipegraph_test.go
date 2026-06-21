@@ -144,6 +144,17 @@ func TestPipeStreamBridgesRemoteEndpoints(t *testing.T) {
 	case <-ctx.Done():
 		t.Fatal(ctx.Err())
 	}
+
+	stats, err := client.GetPipeStats(ctx, &GetPipeStatsRequest{})
+	if err != nil {
+		t.Fatalf("GetPipeStats: %v", err)
+	}
+	if stats.TotalStreams != 2 {
+		t.Fatalf("total streams = %d, want 2", stats.TotalStreams)
+	}
+	if stats.BytesFromWriters != uint64(len("hello over pipe")) || stats.BytesToReaders != uint64(len("hello over pipe")) {
+		t.Fatalf("pipe byte stats = from writers %d to readers %d", stats.BytesFromWriters, stats.BytesToReaders)
+	}
 }
 
 func TestAttachRemotePipeEndpoint(t *testing.T) {

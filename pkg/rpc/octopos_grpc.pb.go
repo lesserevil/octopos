@@ -39,6 +39,7 @@ const (
 	Cluster_RemoteChildExecute_FullMethodName = "/octopos.rpc.Cluster/RemoteChildExecute"
 	Cluster_RemoteChildStream_FullMethodName  = "/octopos.rpc.Cluster/RemoteChildStream"
 	Cluster_PipeStream_FullMethodName         = "/octopos.rpc.Cluster/PipeStream"
+	Cluster_GetPipeStats_FullMethodName       = "/octopos.rpc.Cluster/GetPipeStats"
 )
 
 // ClusterClient is the client API for Cluster service.
@@ -76,6 +77,7 @@ type ClusterClient interface {
 	RemoteChildStream(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[ExecStreamRequest, ExecStreamResponse], error)
 	// Internal pipe graph transport for distributed child endpoints.
 	PipeStream(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[PipeFrame, PipeFrame], error)
+	GetPipeStats(ctx context.Context, in *GetPipeStatsRequest, opts ...grpc.CallOption) (*GetPipeStatsResponse, error)
 }
 
 type clusterClient struct {
@@ -295,6 +297,16 @@ func (c *clusterClient) PipeStream(ctx context.Context, opts ...grpc.CallOption)
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type Cluster_PipeStreamClient = grpc.BidiStreamingClient[PipeFrame, PipeFrame]
 
+func (c *clusterClient) GetPipeStats(ctx context.Context, in *GetPipeStatsRequest, opts ...grpc.CallOption) (*GetPipeStatsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetPipeStatsResponse)
+	err := c.cc.Invoke(ctx, Cluster_GetPipeStats_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // ClusterServer is the server API for Cluster service.
 // All implementations must embed UnimplementedClusterServer
 // for forward compatibility.
@@ -330,6 +342,7 @@ type ClusterServer interface {
 	RemoteChildStream(grpc.BidiStreamingServer[ExecStreamRequest, ExecStreamResponse]) error
 	// Internal pipe graph transport for distributed child endpoints.
 	PipeStream(grpc.BidiStreamingServer[PipeFrame, PipeFrame]) error
+	GetPipeStats(context.Context, *GetPipeStatsRequest) (*GetPipeStatsResponse, error)
 	mustEmbedUnimplementedClusterServer()
 }
 
@@ -399,6 +412,9 @@ func (UnimplementedClusterServer) RemoteChildStream(grpc.BidiStreamingServer[Exe
 }
 func (UnimplementedClusterServer) PipeStream(grpc.BidiStreamingServer[PipeFrame, PipeFrame]) error {
 	return status.Error(codes.Unimplemented, "method PipeStream not implemented")
+}
+func (UnimplementedClusterServer) GetPipeStats(context.Context, *GetPipeStatsRequest) (*GetPipeStatsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetPipeStats not implemented")
 }
 func (UnimplementedClusterServer) mustEmbedUnimplementedClusterServer() {}
 func (UnimplementedClusterServer) testEmbeddedByValue()                 {}
@@ -748,6 +764,24 @@ func _Cluster_PipeStream_Handler(srv interface{}, stream grpc.ServerStream) erro
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type Cluster_PipeStreamServer = grpc.BidiStreamingServer[PipeFrame, PipeFrame]
 
+func _Cluster_GetPipeStats_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetPipeStatsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ClusterServer).GetPipeStats(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Cluster_GetPipeStats_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ClusterServer).GetPipeStats(ctx, req.(*GetPipeStatsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // Cluster_ServiceDesc is the grpc.ServiceDesc for Cluster service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -822,6 +856,10 @@ var Cluster_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "RemoteChildExecute",
 			Handler:    _Cluster_RemoteChildExecute_Handler,
+		},
+		{
+			MethodName: "GetPipeStats",
+			Handler:    _Cluster_GetPipeStats_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{

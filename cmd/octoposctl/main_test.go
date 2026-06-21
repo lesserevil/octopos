@@ -16,7 +16,7 @@ import (
 func TestOctoposctlHelpStarts(t *testing.T) {
 	output := runOctoposctl(t, "--help")
 
-	for _, want := range []string{"node", "job", "exec", "session", "ps", "vfio", "cluster"} {
+	for _, want := range []string{"node", "job", "exec", "session", "ps", "vfio", "pipe", "cluster"} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("help output missing %q:\n%s", want, output)
 		}
