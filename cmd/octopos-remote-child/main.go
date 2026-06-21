@@ -107,7 +107,7 @@ func applyLocalPolicy(cfg config, command []string) error {
 	if err != nil {
 		return err
 	}
-	plans = remotechild.PrepareFDPlans(plans, remotechild.FDPlanOptions{AllowReopen: ssiEnvActive(os.Environ())})
+	plans = remotechild.PrepareFDPlans(plans, fdPlanOptions(os.Environ()))
 	unsupported := remotechild.UnsupportedFDs(plans)
 	if len(unsupported) == 0 {
 		return nil
@@ -131,8 +131,16 @@ func remoteFDPlanFromCurrentProcess() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	plans = remotechild.PrepareFDPlans(plans, remotechild.FDPlanOptions{AllowReopen: true})
+	plans = remotechild.PrepareFDPlans(plans, fdPlanOptions(os.Environ()))
 	return remotechild.EncodeReopenFDs(remotechild.ReopenFDs(plans))
+}
+
+func fdPlanOptions(env []string) remotechild.FDPlanOptions {
+	return remotechild.FDPlanOptions{
+		AllowReopen:    ssiEnvActive(env),
+		AllowFileLocks: truthyEnvValue(lookupEnv(env, remotechild.EnvAllowFileLocks)),
+		AllowPipeProxy: true,
+	}
 }
 
 func remotePipeEnvFromCurrentProcess() ([]string, error) {
@@ -423,7 +431,11 @@ func positiveIntEnv(key string, fallback int) int {
 }
 
 func truthyEnv(key string) bool {
-	switch strings.ToLower(strings.TrimSpace(os.Getenv(key))) {
+	return truthyEnvValue(os.Getenv(key))
+}
+
+func truthyEnvValue(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
 	case "1", "true", "yes", "on":
 		return true
 	default:

@@ -147,6 +147,26 @@ func TestClassifyInheritedFDsReportsPipeKind(t *testing.T) {
 	if plan.ReasonCode != FDReasonPipe {
 		t.Fatalf("reason code = %q, want %q; plan=%#v", plan.ReasonCode, FDReasonPipe, plan)
 	}
+	prepared := PrepareFDPlans([]FDPlan{plan}, FDPlanOptions{AllowPipeProxy: true})
+	if prepared[0].Action != FDActionForceLocal {
+		t.Fatalf("non-stdio pipe fd action = %s, want %s; plan=%#v", prepared[0].Action, FDActionForceLocal, prepared[0])
+	}
+}
+
+func TestPrepareFDPlansAllowsStdioPipeProxy(t *testing.T) {
+	plan := FDPlan{
+		FD:         1,
+		Kind:       FDKindPipe,
+		Action:     FDActionForceLocal,
+		Path:       "pipe:[123]",
+		PipeID:     "123",
+		Reason:     "anonymous pipe requires coordinated pipe proxying",
+		ReasonCode: FDReasonPipe,
+	}
+	prepared := PrepareFDPlans([]FDPlan{plan}, FDPlanOptions{AllowPipeProxy: true})
+	if prepared[0].Action != FDActionProxyStream {
+		t.Fatalf("stdio pipe fd action = %s, want %s; plan=%#v", prepared[0].Action, FDActionProxyStream, prepared[0])
+	}
 }
 
 func TestClassifyInheritedFDsReportsNamedFIFO(t *testing.T) {
@@ -568,6 +588,10 @@ func TestClassifyInheritedFDsReportsFileLock(t *testing.T) {
 	prepared := PrepareFDPlans([]FDPlan{plan}, FDPlanOptions{AllowReopen: true})
 	if prepared[0].Action == FDActionReopen {
 		t.Fatalf("locked fd became reopenable: %#v", prepared[0])
+	}
+	prepared = PrepareFDPlans([]FDPlan{plan}, FDPlanOptions{AllowReopen: true, AllowFileLocks: true})
+	if prepared[0].Action != FDActionReopen {
+		t.Fatalf("locked fd was not reopenable with AllowFileLocks: %#v", prepared[0])
 	}
 }
 

@@ -112,6 +112,26 @@ func TestParseArgsRejectsConflictingGPUAliases(t *testing.T) {
 	}
 }
 
+func TestFDPlanOptionsAllowsFileLocksOnlyWhenExplicit(t *testing.T) {
+	env := []string{"OCTOPOS_SSI=1"}
+	opts := fdPlanOptions(env)
+	if !opts.AllowReopen {
+		t.Fatal("AllowReopen = false")
+	}
+	if !opts.AllowPipeProxy {
+		t.Fatal("AllowPipeProxy = false")
+	}
+	if opts.AllowFileLocks {
+		t.Fatal("AllowFileLocks = true without opt-in")
+	}
+
+	env = append(env, remotechild.EnvAllowFileLocks+"=1")
+	opts = fdPlanOptions(env)
+	if !opts.AllowFileLocks {
+		t.Fatal("AllowFileLocks = false with opt-in")
+	}
+}
+
 func TestUnixSocketAvailable(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "childd.sock")
 	if unixSocketAvailable(path) {

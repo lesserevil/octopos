@@ -170,6 +170,14 @@ cannot yet be recreated on a remote node. Regular files and safe character
 devices inherited as non-stdio descriptors are reopened in the remote SSI
 namespace when possible.
 
+Inherited locked regular files force local by default. After validating the
+active SSI filesystem lock behavior across nodes, opt in with:
+
+```bash
+octopos-lockcheck --role self-test --path /cluster/tmp/octopos-lockcheck
+octoposctl --addr 10.0.0.1:50051 exec --remote-children=safe --remote-file-locks -- bash -lc 'make -j'
+```
+
 Remote-child lifecycle state is stored by default at
 `/var/lib/octopos/remote-children.json`; authorization and placement audit events
 are appended to `/var/lib/octopos/remote-children.json.audit.jsonl`. Useful

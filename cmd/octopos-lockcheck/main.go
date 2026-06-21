@@ -29,6 +29,7 @@ func run(args []string) error {
 	role := flags.String("role", "self-test", "Role: self-test, hold, or try")
 	path := flags.String("path", filepath.Join(os.TempDir(), "octopos-lockcheck.lock"), "Lock file path")
 	kind := flags.String("lock", string(lockcheck.KindFlock), "Lock kind: flock or fcntl")
+	mode := flags.String("mode", string(lockcheck.ModeExclusive), "Lock mode: exclusive or shared")
 	hold := flags.Duration("hold", 3*time.Second, "How long a holder keeps the lock")
 	readyFile := flags.String("ready-file", "", "File touched after a holder acquires the lock")
 	if err := flags.Parse(args); err != nil {
@@ -36,11 +37,12 @@ func run(args []string) error {
 	}
 
 	lockKind := lockcheck.Kind(*kind)
+	lockMode := lockcheck.Mode(*mode)
 	switch *role {
 	case "hold":
-		return holdLock(*path, lockKind, *hold, *readyFile)
+		return holdLock(*path, lockKind, lockMode, *hold, *readyFile)
 	case "try":
-		return tryLock(*path, lockKind)
+		return tryLock(*path, lockKind, lockMode)
 	case "self-test":
 		return selfTest(*path)
 	default:
@@ -48,13 +50,13 @@ func run(args []string) error {
 	}
 }
 
-func holdLock(path string, kind lockcheck.Kind, hold time.Duration, readyFile string) error {
+func holdLock(path string, kind lockcheck.Kind, mode lockcheck.Mode, hold time.Duration, readyFile string) error {
 	file, err := lockcheck.OpenLockFile(path)
 	if err != nil {
 		return err
 	}
 	defer file.Close()
-	if err := lockcheck.Lock(file, kind, false); err != nil {
+	if err := lockcheck.LockWithMode(file, kind, mode, false); err != nil {
 		return err
 	}
 	defer lockcheck.Unlock(file, kind)
@@ -67,23 +69,29 @@ func holdLock(path string, kind lockcheck.Kind, hold time.Duration, readyFile st
 	return nil
 }
 
-func tryLock(path string, kind lockcheck.Kind) error {
+func tryLock(path string, kind lockcheck.Kind, mode lockcheck.Mode) error {
 	file, err := lockcheck.OpenLockFile(path)
 	if err != nil {
 		return err
 	}
 	defer file.Close()
-	if err := lockcheck.Lock(file, kind, true); err != nil {
+	if err := lockcheck.LockWithMode(file, kind, mode, true); err != nil {
 		return err
 	}
 	defer lockcheck.Unlock(file, kind)
-	fmt.Printf("%s lock acquired on %s\n", kind, path)
+	fmt.Printf("%s %s lock acquired on %s\n", kind, mode, path)
 	return nil
 }
 
 func selfTest(basePath string) error {
 	for _, kind := range []lockcheck.Kind{lockcheck.KindFlock, lockcheck.KindFcntl} {
-		if err := selfTestKind(basePath+"."+string(kind), kind); err != nil {
+		if err := selfTestKind(basePath+"."+string(kind)+".exclusive", kind, lockcheck.ModeExclusive, lockcheck.ModeExclusive, true); err != nil {
+			return err
+		}
+		if err := selfTestKind(basePath+"."+string(kind)+".shared", kind, lockcheck.ModeShared, lockcheck.ModeShared, false); err != nil {
+			return err
+		}
+		if err := selfTestKind(basePath+"."+string(kind)+".shared-exclusive", kind, lockcheck.ModeShared, lockcheck.ModeExclusive, true); err != nil {
 			return err
 		}
 	}
@@ -91,15 +99,15 @@ func selfTest(basePath string) error {
 	return nil
 }
 
-func selfTestKind(path string, kind lockcheck.Kind) error {
+func selfTestKind(path string, kind lockcheck.Kind, holderMode lockcheck.Mode, contenderMode lockcheck.Mode, wantLocked bool) error {
 	exe, err := os.Executable()
 	if err != nil {
 		return err
 	}
 	tmpDir := os.TempDir()
-	readyFile := filepath.Join(tmpDir, fmt.Sprintf("octopos-lockcheck-%d-%s.ready", os.Getpid(), kind))
+	readyFile := filepath.Join(tmpDir, fmt.Sprintf("octopos-lockcheck-%d-%s-%s.ready", os.Getpid(), kind, holderMode))
 	defer os.Remove(readyFile)
-	holder := exec.Command(exe, "--role", "hold", "--lock", string(kind), "--path", path, "--hold", "2s", "--ready-file", readyFile)
+	holder := exec.Command(exe, "--role", "hold", "--lock", string(kind), "--mode", string(holderMode), "--path", path, "--hold", "2s", "--ready-file", readyFile)
 	holder.Stdout = os.Stdout
 	holder.Stderr = os.Stderr
 	if err := holder.Start(); err != nil {
@@ -110,18 +118,25 @@ func selfTestKind(path string, kind lockcheck.Kind) error {
 		_ = holder.Process.Kill()
 		return err
 	}
-	contender := exec.Command(exe, "--role", "try", "--lock", string(kind), "--path", path)
-	if err := contender.Run(); err == nil {
-		_ = holder.Process.Kill()
-		return fmt.Errorf("%s contender acquired lock while holder was active", kind)
-	} else {
+	contender := exec.Command(exe, "--role", "try", "--lock", string(kind), "--mode", string(contenderMode), "--path", path)
+	err = contender.Run()
+	if wantLocked {
+		if err == nil {
+			_ = holder.Process.Kill()
+			return fmt.Errorf("%s %s contender acquired lock while %s holder was active", kind, contenderMode, holderMode)
+		}
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) && exitErr.ExitCode() == 2 {
 			return nil
 		}
 		_ = holder.Process.Kill()
-		return fmt.Errorf("%s contender failed unexpectedly: %w", kind, err)
+		return fmt.Errorf("%s %s contender failed unexpectedly: %w", kind, contenderMode, err)
 	}
+	if err != nil {
+		_ = holder.Process.Kill()
+		return fmt.Errorf("%s %s contender should share %s holder: %w", kind, contenderMode, holderMode, err)
+	}
+	return nil
 }
 
 func waitReady(path string, timeout time.Duration) error {

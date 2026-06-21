@@ -90,7 +90,9 @@ type FDPlan struct {
 }
 
 type FDPlanOptions struct {
-	AllowReopen bool
+	AllowReopen    bool
+	AllowFileLocks bool
+	AllowPipeProxy bool
 }
 
 type ReopenFD struct {
@@ -158,7 +160,12 @@ func classifyCurrentProcessFDs() ([]FDPlan, error) {
 func PrepareFDPlans(plans []FDPlan, opts FDPlanOptions) []FDPlan {
 	out := make([]FDPlan, 0, len(plans))
 	for _, plan := range plans {
-		if opts.AllowReopen && reopenableFDPlan(plan) {
+		if opts.AllowPipeProxy && pipeProxyFDPlan(plan) {
+			plan.Action = FDActionProxyStream
+			plan.Reason = "descriptor will be proxied through the OctopOS pipe graph"
+			plan.ReasonCode = FDReasonPipe
+		}
+		if opts.AllowReopen && reopenableFDPlan(plan, opts) {
 			plan.Action = FDActionReopen
 			plan.Reason = "descriptor will be reopened in the remote SSI namespace"
 			plan.ReasonCode = FDReasonRemoteReopen
@@ -166,6 +173,10 @@ func PrepareFDPlans(plans []FDPlan, opts FDPlanOptions) []FDPlan {
 		out = append(out, plan)
 	}
 	return out
+}
+
+func pipeProxyFDPlan(plan FDPlan) bool {
+	return plan.Kind == FDKindPipe && plan.PipeID != "" && plan.FD >= 0 && plan.FD <= 2
 }
 
 func ReopenFDs(plans []FDPlan) []ReopenFD {
@@ -295,13 +306,13 @@ func classifyOpenFD(fd int, target string, flags int, openFlags int, offset int6
 	return plan
 }
 
-func reopenableFDPlan(plan FDPlan) bool {
+func reopenableFDPlan(plan FDPlan, opts FDPlanOptions) bool {
 	if plan.FD < 3 || plan.Deleted || plan.ReopenPath == "" || !filepath.IsAbs(plan.ReopenPath) {
 		return false
 	}
 	switch plan.Kind {
 	case FDKindRegular:
-		if len(plan.FileLockTypes) > 0 {
+		if len(plan.FileLockTypes) > 0 && !opts.AllowFileLocks {
 			return false
 		}
 		return !strings.HasPrefix(plan.ReopenPath, "/dev/shm/") &&

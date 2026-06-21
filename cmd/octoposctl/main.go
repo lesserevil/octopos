@@ -68,7 +68,7 @@ func requiresClusterConnection(cmd *cobra.Command) bool {
 	return true
 }
 
-func remoteChildrenEnvironment(remoteChildren string, ipcCompat string) ([]string, error) {
+func remoteChildrenEnvironment(remoteChildren string, ipcCompat string, allowFileLocks bool) ([]string, error) {
 	switch remoteChildren {
 	case "off", "safe", "aggressive":
 	default:
@@ -85,11 +85,15 @@ func remoteChildrenEnvironment(remoteChildren string, ipcCompat string) ([]strin
 	if remoteChildren == "off" {
 		return nil, nil
 	}
-	return []string{
+	env := []string{
 		remotechild.EnvMode + "=" + remoteChildren,
 		remotechild.EnvIPCCompat + "=" + ipcCompat,
 		"LD_PRELOAD=" + remoteChildPreloadPath,
-	}, nil
+	}
+	if allowFileLocks {
+		env = append(env, remotechild.EnvAllowFileLocks+"=1")
+	}
+	return env, nil
 }
 
 func execResourceDefaults(cmd *cobra.Command, configPath string) (int, int, error) {
@@ -595,7 +599,8 @@ var execCmd = &cobra.Command{
 		}
 		remoteChildren, _ := cmd.Flags().GetString("remote-children")
 		remoteIPCCompat, _ := cmd.Flags().GetString("remote-ipc-compat")
-		remoteEnv, err := remoteChildrenEnvironment(remoteChildren, remoteIPCCompat)
+		remoteFileLocks, _ := cmd.Flags().GetBool("remote-file-locks")
+		remoteEnv, err := remoteChildrenEnvironment(remoteChildren, remoteIPCCompat, remoteFileLocks)
 		if err != nil {
 			return err
 		}
@@ -978,6 +983,7 @@ func main() {
 	execCmd.Flags().Bool("wait", false, "With --background, wait for the detached job to finish")
 	execCmd.Flags().String("remote-children", "off", "Remote eligible child execs with the LD_PRELOAD prototype: off, safe, or aggressive")
 	execCmd.Flags().String("remote-ipc-compat", "strict", "Remote child IPC compatibility policy: strict or relaxed")
+	execCmd.Flags().Bool("remote-file-locks", false, "Allow remoting inherited locked SSI files after validating cluster filesystem lock semantics")
 
 	psCmd.Flags().String("node", "", "Filter by node")
 	psCmd.Flags().String("session", "", "Filter by session")
