@@ -854,6 +854,7 @@ func (s *ClusterServerImpl) finishJob(jobID cluster.JobID, nodeID cluster.NodeID
 			stopChildren = true
 		}
 	}
+	s.releaseVFIOAllocationsForJobLocked(jobID)
 	s.mu.Unlock()
 	s.scheduler.Release(nodeID, reqs)
 	if stopChildren {
@@ -878,6 +879,7 @@ func (s *ClusterServerImpl) failJob(jobID cluster.JobID, nodeID cluster.NodeID, 
 			stopChildren = true
 		}
 	}
+	s.releaseVFIOAllocationsForJobLocked(jobID)
 	s.mu.Unlock()
 	if nodeID != "" {
 		s.scheduler.Release(nodeID, reqs)

@@ -271,6 +271,48 @@ func TestAllocateVFIORejectsDoubleAllocation(t *testing.T) {
 	}
 }
 
+func TestDestroySessionReleasesVFIOAllocations(t *testing.T) {
+	sched := scheduler.NewScheduler(&scheduler.BinPackPolicy{})
+	node := testVFIONode()
+	sched.AddNode(node)
+	server := NewClusterServerImpl("test-node", sched, tracker.NewTracker(), nil)
+	if _, err := server.CreateSession(context.Background(), &CreateSessionRequest{
+		SessionId: "sess-1",
+		User:      "test",
+	}); err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	alloc, err := server.AllocateVFIO(context.Background(), &AllocateVFIORequest{
+		SessionId: "sess-1",
+		JobId:     "job-1",
+		Device:    &VFIORequirement{VendorId: "8086", Count: 1},
+	})
+	if err != nil {
+		t.Fatalf("AllocateVFIO: %v", err)
+	}
+	if !alloc.Success {
+		t.Fatalf("AllocateVFIO failed: %s", alloc.Error)
+	}
+
+	resp, err := server.DestroySession(context.Background(), &DestroySessionRequest{SessionId: "sess-1"})
+	if err != nil {
+		t.Fatalf("DestroySession: %v", err)
+	}
+	if !resp.Success {
+		t.Fatalf("DestroySession failed: %s", resp.Error)
+	}
+	if len(node.VFIOAllocations) != 0 {
+		t.Fatalf("VFIO allocations = %+v, want empty", node.VFIOAllocations)
+	}
+	list, err := server.GetVFIODevices(context.Background(), &GetVFIODevicesRequest{NodeId: "node-1"})
+	if err != nil {
+		t.Fatalf("GetVFIODevices: %v", err)
+	}
+	if len(list.Groups) != 1 || list.Groups[0].ClaimedBy != "" {
+		t.Fatalf("VFIO groups after destroy = %+v, want unclaimed", list.Groups)
+	}
+}
+
 func testVFIONode() *cluster.NodeInfo {
 	return &cluster.NodeInfo{
 		ID:    "node-1",

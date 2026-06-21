@@ -259,6 +259,7 @@ func (s *ClusterServerImpl) releaseAndFail(jobID cluster.JobID, node *cluster.No
 		job.Status = cluster.JobStatusFailed
 		job.FinishedAt = time.Now()
 	}
+	s.releaseVFIOAllocationsForJobLocked(jobID)
 	s.mu.Unlock()
 	s.scheduler.Release(node.ID, s.protoToRequirements(reqProto))
 }
@@ -609,6 +610,7 @@ func (s *ClusterServerImpl) DestroySession(ctx context.Context, req *DestroySess
 
 	sessID := cluster.SessionID(req.SessionId)
 	delete(s.cluster.sessions, sessID)
+	s.releaseVFIOAllocationsForSessionLocked(sessID)
 	return &DestroySessionResponse{Success: true}, nil
 }
 
@@ -796,6 +798,36 @@ func (s *ClusterServerImpl) vfioGroupExistsLocked(groupID int) bool {
 		}
 	}
 	return false
+}
+
+func (s *ClusterServerImpl) releaseVFIOAllocationsForJobLocked(jobID cluster.JobID) {
+	for key, alloc := range s.cluster.vfioAllocations {
+		if alloc.JobID != jobID {
+			continue
+		}
+		if s.scheduler != nil {
+			s.scheduler.Release(alloc.NodeID, cluster.Requirements{
+				JobID:      alloc.JobID,
+				VFIOGroups: []int{alloc.GroupID},
+			})
+		}
+		delete(s.cluster.vfioAllocations, key)
+	}
+}
+
+func (s *ClusterServerImpl) releaseVFIOAllocationsForSessionLocked(sessionID cluster.SessionID) {
+	for key, alloc := range s.cluster.vfioAllocations {
+		if alloc.SessionID != sessionID {
+			continue
+		}
+		if s.scheduler != nil {
+			s.scheduler.Release(alloc.NodeID, cluster.Requirements{
+				JobID:      alloc.JobID,
+				VFIOGroups: []int{alloc.GroupID},
+			})
+		}
+		delete(s.cluster.vfioAllocations, key)
+	}
 }
 
 func (s *ClusterServerImpl) sessionToProto(sess *cluster.Session) *SessionInfo {
