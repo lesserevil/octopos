@@ -37,20 +37,52 @@ const (
 	FDKindUnknown     FDKind = "unknown"
 )
 
+type FDReasonCode string
+
+const (
+	FDReasonStdioProxy              FDReasonCode = "fd.stdio_proxy"
+	FDReasonCloseOnExec             FDReasonCode = "fd.close_on_exec"
+	FDReasonRemoteReopen            FDReasonCode = "fd.reopen"
+	FDReasonDeleted                 FDReasonCode = "fd.deleted"
+	FDReasonSharedMemoryDeleted     FDReasonCode = "ipc.shared_memory.deleted"
+	FDReasonSharedMemory            FDReasonCode = "ipc.shared_memory"
+	FDReasonRegularRequiresReopen   FDReasonCode = "fd.regular.requires_reopen"
+	FDReasonRegularNoPath           FDReasonCode = "fd.regular.no_reopen_path"
+	FDReasonDirectoryRequiresReopen FDReasonCode = "fd.directory.requires_reopen"
+	FDReasonPipe                    FDReasonCode = "ipc.pipe"
+	FDReasonSocket                  FDReasonCode = "ipc.socket"
+	FDReasonUnixSocket              FDReasonCode = "ipc.unix_socket"
+	FDReasonUnixAbstractSocket      FDReasonCode = "ipc.unix_socket.abstract"
+	FDReasonNetlinkSocket           FDReasonCode = "ipc.netlink"
+	FDReasonEventFD                 FDReasonCode = "ipc.eventfd"
+	FDReasonSignalFD                FDReasonCode = "ipc.signalfd"
+	FDReasonTimerFD                 FDReasonCode = "ipc.timerfd"
+	FDReasonPidFD                   FDReasonCode = "ipc.pidfd"
+	FDReasonAnonInode               FDReasonCode = "ipc.anon_inode"
+	FDReasonCharDeviceReopenable    FDReasonCode = "fd.char_device.reopenable"
+	FDReasonCharDeviceAllowlist     FDReasonCode = "fd.char_device.allowlist_required"
+	FDReasonCharDeviceNoPath        FDReasonCode = "fd.char_device.no_reopen_path"
+	FDReasonBlockDeviceAllowlist    FDReasonCode = "fd.block_device.allowlist_required"
+	FDReasonUnknown                 FDReasonCode = "fd.unknown"
+)
+
 type FDPlan struct {
-	FD          int
-	Kind        FDKind
-	Action      FDAction
-	Path        string
-	ReopenPath  string
-	DeviceMajor uint32
-	DeviceMinor uint32
-	PipeID      string
-	SocketID    string
-	OpenFlags   int
-	Offset      int64
-	Deleted     bool
-	Reason      string
+	FD            int
+	Kind          FDKind
+	Action        FDAction
+	Path          string
+	ReopenPath    string
+	DeviceMajor   uint32
+	DeviceMinor   uint32
+	PipeID        string
+	SocketID      string
+	SocketFamily  string
+	SocketAddress string
+	OpenFlags     int
+	Offset        int64
+	Deleted       bool
+	Reason        string
+	ReasonCode    FDReasonCode
 }
 
 type FDPlanOptions struct {
@@ -125,6 +157,7 @@ func PrepareFDPlans(plans []FDPlan, opts FDPlanOptions) []FDPlan {
 		if opts.AllowReopen && reopenableFDPlan(plan) {
 			plan.Action = FDActionReopen
 			plan.Reason = "descriptor will be reopened in the remote SSI namespace"
+			plan.ReasonCode = FDReasonRemoteReopen
 		}
 		out = append(out, plan)
 	}
@@ -186,34 +219,61 @@ func FormatUnsupportedFDs(plans []FDPlan) string {
 	}
 	parts := make([]string, 0, len(plans))
 	for _, plan := range plans {
-		parts = append(parts, fmt.Sprintf("fd %d %s %s%s: %s", plan.FD, plan.Kind, plan.Path, fdPlanDetailSuffix(plan), plan.Reason))
+		code := string(plan.ReasonCode)
+		if code == "" {
+			code = string(FDReasonUnknown)
+		}
+		parts = append(parts, fmt.Sprintf("fd %d %s %s%s [%s]: %s", plan.FD, plan.Kind, plan.Path, fdPlanDetailSuffix(plan), code, plan.Reason))
 	}
 	return strings.Join(parts, "; ")
+}
+
+func FormatUnsupportedReasonCodes(plans []FDPlan) string {
+	if len(plans) == 0 {
+		return ""
+	}
+	seen := make(map[FDReasonCode]bool, len(plans))
+	codes := make([]string, 0, len(plans))
+	for _, plan := range plans {
+		code := plan.ReasonCode
+		if code == "" {
+			code = FDReasonUnknown
+		}
+		if seen[code] {
+			continue
+		}
+		seen[code] = true
+		codes = append(codes, string(code))
+	}
+	sort.Strings(codes)
+	return strings.Join(codes, ",")
 }
 
 func classifyOpenFD(fd int, target string, flags int, openFlags int, offset int64, kind FDKind, currentProcess bool) FDPlan {
 	if fd >= 0 && fd <= 2 {
 		plan := FDPlan{
-			FD:        fd,
-			Kind:      FDKindStdio,
-			Action:    FDActionProxyStream,
-			Path:      target,
-			OpenFlags: openFlags,
-			Offset:    offset,
-			Reason:    "stdio is proxied",
+			FD:         fd,
+			Kind:       FDKindStdio,
+			Action:     FDActionProxyStream,
+			Path:       target,
+			OpenFlags:  openFlags,
+			Offset:     offset,
+			Reason:     "stdio is proxied",
+			ReasonCode: FDReasonStdioProxy,
 		}
 		enrichFDPlan(&plan, fd, target, currentProcess)
 		return plan
 	}
 	if flags&unix.FD_CLOEXEC != 0 {
 		plan := FDPlan{
-			FD:        fd,
-			Kind:      FDKindCloseOnExec,
-			Action:    FDActionClose,
-			Path:      target,
-			OpenFlags: openFlags,
-			Offset:    offset,
-			Reason:    "descriptor is close-on-exec",
+			FD:         fd,
+			Kind:       FDKindCloseOnExec,
+			Action:     FDActionClose,
+			Path:       target,
+			OpenFlags:  openFlags,
+			Offset:     offset,
+			Reason:     "descriptor is close-on-exec",
+			ReasonCode: FDReasonCloseOnExec,
 		}
 		enrichFDPlan(&plan, fd, target, currentProcess)
 		return plan
@@ -227,7 +287,7 @@ func classifyOpenFD(fd int, target string, flags int, openFlags int, offset int6
 		Offset:    offset,
 	}
 	enrichFDPlan(&plan, fd, target, currentProcess)
-	plan.Reason = forceLocalReason(plan)
+	plan.Reason, plan.ReasonCode = forceLocalReason(plan)
 	return plan
 }
 
@@ -275,6 +335,8 @@ func enrichFDPlan(plan *FDPlan, fd int, target string, currentProcess bool) {
 			case unix.S_IFCHR, unix.S_IFBLK:
 				plan.DeviceMajor = uint32(unix.Major(uint64(st.Rdev)))
 				plan.DeviceMinor = uint32(unix.Minor(uint64(st.Rdev)))
+			case unix.S_IFSOCK:
+				enrichSocketPlan(plan, fd)
 			}
 		}
 	}
@@ -285,56 +347,141 @@ func enrichFDPlan(plan *FDPlan, fd int, target string, currentProcess bool) {
 	}
 }
 
-func forceLocalReason(plan FDPlan) string {
+func enrichSocketPlan(plan *FDPlan, fd int) {
+	domain, err := unix.GetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_DOMAIN)
+	if err == nil {
+		plan.SocketFamily = socketDomainName(domain)
+	}
+	if addr, err := unix.Getsockname(fd); err == nil {
+		socketAddressFields(plan, addr)
+	}
+	if plan.SocketAddress == "" {
+		if addr, err := unix.Getpeername(fd); err == nil {
+			socketAddressFields(plan, addr)
+		}
+	}
+}
+
+func socketAddressFields(plan *FDPlan, addr unix.Sockaddr) {
+	switch a := addr.(type) {
+	case *unix.SockaddrUnix:
+		if plan.SocketFamily == "" {
+			plan.SocketFamily = "unix"
+		}
+		if a.Name == "" {
+			return
+		}
+		if a.Name == "@" {
+			return
+		}
+		if strings.HasPrefix(a.Name, "@") {
+			plan.SocketAddress = a.Name
+			return
+		}
+		if strings.HasPrefix(a.Name, "\x00") {
+			name := strings.TrimLeft(a.Name, "\x00")
+			if name == "" {
+				return
+			}
+			plan.SocketAddress = "@" + name
+			return
+		}
+		plan.SocketAddress = a.Name
+	case *unix.SockaddrNetlink:
+		plan.SocketFamily = "netlink"
+		plan.SocketAddress = fmt.Sprintf("pid=%d,groups=%d", a.Pid, a.Groups)
+	case *unix.SockaddrInet4:
+		plan.SocketFamily = "inet"
+		plan.SocketAddress = fmt.Sprintf("%d.%d.%d.%d:%d", a.Addr[0], a.Addr[1], a.Addr[2], a.Addr[3], a.Port)
+	case *unix.SockaddrInet6:
+		plan.SocketFamily = "inet6"
+		plan.SocketAddress = fmt.Sprintf("[%x:%x:%x:%x:%x:%x:%x:%x]:%d",
+			uint16(a.Addr[0])<<8|uint16(a.Addr[1]),
+			uint16(a.Addr[2])<<8|uint16(a.Addr[3]),
+			uint16(a.Addr[4])<<8|uint16(a.Addr[5]),
+			uint16(a.Addr[6])<<8|uint16(a.Addr[7]),
+			uint16(a.Addr[8])<<8|uint16(a.Addr[9]),
+			uint16(a.Addr[10])<<8|uint16(a.Addr[11]),
+			uint16(a.Addr[12])<<8|uint16(a.Addr[13]),
+			uint16(a.Addr[14])<<8|uint16(a.Addr[15]),
+			a.Port)
+	}
+}
+
+func socketDomainName(domain int) string {
+	switch domain {
+	case unix.AF_UNIX:
+		return "unix"
+	case unix.AF_NETLINK:
+		return "netlink"
+	case unix.AF_INET:
+		return "inet"
+	case unix.AF_INET6:
+		return "inet6"
+	default:
+		return fmt.Sprintf("af_%d", domain)
+	}
+}
+
+func forceLocalReason(plan FDPlan) (string, FDReasonCode) {
 	if plan.Deleted {
 		if strings.Contains(plan.Path, "/dev/shm/") || strings.HasPrefix(plan.Path, "/memfd:") || strings.HasPrefix(plan.Path, "memfd:") {
-			return "shared-memory descriptor is deleted and cannot be represented remotely"
+			return "shared-memory descriptor is deleted and cannot be represented remotely", FDReasonSharedMemoryDeleted
 		}
-		return "deleted descriptor cannot be reopened remotely"
+		return "deleted descriptor cannot be reopened remotely", FDReasonDeleted
 	}
 	switch plan.Kind {
 	case FDKindRegular:
 		if strings.HasPrefix(plan.Path, "/dev/shm/") || strings.HasPrefix(plan.Path, "/memfd:") || strings.HasPrefix(plan.Path, "memfd:") {
-			return "shared-memory descriptor is local kernel state and is not distributed"
+			return "shared-memory descriptor is local kernel state and is not distributed", FDReasonSharedMemory
 		}
 		if plan.ReopenPath != "" {
-			return "regular file descriptor requires remote fd recreation, which is not enabled yet"
+			return "regular file descriptor requires remote fd recreation, which is not enabled yet", FDReasonRegularRequiresReopen
 		}
-		return "regular file descriptor cannot be mapped to a reopen path"
+		return "regular file descriptor cannot be mapped to a reopen path", FDReasonRegularNoPath
 	case FDKindDirectory:
-		return "directory descriptor requires remote fd recreation, which is not enabled yet"
+		return "directory descriptor requires remote fd recreation, which is not enabled yet", FDReasonDirectoryRequiresReopen
 	case FDKindPipe:
-		return "anonymous pipe requires coordinated pipe proxying"
+		return "anonymous pipe requires coordinated pipe proxying", FDReasonPipe
 	case FDKindSocket:
-		if plan.SocketID != "" {
-			return "socket descriptor requires local kernel peer state"
+		switch plan.SocketFamily {
+		case "netlink":
+			return "netlink socket requires local kernel state and is not distributed", FDReasonNetlinkSocket
+		case "unix":
+			if strings.HasPrefix(plan.SocketAddress, "@") {
+				return "abstract Unix socket requires local kernel namespace state and is not distributed", FDReasonUnixAbstractSocket
+			}
+			return "Unix socket descriptor requires local kernel peer state", FDReasonUnixSocket
 		}
-		return "socket descriptor cannot be represented remotely"
+		if plan.SocketID != "" {
+			return "socket descriptor requires local kernel peer state", FDReasonSocket
+		}
+		return "socket descriptor cannot be represented remotely", FDReasonSocket
 	case FDKindAnonInode:
 		switch {
 		case strings.Contains(plan.Path, "eventfd"):
-			return "eventfd descriptor is local kernel state and is not distributed"
+			return "eventfd descriptor is local kernel state and is not distributed", FDReasonEventFD
 		case strings.Contains(plan.Path, "signalfd"):
-			return "signalfd descriptor is local kernel state and is not distributed"
+			return "signalfd descriptor is local kernel state and is not distributed", FDReasonSignalFD
 		case strings.Contains(plan.Path, "timerfd"):
-			return "timerfd descriptor is local kernel state and is not distributed"
+			return "timerfd descriptor is local kernel state and is not distributed", FDReasonTimerFD
 		case strings.Contains(plan.Path, "pidfd"):
-			return "pidfd descriptor is local kernel state and is not distributed"
+			return "pidfd descriptor is local kernel state and is not distributed", FDReasonPidFD
 		default:
-			return "anonymous inode descriptor is local kernel state and is not distributed"
+			return "anonymous inode descriptor is local kernel state and is not distributed", FDReasonAnonInode
 		}
 	case FDKindCharDevice:
 		if knownReopenableCharDevice(plan.ReopenPath) {
-			return fmt.Sprintf("%s can be reopened remotely, but remote fd recreation is not enabled yet", plan.ReopenPath)
+			return fmt.Sprintf("%s can be reopened remotely, but remote fd recreation is not enabled yet", plan.ReopenPath), FDReasonCharDeviceReopenable
 		}
 		if plan.ReopenPath != "" {
-			return "character device descriptor requires an explicit device allowlist"
+			return "character device descriptor requires an explicit device allowlist", FDReasonCharDeviceAllowlist
 		}
-		return "character device descriptor cannot be mapped to a reopen path"
+		return "character device descriptor cannot be mapped to a reopen path", FDReasonCharDeviceNoPath
 	case FDKindBlockDevice:
-		return "block device descriptor requires an explicit device allowlist"
+		return "block device descriptor requires an explicit device allowlist", FDReasonBlockDeviceAllowlist
 	default:
-		return fmt.Sprintf("inherited %s descriptor would not be represented remotely", plan.Kind)
+		return fmt.Sprintf("inherited %s descriptor would not be represented remotely", plan.Kind), FDReasonUnknown
 	}
 }
 
@@ -367,6 +514,12 @@ func fdPlanDetailSuffix(plan FDPlan) string {
 	}
 	if plan.SocketID != "" {
 		parts = append(parts, "socket="+plan.SocketID)
+	}
+	if plan.SocketFamily != "" {
+		parts = append(parts, "family="+plan.SocketFamily)
+	}
+	if plan.SocketAddress != "" {
+		parts = append(parts, "addr="+plan.SocketAddress)
 	}
 	if plan.Deleted {
 		parts = append(parts, "deleted")

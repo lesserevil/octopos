@@ -186,20 +186,21 @@ type JobInfo struct {
 // RemoteChildInfo records the explicit local-shadow to remote-worker mapping
 // used by octopos-remote-child.
 type RemoteChildInfo struct {
-	ParentJobID     JobID     `json:"parent_job_id,omitempty"`
-	ParentPID       int       `json:"parent_pid,omitempty"`
-	ShadowPID       int       `json:"shadow_pid,omitempty"`
-	RemoteJobID     JobID     `json:"remote_job_id,omitempty"`
-	RemoteNodeID    NodeID    `json:"remote_node_id,omitempty"`
-	RemoteGlobalPID uint64    `json:"remote_global_pid,omitempty"`
-	RemoteLocalPID  int       `json:"remote_local_pid,omitempty"`
-	Command         []string  `json:"command,omitempty"`
-	PlacementReason string    `json:"placement_reason,omitempty"`
-	FallbackReason  string    `json:"fallback_reason,omitempty"`
-	State           string    `json:"state,omitempty"`
-	FailureReason   string    `json:"failure_reason,omitempty"`
-	StartedAt       time.Time `json:"started_at,omitempty"`
-	FinishedAt      time.Time `json:"finished_at,omitempty"`
+	ParentJobID        JobID     `json:"parent_job_id,omitempty"`
+	ParentPID          int       `json:"parent_pid,omitempty"`
+	ShadowPID          int       `json:"shadow_pid,omitempty"`
+	RemoteJobID        JobID     `json:"remote_job_id,omitempty"`
+	RemoteNodeID       NodeID    `json:"remote_node_id,omitempty"`
+	RemoteGlobalPID    uint64    `json:"remote_global_pid,omitempty"`
+	RemoteLocalPID     int       `json:"remote_local_pid,omitempty"`
+	Command            []string  `json:"command,omitempty"`
+	PlacementReason    string    `json:"placement_reason,omitempty"`
+	FallbackReason     string    `json:"fallback_reason,omitempty"`
+	FallbackReasonCode string    `json:"fallback_reason_code,omitempty"`
+	State              string    `json:"state,omitempty"`
+	FailureReason      string    `json:"failure_reason,omitempty"`
+	StartedAt          time.Time `json:"started_at,omitempty"`
+	FinishedAt         time.Time `json:"finished_at,omitempty"`
 }
 
 // NodeInfo describes a cluster node

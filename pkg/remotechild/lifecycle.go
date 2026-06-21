@@ -28,44 +28,46 @@ const (
 )
 
 type ShadowRecord struct {
-	SessionID       string
-	ParentJobID     string
-	ParentPID       int
-	ShadowPID       int
-	RemoteJobID     string
-	RemoteNodeID    string
-	RemoteGlobalPID uint64
-	RemoteLocalPID  int
-	Command         []string
-	State           ShadowState
-	StartedAt       time.Time
-	FinishedAt      time.Time
-	ExitCode        int
-	Signal          int
-	PlacementReason string
-	FallbackReason  string
-	FailureReason   string
-	CreatedAt       time.Time
-	UpdatedAt       time.Time
+	SessionID          string
+	ParentJobID        string
+	ParentPID          int
+	ShadowPID          int
+	RemoteJobID        string
+	RemoteNodeID       string
+	RemoteGlobalPID    uint64
+	RemoteLocalPID     int
+	Command            []string
+	State              ShadowState
+	StartedAt          time.Time
+	FinishedAt         time.Time
+	ExitCode           int
+	Signal             int
+	PlacementReason    string
+	FallbackReason     string
+	FallbackReasonCode string
+	FailureReason      string
+	CreatedAt          time.Time
+	UpdatedAt          time.Time
 }
 
 type AuditEvent struct {
-	Time              time.Time
-	Event             string
-	Decision          string
-	SessionID         string
-	ParentJobID       string
-	ParentPID         int
-	ShadowPID         int
-	RemoteJobID       string
-	RemoteNodeID      string
-	Command           []string
-	PlacementReason   string
-	FallbackReason    string
-	AuthFailureReason string
-	PeerPID           int
-	PeerUID           int
-	PeerGID           int
+	Time               time.Time
+	Event              string
+	Decision           string
+	SessionID          string
+	ParentJobID        string
+	ParentPID          int
+	ShadowPID          int
+	RemoteJobID        string
+	RemoteNodeID       string
+	Command            []string
+	PlacementReason    string
+	FallbackReason     string
+	FallbackReasonCode string
+	AuthFailureReason  string
+	PeerPID            int
+	PeerUID            int
+	PeerGID            int
 }
 
 func (e AuditEvent) Clone() AuditEvent {
@@ -252,6 +254,9 @@ func (s *Store) Upsert(record ShadowRecord) ShadowRecord {
 		}
 		if record.FallbackReason == "" {
 			record.FallbackReason = existing.FallbackReason
+		}
+		if record.FallbackReasonCode == "" {
+			record.FallbackReasonCode = existing.FallbackReasonCode
 		}
 		if record.FailureReason == "" {
 			record.FailureReason = existing.FailureReason

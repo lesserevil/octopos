@@ -298,15 +298,16 @@ var jobChildrenCmd = &cobra.Command{
 			return fmt.Errorf("ListRemoteChildren failed: %w", err)
 		}
 
-		fmt.Printf("%-20s %-20s %-15s %-10s %-10s %-12s %s\n", "REMOTE JOB", "PARENT JOB", "REMOTE NODE", "SHADOW", "PID", "STATE", "COMMAND")
+		fmt.Printf("%-20s %-20s %-15s %-10s %-10s %-12s %-24s %s\n", "REMOTE JOB", "PARENT JOB", "REMOTE NODE", "SHADOW", "PID", "STATE", "REASON CODE", "COMMAND")
 		for _, child := range resp.Children {
-			fmt.Printf("%-20s %-20s %-15s %-10d %-10d %-12s %s\n",
+			fmt.Printf("%-20s %-20s %-15s %-10d %-10d %-12s %-24s %s\n",
 				child.RemoteJobId,
 				child.ParentJobId,
 				child.RemoteNodeId,
 				child.ShadowPid,
 				child.RemoteGlobalPid,
 				child.State,
+				child.FallbackReasonCode,
 				strings.Join(child.Command, " "),
 			)
 		}

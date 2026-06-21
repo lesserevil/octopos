@@ -19,6 +19,8 @@ const (
 	EnvPreloadActive   = "OCTOPOS_REMOTE_CHILD_PRELOAD_ACTIVE"
 	EnvRemoteChild     = "OCTOPOS_REMOTE_CHILD"
 	EnvPlacementReason = "OCTOPOS_REMOTE_CHILD_REASON"
+	EnvFallbackReason  = "OCTOPOS_REMOTE_CHILD_FALLBACK_REASON"
+	EnvFallbackCode    = "OCTOPOS_REMOTE_CHILD_FALLBACK_CODE"
 	EnvParentJobID     = "OCTOPOS_PARENT_JOB_ID"
 	EnvParentPID       = "OCTOPOS_PARENT_PID"
 	EnvShadowPID       = "OCTOPOS_SHADOW_PID"

@@ -260,6 +260,9 @@ func mergeRecoveredRemoteChildRecord(record remotechild.ShadowRecord, job *JobIn
 		if record.FallbackReason == "" {
 			record.FallbackReason = child.FallbackReason
 		}
+		if record.FallbackReasonCode == "" {
+			record.FallbackReasonCode = child.FallbackReasonCode
+		}
 		if child.FailureReason != "" {
 			record.FailureReason = child.FailureReason
 		}

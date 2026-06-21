@@ -237,6 +237,10 @@ The remaining work should be implemented in this order. Each phase should land
 behind explicit opt-in behavior and include local tests plus at least one
 bounded live validation on the `shedwards-octo*` cluster.
 
+The IPC compatibility strategy is refined in `plans/ipc-compatibility-plan.md`.
+That plan is authoritative for which IPC classes should be supported, brokered
+later, force-local, or treated as permanent non-goals.
+
 ### Phase 1: Finish Secure Child Control
 
 Goal: make child-placement requests safe enough to use from transparent

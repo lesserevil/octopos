@@ -366,6 +366,7 @@ message RemoteChildInfo {
   string failure_reason = 11;
   int64 started_at = 12;
   int64 finished_at = 13;
+  string fallback_reason_code = 14;
 }
 
 message RemoteChildRecord {
@@ -387,6 +388,7 @@ message RemoteChildRecord {
   string failure_reason = 16;
   int64 created_at = 17;
   int64 updated_at = 18;
+  string fallback_reason_code = 19;
 }
 
 message CommandSpec {

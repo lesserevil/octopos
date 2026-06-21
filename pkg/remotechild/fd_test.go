@@ -97,13 +97,25 @@ func TestClassifyInheritedFDsAllowsCloseOnExecFD(t *testing.T) {
 
 func TestFormatUnsupportedFDs(t *testing.T) {
 	got := FormatUnsupportedFDs([]FDPlan{{
-		FD:     5,
-		Kind:   FDKindSocket,
-		Path:   "socket:[1]",
-		Reason: "inherited socket descriptor would not be represented remotely",
+		FD:         5,
+		Kind:       FDKindSocket,
+		Path:       "socket:[1]",
+		Reason:     "inherited socket descriptor would not be represented remotely",
+		ReasonCode: FDReasonSocket,
 	}})
 	if !strings.Contains(got, "socket") {
 		t.Fatalf("FormatUnsupportedFDs = %q, want socket kind", got)
+	}
+	if !strings.Contains(got, string(FDReasonSocket)) {
+		t.Fatalf("FormatUnsupportedFDs = %q, want reason code", got)
+	}
+	codes := FormatUnsupportedReasonCodes([]FDPlan{
+		{ReasonCode: FDReasonSocket},
+		{ReasonCode: FDReasonSocket},
+		{ReasonCode: FDReasonEventFD},
+	})
+	if codes != string(FDReasonEventFD)+","+string(FDReasonSocket) {
+		t.Fatalf("FormatUnsupportedReasonCodes = %q", codes)
 	}
 }
 
@@ -131,6 +143,9 @@ func TestClassifyInheritedFDsReportsPipeKind(t *testing.T) {
 	}
 	if plan.PipeID == "" {
 		t.Fatalf("pipe id missing: %#v", plan)
+	}
+	if plan.ReasonCode != FDReasonPipe {
+		t.Fatalf("reason code = %q, want %q; plan=%#v", plan.ReasonCode, FDReasonPipe, plan)
 	}
 }
 
@@ -164,9 +179,15 @@ func TestClassifyInheritedFDsReportsDeviceNumbers(t *testing.T) {
 	if !strings.Contains(plan.Reason, "reopened remotely") {
 		t.Fatalf("reason = %q, want reopen diagnostic", plan.Reason)
 	}
+	if plan.ReasonCode != FDReasonCharDeviceReopenable {
+		t.Fatalf("reason code = %q, want %q; plan=%#v", plan.ReasonCode, FDReasonCharDeviceReopenable, plan)
+	}
 	prepared := PrepareFDPlans([]FDPlan{plan}, FDPlanOptions{AllowReopen: true})
 	if prepared[0].Action != FDActionReopen {
 		t.Fatalf("prepared action = %s, want %s; plan=%#v", prepared[0].Action, FDActionReopen, prepared[0])
+	}
+	if prepared[0].ReasonCode != FDReasonRemoteReopen {
+		t.Fatalf("prepared reason code = %q, want %q; plan=%#v", prepared[0].ReasonCode, FDReasonRemoteReopen, prepared[0])
 	}
 }
 
@@ -218,6 +239,93 @@ func TestClassifyInheritedFDsReportsUnixSocketReason(t *testing.T) {
 	if !strings.Contains(plan.Reason, "kernel peer state") {
 		t.Fatalf("reason = %q, want kernel peer state diagnostic", plan.Reason)
 	}
+	if plan.ReasonCode != FDReasonUnixSocket {
+		t.Fatalf("reason code = %q, want %q; plan=%#v", plan.ReasonCode, FDReasonUnixSocket, plan)
+	}
+	if plan.SocketFamily != "unix" {
+		t.Fatalf("socket family = %q, want unix; plan=%#v", plan.SocketFamily, plan)
+	}
+}
+
+func TestClassifyInheritedFDsReportsUnixSocketpairReasonCode(t *testing.T) {
+	fds, err := unix.Socketpair(unix.AF_UNIX, unix.SOCK_STREAM, 0)
+	if err != nil {
+		t.Fatalf("socketpair: %v", err)
+	}
+	defer unix.Close(fds[0])
+	defer unix.Close(fds[1])
+	if _, err := unix.FcntlInt(uintptr(fds[0]), unix.F_SETFD, 0); err != nil {
+		t.Fatalf("clear close-on-exec: %v", err)
+	}
+
+	plans, err := ClassifyInheritedFDs(os.Getpid())
+	if err != nil {
+		t.Fatalf("ClassifyInheritedFDs: %v", err)
+	}
+	plan, ok := findPlan(plans, fds[0])
+	if !ok {
+		t.Fatalf("fd %d missing from plan: %#v", fds[0], plans)
+	}
+	if plan.Kind != FDKindSocket || plan.SocketFamily != "unix" || plan.ReasonCode != FDReasonUnixSocket {
+		t.Fatalf("socketpair plan = %#v", plan)
+	}
+}
+
+func TestClassifyInheritedFDsReportsUnixPathnameSocketReasonCode(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "listener.sock")
+	fd, err := unix.Socket(unix.AF_UNIX, unix.SOCK_STREAM, 0)
+	if err != nil {
+		t.Fatalf("socket: %v", err)
+	}
+	defer unix.Close(fd)
+	if err := unix.Bind(fd, &unix.SockaddrUnix{Name: path}); err != nil {
+		t.Fatalf("bind unix socket: %v", err)
+	}
+	if _, err := unix.FcntlInt(uintptr(fd), unix.F_SETFD, 0); err != nil {
+		t.Fatalf("clear close-on-exec: %v", err)
+	}
+
+	plans, err := ClassifyInheritedFDs(os.Getpid())
+	if err != nil {
+		t.Fatalf("ClassifyInheritedFDs: %v", err)
+	}
+	plan, ok := findPlan(plans, fd)
+	if !ok {
+		t.Fatalf("fd %d missing from plan: %#v", fd, plans)
+	}
+	if plan.Kind != FDKindSocket || plan.SocketFamily != "unix" || plan.SocketAddress != path || plan.ReasonCode != FDReasonUnixSocket {
+		t.Fatalf("pathname unix socket plan = %#v", plan)
+	}
+}
+
+func TestClassifyInheritedFDsReportsUnixAbstractSocketReasonCode(t *testing.T) {
+	name := "\x00octopos-test-" + strconv.Itoa(os.Getpid())
+	fd, err := unix.Socket(unix.AF_UNIX, unix.SOCK_STREAM, 0)
+	if err != nil {
+		t.Fatalf("socket: %v", err)
+	}
+	defer unix.Close(fd)
+	if err := unix.Bind(fd, &unix.SockaddrUnix{Name: name}); err != nil {
+		t.Fatalf("bind abstract unix socket: %v", err)
+	}
+	if _, err := unix.FcntlInt(uintptr(fd), unix.F_SETFD, 0); err != nil {
+		t.Fatalf("clear close-on-exec: %v", err)
+	}
+
+	plans, err := ClassifyInheritedFDs(os.Getpid())
+	if err != nil {
+		t.Fatalf("ClassifyInheritedFDs: %v", err)
+	}
+	plan, ok := findPlan(plans, fd)
+	if !ok {
+		t.Fatalf("fd %d missing from plan: %#v", fd, plans)
+	}
+	if plan.Kind != FDKindSocket || plan.SocketFamily != "unix" || plan.ReasonCode != FDReasonUnixAbstractSocket {
+		t.Fatalf("abstract unix socket plan = %#v", plan)
+	}
+	if !strings.HasPrefix(plan.SocketAddress, "@octopos-test-") {
+		t.Fatalf("abstract socket address = %q; plan=%#v", plan.SocketAddress, plan)
+	}
 }
 
 func TestClassifyInheritedFDsReportsAnonInodeReasons(t *testing.T) {
@@ -249,12 +357,18 @@ func TestClassifyInheritedFDsReportsAnonInodeReasons(t *testing.T) {
 	if eventPlan.Kind != FDKindAnonInode || !strings.Contains(eventPlan.Reason, "eventfd") {
 		t.Fatalf("event plan = %#v", eventPlan)
 	}
+	if eventPlan.ReasonCode != FDReasonEventFD {
+		t.Fatalf("event reason code = %q, want %q; plan=%#v", eventPlan.ReasonCode, FDReasonEventFD, eventPlan)
+	}
 	timerPlan, ok := findPlan(plans, timerFD)
 	if !ok {
 		t.Fatalf("timer fd %d missing from plan: %#v", timerFD, plans)
 	}
 	if timerPlan.Kind != FDKindAnonInode || !strings.Contains(timerPlan.Reason, "timerfd") {
 		t.Fatalf("timer plan = %#v", timerPlan)
+	}
+	if timerPlan.ReasonCode != FDReasonTimerFD {
+		t.Fatalf("timer reason code = %q, want %q; plan=%#v", timerPlan.ReasonCode, FDReasonTimerFD, timerPlan)
 	}
 }
 
@@ -282,6 +396,9 @@ func TestClassifyInheritedFDsReportsSignalfdReason(t *testing.T) {
 	if plan.Kind != FDKindAnonInode || !strings.Contains(plan.Reason, "signalfd") {
 		t.Fatalf("signalfd plan = %#v", plan)
 	}
+	if plan.ReasonCode != FDReasonSignalFD {
+		t.Fatalf("signalfd reason code = %q, want %q; plan=%#v", plan.ReasonCode, FDReasonSignalFD, plan)
+	}
 }
 
 func TestClassifyInheritedFDsReportsMemfdAsSharedMemory(t *testing.T) {
@@ -304,6 +421,9 @@ func TestClassifyInheritedFDsReportsMemfdAsSharedMemory(t *testing.T) {
 	}
 	if !strings.Contains(plan.Reason, "shared-memory") && !strings.Contains(plan.Reason, "deleted") {
 		t.Fatalf("memfd reason = %q, want shared-memory/deleted diagnostic; plan=%#v", plan.Reason, plan)
+	}
+	if plan.ReasonCode != FDReasonSharedMemoryDeleted && plan.ReasonCode != FDReasonSharedMemory {
+		t.Fatalf("memfd reason code = %q, want shared-memory code; plan=%#v", plan.ReasonCode, plan)
 	}
 }
 
@@ -328,6 +448,9 @@ func TestClassifyInheritedFDsReportsPidfdReason(t *testing.T) {
 	if plan.Kind != FDKindAnonInode || !strings.Contains(plan.Reason, "pidfd") {
 		t.Fatalf("pidfd plan = %#v", plan)
 	}
+	if plan.ReasonCode != FDReasonPidFD {
+		t.Fatalf("pidfd reason code = %q, want %q; plan=%#v", plan.ReasonCode, FDReasonPidFD, plan)
+	}
 }
 
 func TestClassifyInheritedFDsReportsNetlinkSocketReason(t *testing.T) {
@@ -348,8 +471,11 @@ func TestClassifyInheritedFDsReportsNetlinkSocketReason(t *testing.T) {
 	if !ok {
 		t.Fatalf("netlink fd %d missing from plan: %#v", fd, plans)
 	}
-	if plan.Kind != FDKindSocket || !strings.Contains(plan.Reason, "kernel peer state") {
+	if plan.Kind != FDKindSocket || !strings.Contains(plan.Reason, "netlink") {
 		t.Fatalf("netlink plan = %#v", plan)
+	}
+	if plan.ReasonCode != FDReasonNetlinkSocket {
+		t.Fatalf("netlink reason code = %q, want %q; plan=%#v", plan.ReasonCode, FDReasonNetlinkSocket, plan)
 	}
 }
 
@@ -378,6 +504,9 @@ func TestPrepareFDPlansDoesNotReopenDevShm(t *testing.T) {
 	if prepared[0].Action == FDActionReopen {
 		t.Fatalf("/dev/shm fd became reopenable: %#v", prepared[0])
 	}
+	if prepared[0].ReasonCode != FDReasonSharedMemory {
+		t.Fatalf("/dev/shm reason code = %q, want %q; plan=%#v", prepared[0].ReasonCode, FDReasonSharedMemory, prepared[0])
+	}
 }
 
 func TestClassifyInheritedFDsReportsDeletedFile(t *testing.T) {
@@ -405,6 +534,9 @@ func TestClassifyInheritedFDsReportsDeletedFile(t *testing.T) {
 	}
 	if !strings.Contains(plan.Reason, "deleted") {
 		t.Fatalf("reason = %q, want deleted diagnostic", plan.Reason)
+	}
+	if plan.ReasonCode != FDReasonDeleted {
+		t.Fatalf("reason code = %q, want %q; plan=%#v", plan.ReasonCode, FDReasonDeleted, plan)
 	}
 }
 

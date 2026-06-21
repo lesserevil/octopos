@@ -108,13 +108,14 @@ func applyLocalPolicy(cfg config, command []string) error {
 		return nil
 	}
 	reason := remotechild.FormatUnsupportedFDs(unsupported)
+	reasonCode := remotechild.FormatUnsupportedReasonCodes(unsupported)
 	if cfg.LocalIfUnsupported || os.Getenv(remotechild.EnvPreloadActive) == "1" {
 		if debugEnabled() {
-			fmt.Fprintf(os.Stderr, "octopos-remote-child: local fallback: %s\n", reason)
+			fmt.Fprintf(os.Stderr, "octopos-remote-child: local fallback [%s]: %s\n", reasonCode, reason)
 		}
 		return localExec(command)
 	}
-	return fmt.Errorf("unsupported inherited file descriptors: %s", reason)
+	return fmt.Errorf("unsupported inherited file descriptors [%s]: %s", reasonCode, reason)
 }
 
 func remoteFDPlanFromCurrentProcess() (string, error) {

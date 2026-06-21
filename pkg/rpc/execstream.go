@@ -1052,13 +1052,14 @@ func remoteChildInfoFromEnv(req *ExecuteRequest, jobID cluster.JobID, nodeID clu
 		return nil
 	}
 	info := &cluster.RemoteChildInfo{
-		ParentJobID:     cluster.JobID(requestEnvValue(req.Env, remotechild.EnvParentJobID)),
-		RemoteJobID:     jobID,
-		RemoteNodeID:    nodeID,
-		Command:         append([]string{}, req.Command...),
-		PlacementReason: requestEnvValue(req.Env, remotechild.EnvPlacementReason),
-		FallbackReason:  requestEnvValue(req.Env, "OCTOPOS_REMOTE_CHILD_FALLBACK_REASON"),
-		State:           remotechild.StateScheduled,
+		ParentJobID:        cluster.JobID(requestEnvValue(req.Env, remotechild.EnvParentJobID)),
+		RemoteJobID:        jobID,
+		RemoteNodeID:       nodeID,
+		Command:            append([]string{}, req.Command...),
+		PlacementReason:    requestEnvValue(req.Env, remotechild.EnvPlacementReason),
+		FallbackReason:     requestEnvValue(req.Env, remotechild.EnvFallbackReason),
+		FallbackReasonCode: requestEnvValue(req.Env, remotechild.EnvFallbackCode),
+		State:              remotechild.StateScheduled,
 	}
 	if info.PlacementReason == "" {
 		info.PlacementReason = "explicit"
@@ -1077,21 +1078,22 @@ func remoteChildRecordFromInfo(req *ExecuteRequest, info *cluster.RemoteChildInf
 		return remotechild.ShadowRecord{}
 	}
 	return remotechild.ShadowRecord{
-		SessionID:       req.SessionId,
-		ParentJobID:     string(info.ParentJobID),
-		ParentPID:       info.ParentPID,
-		ShadowPID:       info.ShadowPID,
-		RemoteJobID:     string(info.RemoteJobID),
-		RemoteNodeID:    string(info.RemoteNodeID),
-		RemoteGlobalPID: info.RemoteGlobalPID,
-		RemoteLocalPID:  info.RemoteLocalPID,
-		Command:         append([]string{}, info.Command...),
-		State:           remotechild.ShadowState(info.State),
-		StartedAt:       info.StartedAt,
-		FinishedAt:      info.FinishedAt,
-		PlacementReason: info.PlacementReason,
-		FallbackReason:  info.FallbackReason,
-		FailureReason:   info.FailureReason,
+		SessionID:          req.SessionId,
+		ParentJobID:        string(info.ParentJobID),
+		ParentPID:          info.ParentPID,
+		ShadowPID:          info.ShadowPID,
+		RemoteJobID:        string(info.RemoteJobID),
+		RemoteNodeID:       string(info.RemoteNodeID),
+		RemoteGlobalPID:    info.RemoteGlobalPID,
+		RemoteLocalPID:     info.RemoteLocalPID,
+		Command:            append([]string{}, info.Command...),
+		State:              remotechild.ShadowState(info.State),
+		StartedAt:          info.StartedAt,
+		FinishedAt:         info.FinishedAt,
+		PlacementReason:    info.PlacementReason,
+		FallbackReason:     info.FallbackReason,
+		FallbackReasonCode: info.FallbackReasonCode,
+		FailureReason:      info.FailureReason,
 	}
 }
 
@@ -1120,6 +1122,7 @@ func (s *ClusterServerImpl) recordRemoteChildAudit(req *ExecuteRequest, event st
 		audit.RemoteNodeID = string(info.RemoteNodeID)
 		audit.PlacementReason = info.PlacementReason
 		audit.FallbackReason = info.FallbackReason
+		audit.FallbackReasonCode = info.FallbackReasonCode
 	}
 	s.remoteChildren.RecordAudit(audit)
 }
