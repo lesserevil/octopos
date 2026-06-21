@@ -10,12 +10,13 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/octopos/octopos/pkg/remotechild"
+	octopospb "github.com/octopos/octopos/pkg/rpc"
 )
 
 func TestOctoposctlHelpStarts(t *testing.T) {
 	output := runOctoposctl(t, "--help")
 
-	for _, want := range []string{"node", "job", "exec", "session", "ps", "cluster"} {
+	for _, want := range []string{"node", "job", "exec", "session", "ps", "vfio", "cluster"} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("help output missing %q:\n%s", want, output)
 		}
@@ -149,6 +150,25 @@ func TestParseVFIORequirementsRejectsInvalid(t *testing.T) {
 		if _, err := parseVFIORequirements([]string{spec}); err == nil {
 			t.Fatalf("parseVFIORequirements(%q) succeeded, want error", spec)
 		}
+	}
+}
+
+func TestFormatVFIORequirement(t *testing.T) {
+	got := formatVFIORequirement("8086", "10fb", "0200", 1)
+	if got != "vendor=8086,device=10fb,class=0200,count=1" {
+		t.Fatalf("formatVFIORequirement = %q", got)
+	}
+}
+
+func TestVFIODeviceSummary(t *testing.T) {
+	got := vfioDeviceSummary([]*octopospb.PCIDevice{{
+		Address:  "0000:01:00.0",
+		VendorId: "8086",
+		DeviceId: "10fb",
+		Class:    "020000",
+	}})
+	if got != "8086:10fb/020000" {
+		t.Fatalf("vfioDeviceSummary = %q", got)
 	}
 }
 

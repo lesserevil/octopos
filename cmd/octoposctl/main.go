@@ -431,6 +431,137 @@ var jobChildrenCmd = &cobra.Command{
 	},
 }
 
+var vfioCmd = &cobra.Command{
+	Use:   "vfio",
+	Short: "Manage VFIO device groups",
+}
+
+var vfioListCmd = &cobra.Command{
+	Use:   "list",
+	Short: "List VFIO device groups",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		node, _ := cmd.Flags().GetString("node")
+		output, _ := cmd.Flags().GetString("output")
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		resp, err := client.GetVFIODevices(ctx, &octopospb.GetVFIODevicesRequest{NodeId: node})
+		if err != nil {
+			return fmt.Errorf("GetVFIODevices failed: %w", err)
+		}
+		if output == "json" {
+			data, _ := json.MarshalIndent(resp.Groups, "", "  ")
+			fmt.Println(string(data))
+			return nil
+		}
+		fmt.Printf("%-8s %-16s %-12s %s\n", "GROUP", "CLAIMED_BY", "DEVICES", "MATCH")
+		for _, group := range resp.Groups {
+			claimedBy := group.ClaimedBy
+			if claimedBy == "" {
+				claimedBy = "-"
+			}
+			fmt.Printf("%-8d %-16s %-12d %s\n", group.GroupId, claimedBy, len(group.Devices), vfioDeviceSummary(group.Devices))
+		}
+		return nil
+	},
+}
+
+var vfioAllocateCmd = &cobra.Command{
+	Use:   "allocate",
+	Short: "Manually allocate one VFIO group",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		sessionID, _ := cmd.Flags().GetString("session")
+		jobID, _ := cmd.Flags().GetString("job")
+		vendorID, _ := cmd.Flags().GetString("vendor")
+		deviceID, _ := cmd.Flags().GetString("device")
+		classID, _ := cmd.Flags().GetString("class")
+		count, _ := cmd.Flags().GetInt("count")
+		reqs, err := parseVFIORequirements([]string{formatVFIORequirement(vendorID, deviceID, classID, count)})
+		if err != nil {
+			return err
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		resp, err := client.AllocateVFIO(ctx, &octopospb.AllocateVFIORequest{
+			SessionId: sessionID,
+			JobId:     jobID,
+			Device:    reqs[0],
+		})
+		if err != nil {
+			return fmt.Errorf("AllocateVFIO failed: %w", err)
+		}
+		if !resp.Success {
+			return fmt.Errorf("AllocateVFIO failed: %s", resp.Error)
+		}
+		fmt.Printf("VFIO group allocated: %d (%s)\n", resp.GroupId, resp.DevicePath)
+		return nil
+	},
+}
+
+var vfioReleaseCmd = &cobra.Command{
+	Use:   "release",
+	Short: "Release a manually allocated VFIO group",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		sessionID, _ := cmd.Flags().GetString("session")
+		groupID, _ := cmd.Flags().GetInt("group")
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		resp, err := client.ReleaseVFIO(ctx, &octopospb.ReleaseVFIORequest{
+			SessionId: sessionID,
+			GroupId:   int32(groupID),
+		})
+		if err != nil {
+			return fmt.Errorf("ReleaseVFIO failed: %w", err)
+		}
+		if !resp.Success {
+			return fmt.Errorf("ReleaseVFIO failed: %s", resp.Error)
+		}
+		fmt.Printf("VFIO group released: %d\n", groupID)
+		return nil
+	},
+}
+
+func formatVFIORequirement(vendorID, deviceID, classID string, count int) string {
+	fields := []string{}
+	if vendorID != "" {
+		fields = append(fields, "vendor="+vendorID)
+	}
+	if deviceID != "" {
+		fields = append(fields, "device="+deviceID)
+	}
+	if classID != "" {
+		fields = append(fields, "class="+classID)
+	}
+	if count > 0 {
+		fields = append(fields, "count="+strconv.Itoa(count))
+	}
+	return strings.Join(fields, ",")
+}
+
+func vfioDeviceSummary(devices []*octopospb.PCIDevice) string {
+	parts := make([]string, 0, len(devices))
+	for _, dev := range devices {
+		if dev == nil {
+			continue
+		}
+		match := ""
+		if dev.VendorId != "" || dev.DeviceId != "" {
+			match = dev.VendorId + ":" + dev.DeviceId
+		}
+		if dev.Class != "" {
+			if match != "" {
+				match += "/"
+			}
+			match += dev.Class
+		}
+		if match == "" {
+			match = dev.Address
+		}
+		parts = append(parts, match)
+	}
+	return strings.Join(parts, ",")
+}
+
 var execCmd = &cobra.Command{
 	Use:   "exec [flags] -- command [args...]",
 	Short: "Execute a command on the cluster",
@@ -855,13 +986,25 @@ func main() {
 	jobChildrenCmd.Flags().String("node", "", "Filter by remote node")
 	jobChildrenCmd.Flags().Bool("active", false, "Show only active remote children")
 
+	vfioListCmd.Flags().String("node", "", "Filter by node")
+	vfioListCmd.Flags().StringP("output", "o", "", "Output format (json)")
+	vfioAllocateCmd.Flags().String("session", "", "Owning session ID")
+	vfioAllocateCmd.Flags().String("job", "", "Owning job ID")
+	vfioAllocateCmd.Flags().String("vendor", "", "PCI vendor ID")
+	vfioAllocateCmd.Flags().String("device", "", "PCI device ID")
+	vfioAllocateCmd.Flags().String("class", "", "PCI class prefix")
+	vfioAllocateCmd.Flags().Int("count", 1, "Number of groups to allocate; current RPC supports 1")
+	vfioReleaseCmd.Flags().String("session", "", "Owning session ID")
+	vfioReleaseCmd.Flags().Int("group", 0, "VFIO group ID")
+
 	// Build command tree
 	nodeCmd.AddCommand(nodeListCmd, nodeAddCmd, nodeDrainCmd, nodeRemoveCmd)
 	jobCmd.AddCommand(jobListCmd, jobStatusCmd, jobChildrenCmd)
+	vfioCmd.AddCommand(vfioListCmd, vfioAllocateCmd, vfioReleaseCmd)
 	sessionCmd.AddCommand(sessionListCmd, sessionCreateCmd, sessionDeleteCmd)
 	clusterCmd.AddCommand(clusterStatusCmd, clusterDoctorCmd, clusterBootstrapCmd)
 
-	rootCmd.AddCommand(nodeCmd, jobCmd, execCmd, sessionCmd, psCmd, clusterCmd)
+	rootCmd.AddCommand(nodeCmd, jobCmd, execCmd, sessionCmd, psCmd, vfioCmd, clusterCmd)
 
 	if err := rootCmd.Execute(); err != nil {
 		var exitErr *execclient.ExitError

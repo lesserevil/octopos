@@ -123,6 +123,19 @@ Request an NVIDIA GPU:
 octoposctl --addr 10.0.0.1:50051 exec --gpu 1 -- nvidia-smi
 ```
 
+List VFIO groups and run a job with an allocated group:
+
+```bash
+octoposctl --addr 10.0.0.1:50051 vfio list --node node-1
+octoposctl --addr 10.0.0.1:50051 exec --vfio vendor=8086,device=10fb,class=0200 -- ./dpdk-app
+```
+
+VFIO exposes whole IOMMU groups, not individual PCI functions. Hosts must have
+IOMMU enabled and the intended device group bound to a VFIO driver such as
+`vfio-pci`; OctopOS will not rebind host drivers during `exec`. NVIDIA compute
+jobs should continue to use `--gpu` unless the GPU is intentionally prepared as
+a VFIO device.
+
 Launch a foreground child process on another node from inside a cluster exec:
 
 ```bash
