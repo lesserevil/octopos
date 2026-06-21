@@ -15,6 +15,7 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 
 	"github.com/octopos/octopos/pkg/execclient"
+	"github.com/octopos/octopos/pkg/remotechild"
 	octopospb "github.com/octopos/octopos/pkg/rpc"
 	"github.com/octopos/octopos/pkg/ssi"
 )
@@ -62,6 +63,30 @@ func requiresClusterConnection(cmd *cobra.Command) bool {
 		}
 	}
 	return true
+}
+
+func remoteChildrenEnvironment(remoteChildren string, ipcCompat string) ([]string, error) {
+	switch remoteChildren {
+	case "off", "safe", "aggressive":
+	default:
+		return nil, fmt.Errorf("--remote-children must be off, safe, or aggressive")
+	}
+	if ipcCompat == "" {
+		ipcCompat = "strict"
+	}
+	switch ipcCompat {
+	case "strict", "relaxed":
+	default:
+		return nil, fmt.Errorf("--remote-ipc-compat must be strict or relaxed")
+	}
+	if remoteChildren == "off" {
+		return nil, nil
+	}
+	return []string{
+		remotechild.EnvMode + "=" + remoteChildren,
+		remotechild.EnvIPCCompat + "=" + ipcCompat,
+		"LD_PRELOAD=" + remoteChildPreloadPath,
+	}, nil
 }
 
 func init() {
@@ -340,8 +365,10 @@ var execCmd = &cobra.Command{
 		background, _ := cmd.Flags().GetBool("background")
 		tty, _ := cmd.Flags().GetBool("tty")
 		remoteChildren, _ := cmd.Flags().GetString("remote-children")
-		if remoteChildren != "off" && remoteChildren != "safe" && remoteChildren != "aggressive" {
-			return fmt.Errorf("--remote-children must be off, safe, or aggressive")
+		remoteIPCCompat, _ := cmd.Flags().GetString("remote-ipc-compat")
+		remoteEnv, err := remoteChildrenEnvironment(remoteChildren, remoteIPCCompat)
+		if err != nil {
+			return err
 		}
 
 		req := &octopospb.ExecuteRequest{
@@ -359,12 +386,7 @@ var execCmd = &cobra.Command{
 				Gpus:          int32(gpus),
 			},
 		}
-		if remoteChildren != "off" {
-			req.Env = append(req.Env,
-				"OCTOPOS_REMOTE_CHILDREN="+remoteChildren,
-				"LD_PRELOAD="+remoteChildPreloadPath,
-			)
-		}
+		req.Env = append(req.Env, remoteEnv...)
 		if node != "" {
 			req.Resources.NodeAffinity = map[string]string{"node_id": node}
 		}
@@ -715,6 +737,7 @@ func main() {
 	execCmd.Flags().Bool("background", false, "Submit the command as a background job")
 	execCmd.Flags().Bool("wait", false, "With --background, wait for the detached job to finish")
 	execCmd.Flags().String("remote-children", "off", "Remote eligible child execs with the LD_PRELOAD prototype: off, safe, or aggressive")
+	execCmd.Flags().String("remote-ipc-compat", "strict", "Remote child IPC compatibility policy: strict or relaxed")
 
 	psCmd.Flags().String("node", "", "Filter by node")
 	psCmd.Flags().String("session", "", "Filter by session")

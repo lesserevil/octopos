@@ -5,6 +5,8 @@ import (
 	"os/exec"
 	"strings"
 	"testing"
+
+	"github.com/octopos/octopos/pkg/remotechild"
 )
 
 func TestOctoposctlHelpStarts(t *testing.T) {
@@ -25,6 +27,51 @@ func TestOctoposctlBootstrapHelpRegistersGatewayFlagsOnce(t *testing.T) {
 			t.Fatalf("expected %s to appear once, got %d:\n%s", flag, count, output)
 		}
 	}
+}
+
+func TestRemoteChildrenEnvironmentAddsIPCCompatPolicy(t *testing.T) {
+	env, err := remoteChildrenEnvironment("safe", "relaxed")
+	if err != nil {
+		t.Fatalf("remoteChildrenEnvironment: %v", err)
+	}
+
+	for _, want := range []string{
+		remotechild.EnvMode + "=safe",
+		remotechild.EnvIPCCompat + "=relaxed",
+		"LD_PRELOAD=" + remoteChildPreloadPath,
+	} {
+		if !stringSliceContains(env, want) {
+			t.Fatalf("env missing %q in %#v", want, env)
+		}
+	}
+}
+
+func TestRemoteChildrenEnvironmentOffOmitsPreload(t *testing.T) {
+	env, err := remoteChildrenEnvironment("off", "relaxed")
+	if err != nil {
+		t.Fatalf("remoteChildrenEnvironment: %v", err)
+	}
+	if len(env) != 0 {
+		t.Fatalf("env = %#v, want empty", env)
+	}
+}
+
+func TestRemoteChildrenEnvironmentRejectsUnknownPolicy(t *testing.T) {
+	if _, err := remoteChildrenEnvironment("maybe", "strict"); err == nil {
+		t.Fatal("accepted invalid remote child mode")
+	}
+	if _, err := remoteChildrenEnvironment("safe", "loose"); err == nil {
+		t.Fatal("accepted invalid IPC compatibility mode")
+	}
+}
+
+func stringSliceContains(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }
 
 func runOctoposctl(t *testing.T, args ...string) string {

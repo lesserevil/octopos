@@ -4,9 +4,13 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <spawn.h>
+#include <stdio.h>
 #include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <sys/types.h>
 #include <unistd.h>
 
 #ifndef AT_FDCWD
@@ -17,10 +21,21 @@
 #define AT_EMPTY_PATH 0x1000
 #endif
 
+#ifndef MAP_TYPE
+#define MAP_TYPE 0x0f
+#endif
+
+#ifndef MAP_SHARED_VALIDATE
+#define MAP_SHARED_VALIDATE MAP_SHARED
+#endif
+
 extern char **environ;
 
 static const char *remote_child_path = "/usr/local/bin/octopos-remote-child";
 static const char *active_env = "OCTOPOS_REMOTE_CHILD_PRELOAD_ACTIVE=1";
+static const char *ipc_compat_env = "OCTOPOS_REMOTE_IPC_COMPAT";
+static const char *ipc_compat_warned_env = "OCTOPOS_REMOTE_IPC_COMPAT_WARNED";
+static const char *ipc_compat_block_warned_env = "OCTOPOS_REMOTE_IPC_BLOCK_WARNED";
 static const char *mode_env = "OCTOPOS_REMOTE_CHILDREN";
 
 static int has_prefix(const char *s, const char *prefix) {
@@ -58,6 +73,140 @@ static int remoting_enabled(char *const envp[]) {
         return 0;
     }
     return 1;
+}
+
+static int remote_child_process(void) {
+    const char *remote_child = getenv("OCTOPOS_REMOTE_CHILD");
+    return remote_child != NULL && strcmp(remote_child, "1") == 0;
+}
+
+static int shared_mapping(int flags) {
+    int map_type = flags & MAP_TYPE;
+    return map_type == MAP_SHARED || map_type == MAP_SHARED_VALIDATE;
+}
+
+static int private_mapping_flags(int flags) {
+    return (flags & ~MAP_TYPE) | MAP_PRIVATE;
+}
+
+static int read_fd_path(int fd, char *buf, size_t len) {
+    if (len == 0) {
+        return -1;
+    }
+    char proc_path[64];
+    int written = snprintf(proc_path, sizeof(proc_path), "/proc/self/fd/%d", fd);
+    if (written < 0 || (size_t)written >= sizeof(proc_path)) {
+        return -1;
+    }
+    ssize_t n = readlink(proc_path, buf, len - 1);
+    if (n < 0) {
+        return -1;
+    }
+    buf[n] = '\0';
+    return 0;
+}
+
+static int fd_is_regular_file(int fd) {
+    struct stat st;
+    if (fstat(fd, &st) != 0) {
+        return 0;
+    }
+    return S_ISREG(st.st_mode);
+}
+
+static int fd_is_relaxed_mmap_file(int fd) {
+    if (fd < 0 || !fd_is_regular_file(fd)) {
+        return 0;
+    }
+
+    char path[4096];
+    if (read_fd_path(fd, path, sizeof(path)) != 0) {
+        return 0;
+    }
+    if (has_prefix(path, "/dev/shm/") || has_prefix(path, "/run/shm/") ||
+        has_prefix(path, "/proc/") || has_prefix(path, "/sys/") ||
+        has_prefix(path, "/memfd:") || has_prefix(path, "memfd:") ||
+        strstr(path, " (deleted)") != NULL) {
+        return 0;
+    }
+    return 1;
+}
+
+static const char *blocked_mmap_reason(int prot, int flags, int fd) {
+    if ((prot & PROT_WRITE) != 0) {
+        return "writable MAP_SHARED";
+    }
+    if ((flags & MAP_ANONYMOUS) != 0) {
+        return "anonymous MAP_SHARED";
+    }
+    if (fd < 0) {
+        return "non-file MAP_SHARED";
+    }
+
+    char path[4096];
+    if (read_fd_path(fd, path, sizeof(path)) == 0) {
+        if (has_prefix(path, "/dev/shm/") || has_prefix(path, "/run/shm/") ||
+            has_prefix(path, "/memfd:") || has_prefix(path, "memfd:")) {
+            return "shared-memory MAP_SHARED";
+        }
+        if (has_prefix(path, "/proc/")) {
+            return "procfs MAP_SHARED";
+        }
+        if (has_prefix(path, "/sys/")) {
+            return "sysfs MAP_SHARED";
+        }
+        if (strstr(path, " (deleted)") != NULL) {
+            return "deleted-file MAP_SHARED";
+        }
+    }
+    if (!fd_is_regular_file(fd)) {
+        return "non-regular-file MAP_SHARED";
+    }
+    return "unsupported MAP_SHARED";
+}
+
+static void warn_once(const char *env_key, const char *message, const char *detail) {
+    const char *warned = getenv(env_key);
+    if (warned != NULL && strcmp(warned, "1") == 0) {
+        return;
+    }
+    setenv(env_key, "1", 1);
+    if (detail != NULL && detail[0] != '\0') {
+        fprintf(stderr, "%s: %s\n", message, detail);
+    } else {
+        fprintf(stderr, "%s\n", message);
+    }
+}
+
+static int apply_mmap_policy(int prot, int *flags, int fd) {
+    if (!remote_child_process() || !shared_mapping(*flags)) {
+        return 0;
+    }
+
+    const char *compat = getenv(ipc_compat_env);
+    if (compat == NULL || compat[0] == '\0') {
+        return 0;
+    }
+
+    if (strcmp(compat, "relaxed") == 0 &&
+        (prot & PROT_WRITE) == 0 &&
+        (*flags & MAP_ANONYMOUS) == 0 &&
+        fd_is_relaxed_mmap_file(fd)) {
+        *flags = private_mapping_flags(*flags);
+        warn_once(ipc_compat_warned_env,
+                  "octopos-remote-child: relaxed IPC compatibility converted read-only MAP_SHARED mapping to MAP_PRIVATE",
+                  NULL);
+        return 0;
+    }
+
+    if (strcmp(compat, "strict") == 0 || strcmp(compat, "relaxed") == 0) {
+        warn_once(ipc_compat_block_warned_env,
+                  "octopos-remote-child: unsupported MAP_SHARED mapping blocked in remote child",
+                  blocked_mmap_reason(prot, *flags, fd));
+        errno = ENOTSUP;
+        return -1;
+    }
+    return 0;
 }
 
 static int should_wrap_path(const char *path, char *const envp[]) {
@@ -120,6 +269,8 @@ typedef int (*execveat_fn)(int, const char *, char *const [], char *const [], in
 typedef int (*execv_fn)(const char *, char *const []);
 typedef int (*execvp_fn)(const char *, char *const []);
 typedef int (*execvpe_fn)(const char *, char *const [], char *const []);
+typedef void *(*mmap_fn)(void *, size_t, int, int, int, off_t);
+typedef void *(*mmap64_fn)(void *, size_t, int, int, int, off64_t);
 typedef int (*posix_spawn_fn)(pid_t *, const char *, const posix_spawn_file_actions_t *, const posix_spawnattr_t *, char *const [], char *const []);
 
 int execve(const char *pathname, char *const argv[], char *const envp[]) {
@@ -243,4 +394,30 @@ int posix_spawnp(pid_t *pid, const char *file, const posix_spawn_file_actions_t 
     free(child_argv);
     free(child_env);
     return rc;
+}
+
+void *mmap(void *addr, size_t length, int prot, int flags, int fd, off_t offset) {
+    mmap_fn real_mmap = (mmap_fn)dlsym(RTLD_NEXT, "mmap");
+    if (real_mmap == NULL) {
+        errno = ENOSYS;
+        return MAP_FAILED;
+    }
+    int adjusted_flags = flags;
+    if (apply_mmap_policy(prot, &adjusted_flags, fd) != 0) {
+        return MAP_FAILED;
+    }
+    return real_mmap(addr, length, prot, adjusted_flags, fd, offset);
+}
+
+void *mmap64(void *addr, size_t length, int prot, int flags, int fd, off64_t offset) {
+    mmap64_fn real_mmap64 = (mmap64_fn)dlsym(RTLD_NEXT, "mmap64");
+    if (real_mmap64 == NULL) {
+        errno = ENOSYS;
+        return MAP_FAILED;
+    }
+    int adjusted_flags = flags;
+    if (apply_mmap_policy(prot, &adjusted_flags, fd) != 0) {
+        return MAP_FAILED;
+    }
+    return real_mmap64(addr, length, prot, adjusted_flags, fd, offset);
 }
