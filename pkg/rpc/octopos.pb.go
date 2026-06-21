@@ -1243,6 +1243,8 @@ type AllocateVFIOResponse struct {
 	DeviceFd      int32                  `protobuf:"varint,4,opt,name=device_fd,json=deviceFd,proto3" json:"device_fd,omitempty"`
 	DevicePath    string                 `protobuf:"bytes,5,opt,name=device_path,json=devicePath,proto3" json:"device_path,omitempty"`
 	Error         string                 `protobuf:"bytes,6,opt,name=error,proto3" json:"error,omitempty"`
+	GroupIds      []int32                `protobuf:"varint,7,rep,packed,name=group_ids,json=groupIds,proto3" json:"group_ids,omitempty"`
+	DevicePaths   []string               `protobuf:"bytes,8,rep,name=device_paths,json=devicePaths,proto3" json:"device_paths,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1319,10 +1321,25 @@ func (x *AllocateVFIOResponse) GetError() string {
 	return ""
 }
 
+func (x *AllocateVFIOResponse) GetGroupIds() []int32 {
+	if x != nil {
+		return x.GroupIds
+	}
+	return nil
+}
+
+func (x *AllocateVFIOResponse) GetDevicePaths() []string {
+	if x != nil {
+		return x.DevicePaths
+	}
+	return nil
+}
+
 type ReleaseVFIORequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	GroupId       int32                  `protobuf:"varint,1,opt,name=group_id,json=groupId,proto3" json:"group_id,omitempty"`
 	SessionId     string                 `protobuf:"bytes,2,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
+	GroupIds      []int32                `protobuf:"varint,3,rep,packed,name=group_ids,json=groupIds,proto3" json:"group_ids,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1369,6 +1386,13 @@ func (x *ReleaseVFIORequest) GetSessionId() string {
 		return x.SessionId
 	}
 	return ""
+}
+
+func (x *ReleaseVFIORequest) GetGroupIds() []int32 {
+	if x != nil {
+		return x.GroupIds
+	}
+	return nil
 }
 
 type ReleaseVFIOResponse struct {
@@ -3787,7 +3811,7 @@ const file_pkg_rpc_octopos_proto_rawDesc = "" +
 	"\n" +
 	"session_id\x18\x01 \x01(\tR\tsessionId\x12\x15\n" +
 	"\x06job_id\x18\x02 \x01(\tR\x05jobId\x124\n" +
-	"\x06device\x18\x03 \x01(\v2\x1c.octopos.rpc.VFIORequirementR\x06device\"\xc2\x01\n" +
+	"\x06device\x18\x03 \x01(\v2\x1c.octopos.rpc.VFIORequirementR\x06device\"\x82\x02\n" +
 	"\x14AllocateVFIOResponse\x12\x18\n" +
 	"\asuccess\x18\x01 \x01(\bR\asuccess\x12\x19\n" +
 	"\bgroup_id\x18\x02 \x01(\x05R\agroupId\x12!\n" +
@@ -3795,11 +3819,14 @@ const file_pkg_rpc_octopos_proto_rawDesc = "" +
 	"\tdevice_fd\x18\x04 \x01(\x05R\bdeviceFd\x12\x1f\n" +
 	"\vdevice_path\x18\x05 \x01(\tR\n" +
 	"devicePath\x12\x14\n" +
-	"\x05error\x18\x06 \x01(\tR\x05error\"N\n" +
+	"\x05error\x18\x06 \x01(\tR\x05error\x12\x1b\n" +
+	"\tgroup_ids\x18\a \x03(\x05R\bgroupIds\x12!\n" +
+	"\fdevice_paths\x18\b \x03(\tR\vdevicePaths\"k\n" +
 	"\x12ReleaseVFIORequest\x12\x19\n" +
 	"\bgroup_id\x18\x01 \x01(\x05R\agroupId\x12\x1d\n" +
 	"\n" +
-	"session_id\x18\x02 \x01(\tR\tsessionId\"E\n" +
+	"session_id\x18\x02 \x01(\tR\tsessionId\x12\x1b\n" +
+	"\tgroup_ids\x18\x03 \x03(\x05R\bgroupIds\"E\n" +
 	"\x13ReleaseVFIOResponse\x12\x18\n" +
 	"\asuccess\x18\x01 \x01(\bR\asuccess\x12\x14\n" +
 	"\x05error\x18\x02 \x01(\tR\x05error\"0\n" +

@@ -164,11 +164,14 @@ message AllocateVFIOResponse {
   int32 device_fd = 4;
   string device_path = 5;
   string error = 6;
+  repeated int32 group_ids = 7;
+  repeated string device_paths = 8;
 }
 
 message ReleaseVFIORequest {
   int32 group_id = 1;
   string session_id = 2;
+  repeated int32 group_ids = 3;
 }
 
 message ReleaseVFIOResponse {

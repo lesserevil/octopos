@@ -3,6 +3,7 @@ package rpc
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
 	"os"
 	"path/filepath"
@@ -485,9 +486,6 @@ func (s *ClusterServerImpl) AllocateVFIO(ctx context.Context, req *AllocateVFIOR
 	if count <= 0 {
 		count = 1
 	}
-	if count != 1 {
-		return &AllocateVFIOResponse{Success: false, Error: "AllocateVFIO currently supports exactly one group per request"}, nil
-	}
 	if s.scheduler == nil {
 		return &AllocateVFIOResponse{Success: false, Error: "scheduler is not configured"}, nil
 	}
@@ -497,7 +495,7 @@ func (s *ClusterServerImpl) AllocateVFIO(ctx context.Context, req *AllocateVFIOR
 		SessionID: cluster.SessionID(req.SessionId),
 		JobID:     cluster.JobID(req.JobId),
 	}
-	requirements.VFIODevs[0].Count = 1
+	requirements.VFIODevs[0].Count = int(count)
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -509,35 +507,49 @@ func (s *ClusterServerImpl) AllocateVFIO(ctx context.Context, req *AllocateVFIOR
 	if err != nil {
 		return &AllocateVFIOResponse{Success: false, Error: err.Error()}, nil
 	}
-	if len(allocated.VFIOGroups) != 1 {
+	if len(allocated.VFIOGroups) != int(count) {
 		s.scheduler.Release(node.ID, allocated)
-		return &AllocateVFIOResponse{Success: false, Error: "scheduler did not return a concrete VFIO group"}, nil
+		return &AllocateVFIOResponse{Success: false, Error: "scheduler did not return the requested VFIO groups"}, nil
 	}
-	groupID := allocated.VFIOGroups[0]
-	key := vfioAllocationKey(node.ID, groupID)
-	if _, exists := s.cluster.vfioAllocations[key]; exists {
-		s.scheduler.Release(node.ID, allocated)
-		return &AllocateVFIOResponse{Success: false, Error: "VFIO group was already allocated"}, nil
+	for _, groupID := range allocated.VFIOGroups {
+		key := vfioAllocationKey(node.ID, groupID)
+		if _, exists := s.cluster.vfioAllocations[key]; exists {
+			s.scheduler.Release(node.ID, allocated)
+			return &AllocateVFIOResponse{Success: false, Error: fmt.Sprintf("VFIO group %d was already allocated", groupID)}, nil
+		}
 	}
-	allocation := vfioAllocation{
-		NodeID:    node.ID,
-		SessionID: cluster.SessionID(req.SessionId),
-		JobID:     cluster.JobID(req.JobId),
-		GroupID:   groupID,
-		CreatedAt: time.Now(),
+	now := time.Now()
+	for _, groupID := range allocated.VFIOGroups {
+		key := vfioAllocationKey(node.ID, groupID)
+		s.cluster.vfioAllocations[key] = vfioAllocation{
+			NodeID:    node.ID,
+			SessionID: cluster.SessionID(req.SessionId),
+			JobID:     cluster.JobID(req.JobId),
+			GroupID:   groupID,
+			CreatedAt: now,
+		}
 	}
-	s.cluster.vfioAllocations[key] = allocation
 	if err := s.saveVFIOAllocationsLocked(); err != nil {
-		delete(s.cluster.vfioAllocations, key)
+		for _, groupID := range allocated.VFIOGroups {
+			delete(s.cluster.vfioAllocations, vfioAllocationKey(node.ID, groupID))
+		}
 		s.scheduler.Release(node.ID, allocated)
 		return &AllocateVFIOResponse{Success: false, Error: "persist VFIO allocation: " + err.Error()}, nil
 	}
+	groupIDs := make([]int32, 0, len(allocated.VFIOGroups))
+	devicePaths := make([]string, 0, len(allocated.VFIOGroups))
+	for _, groupID := range allocated.VFIOGroups {
+		groupIDs = append(groupIDs, int32(groupID))
+		devicePaths = append(devicePaths, vfioDevicePath(groupID))
+	}
 	return &AllocateVFIOResponse{
 		Success:     true,
-		GroupId:     int32(groupID),
+		GroupId:     groupIDs[0],
 		ContainerFd: -1,
 		DeviceFd:    -1,
-		DevicePath:  vfioDevicePath(groupID),
+		DevicePath:  devicePaths[0],
+		GroupIds:    groupIDs,
+		DevicePaths: devicePaths,
 	}, nil
 }
 
@@ -546,42 +558,45 @@ func (s *ClusterServerImpl) ReleaseVFIO(ctx context.Context, req *ReleaseVFIOReq
 	if req.SessionId == "" {
 		return &ReleaseVFIOResponse{Success: false, Error: "session_id is required"}, nil
 	}
-	groupID := int(req.GroupId)
-	if groupID <= 0 {
+	groupIDs := releaseVFIOGroupIDs(req)
+	if len(groupIDs) == 0 {
 		return &ReleaseVFIOResponse{Success: false, Error: "group_id is required"}, nil
 	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	var foundForeign bool
-	for key, alloc := range s.cluster.vfioAllocations {
-		if alloc.GroupID != groupID {
-			continue
+	owned := make(map[string]vfioAllocation)
+	for _, groupID := range groupIDs {
+		alloc, key, foreign := s.vfioAllocationForReleaseLocked(cluster.SessionID(req.SessionId), groupID)
+		if foreign {
+			return &ReleaseVFIOResponse{Success: false, Error: fmt.Sprintf("VFIO group %d is owned by a different session", groupID)}, nil
 		}
-		if alloc.SessionID != cluster.SessionID(req.SessionId) {
-			foundForeign = true
-			continue
+		if key == "" {
+			if s.vfioGroupExistsLocked(groupID) {
+				continue
+			}
+			return &ReleaseVFIOResponse{Success: false, Error: fmt.Sprintf("VFIO group %d not found", groupID)}, nil
 		}
+		owned[key] = alloc
+	}
+	for key := range owned {
 		delete(s.cluster.vfioAllocations, key)
-		if err := s.saveVFIOAllocationsLocked(); err != nil {
+	}
+	if err := s.saveVFIOAllocationsLocked(); err != nil {
+		for key, alloc := range owned {
 			s.cluster.vfioAllocations[key] = alloc
-			return &ReleaseVFIOResponse{Success: false, Error: "persist VFIO release: " + err.Error()}, nil
 		}
-		if s.scheduler != nil {
+		return &ReleaseVFIOResponse{Success: false, Error: "persist VFIO release: " + err.Error()}, nil
+	}
+	if s.scheduler != nil {
+		for _, alloc := range owned {
 			s.scheduler.Release(alloc.NodeID, cluster.Requirements{
 				JobID:      alloc.JobID,
-				VFIOGroups: []int{groupID},
+				VFIOGroups: []int{alloc.GroupID},
 			})
 		}
-		return &ReleaseVFIOResponse{Success: true}, nil
 	}
-	if foundForeign {
-		return &ReleaseVFIOResponse{Success: false, Error: "VFIO group is owned by a different session"}, nil
-	}
-	if s.vfioGroupExistsLocked(groupID) {
-		return &ReleaseVFIOResponse{Success: true}, nil
-	}
-	return &ReleaseVFIOResponse{Success: false, Error: "VFIO group not found"}, nil
+	return &ReleaseVFIOResponse{Success: true}, nil
 }
 
 // GetVFIODevices returns available VFIO devices
@@ -977,6 +992,38 @@ func (s *ClusterServerImpl) vfioGroupExistsLocked(groupID int) bool {
 		}
 	}
 	return false
+}
+
+func releaseVFIOGroupIDs(req *ReleaseVFIORequest) []int {
+	seen := make(map[int]bool)
+	var out []int
+	add := func(groupID int) {
+		if groupID <= 0 || seen[groupID] {
+			return
+		}
+		seen[groupID] = true
+		out = append(out, groupID)
+	}
+	add(int(req.GroupId))
+	for _, groupID := range req.GroupIds {
+		add(int(groupID))
+	}
+	return out
+}
+
+func (s *ClusterServerImpl) vfioAllocationForReleaseLocked(sessionID cluster.SessionID, groupID int) (vfioAllocation, string, bool) {
+	var foundForeign bool
+	for key, alloc := range s.cluster.vfioAllocations {
+		if alloc.GroupID != groupID {
+			continue
+		}
+		if alloc.SessionID != sessionID {
+			foundForeign = true
+			continue
+		}
+		return alloc, key, false
+	}
+	return vfioAllocation{}, "", foundForeign
 }
 
 func (s *ClusterServerImpl) releaseVFIOAllocationsForJobLocked(jobID cluster.JobID) {

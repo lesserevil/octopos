@@ -2,6 +2,7 @@ package rpc
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net"
 	"os"
@@ -271,6 +272,53 @@ func TestAllocateVFIORejectsDoubleAllocation(t *testing.T) {
 	}
 }
 
+func TestAllocateVFIOMultipleGroups(t *testing.T) {
+	sched := scheduler.NewScheduler(&scheduler.BinPackPolicy{})
+	node := testVFIONodeWithGroups(7, 8)
+	sched.AddNode(node)
+	server := NewClusterServerImpl("test-node", sched, tracker.NewTracker(), nil)
+
+	alloc, err := server.AllocateVFIO(context.Background(), &AllocateVFIORequest{
+		SessionId: "sess-1",
+		JobId:     "job-1",
+		Device:    &VFIORequirement{VendorId: "8086", Count: 2},
+	})
+	if err != nil {
+		t.Fatalf("AllocateVFIO: %v", err)
+	}
+	if !alloc.Success {
+		t.Fatalf("AllocateVFIO failed: %s", alloc.Error)
+	}
+	if !proto.Equal(alloc, &AllocateVFIOResponse{
+		Success:     true,
+		GroupId:     7,
+		ContainerFd: -1,
+		DeviceFd:    -1,
+		DevicePath:  "/dev/vfio/7",
+		GroupIds:    []int32{7, 8},
+		DevicePaths: []string{"/dev/vfio/7", "/dev/vfio/8"},
+	}) {
+		t.Fatalf("allocation = %+v, want groups 7 and 8", alloc)
+	}
+	if node.VFIOAllocations[7] != "job-1" || node.VFIOAllocations[8] != "job-1" {
+		t.Fatalf("node VFIO allocations = %+v, want job-1 owner for groups 7 and 8", node.VFIOAllocations)
+	}
+
+	release, err := server.ReleaseVFIO(context.Background(), &ReleaseVFIORequest{
+		SessionId: "sess-1",
+		GroupIds:  []int32{7, 8},
+	})
+	if err != nil {
+		t.Fatalf("ReleaseVFIO: %v", err)
+	}
+	if !release.Success {
+		t.Fatalf("ReleaseVFIO failed: %s", release.Error)
+	}
+	if len(node.VFIOAllocations) != 0 {
+		t.Fatalf("node VFIO allocations = %+v, want empty", node.VFIOAllocations)
+	}
+}
+
 func TestDestroySessionReleasesVFIOAllocations(t *testing.T) {
 	sched := scheduler.NewScheduler(&scheduler.BinPackPolicy{})
 	node := testVFIONode()
@@ -398,23 +446,31 @@ func TestVFIOReleaseUpdatesPersistentState(t *testing.T) {
 }
 
 func testVFIONode() *cluster.NodeInfo {
+	return testVFIONodeWithGroups(7)
+}
+
+func testVFIONodeWithGroups(groupIDs ...int) *cluster.NodeInfo {
+	groups := make([]cluster.VFIOGroup, 0, len(groupIDs))
+	for _, groupID := range groupIDs {
+		groups = append(groups, cluster.VFIOGroup{
+			GroupID: groupID,
+			Devices: []cluster.PCIDevice{{
+				Address:   fmt.Sprintf("0000:%02x:00.0", groupID),
+				VendorID:  "8086",
+				DeviceID:  "10fb",
+				Class:     "020000",
+				Driver:    "vfio-pci",
+				VFIOGroup: groupID,
+			}},
+		})
+	}
 	return &cluster.NodeInfo{
 		ID:    "node-1",
 		State: cluster.NodeStateActive,
 		Resources: cluster.ResourceSpec{
-			CPU:    8000,
-			Memory: 16_000_000_000,
-			VFIOGroups: []cluster.VFIOGroup{{
-				GroupID: 7,
-				Devices: []cluster.PCIDevice{{
-					Address:   "0000:01:00.0",
-					VendorID:  "8086",
-					DeviceID:  "10fb",
-					Class:     "020000",
-					Driver:    "vfio-pci",
-					VFIOGroup: 7,
-				}},
-			}},
+			CPU:        8000,
+			Memory:     16_000_000_000,
+			VFIOGroups: groups,
 		},
 	}
 }

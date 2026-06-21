@@ -519,7 +519,19 @@ var vfioAllocateCmd = &cobra.Command{
 		if !resp.Success {
 			return fmt.Errorf("AllocateVFIO failed: %s", resp.Error)
 		}
-		fmt.Printf("VFIO group allocated: %d (%s)\n", resp.GroupId, resp.DevicePath)
+		groupIDs := resp.GroupIds
+		paths := resp.DevicePaths
+		if len(groupIDs) == 0 && resp.GroupId != 0 {
+			groupIDs = []int32{resp.GroupId}
+			paths = []string{resp.DevicePath}
+		}
+		for i, groupID := range groupIDs {
+			path := ""
+			if i < len(paths) {
+				path = paths[i]
+			}
+			fmt.Printf("VFIO group allocated: %d (%s)\n", groupID, path)
+		}
 		return nil
 	},
 }
@@ -529,12 +541,16 @@ var vfioReleaseCmd = &cobra.Command{
 	Short: "Release a manually allocated VFIO group",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		sessionID, _ := cmd.Flags().GetString("session")
-		groupID, _ := cmd.Flags().GetInt("group")
+		groupIDs, _ := cmd.Flags().GetIntSlice("group")
+		reqGroupIDs := make([]int32, 0, len(groupIDs))
+		for _, groupID := range groupIDs {
+			reqGroupIDs = append(reqGroupIDs, int32(groupID))
+		}
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		resp, err := client.ReleaseVFIO(ctx, &octopospb.ReleaseVFIORequest{
 			SessionId: sessionID,
-			GroupId:   int32(groupID),
+			GroupIds:  reqGroupIDs,
 		})
 		if err != nil {
 			return fmt.Errorf("ReleaseVFIO failed: %w", err)
@@ -542,7 +558,9 @@ var vfioReleaseCmd = &cobra.Command{
 		if !resp.Success {
 			return fmt.Errorf("ReleaseVFIO failed: %s", resp.Error)
 		}
-		fmt.Printf("VFIO group released: %d\n", groupID)
+		for _, groupID := range groupIDs {
+			fmt.Printf("VFIO group released: %d\n", groupID)
+		}
 		return nil
 	},
 }
@@ -1021,9 +1039,9 @@ func main() {
 	vfioAllocateCmd.Flags().String("vendor", "", "PCI vendor ID")
 	vfioAllocateCmd.Flags().String("device", "", "PCI device ID")
 	vfioAllocateCmd.Flags().String("class", "", "PCI class prefix")
-	vfioAllocateCmd.Flags().Int("count", 1, "Number of groups to allocate; current RPC supports 1")
+	vfioAllocateCmd.Flags().Int("count", 1, "Number of groups to allocate")
 	vfioReleaseCmd.Flags().String("session", "", "Owning session ID")
-	vfioReleaseCmd.Flags().Int("group", 0, "VFIO group ID")
+	vfioReleaseCmd.Flags().IntSlice("group", nil, "VFIO group ID (repeatable or comma-separated)")
 
 	// Build command tree
 	nodeCmd.AddCommand(nodeListCmd, nodeAddCmd, nodeDrainCmd, nodeRemoveCmd)
