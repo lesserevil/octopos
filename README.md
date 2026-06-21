@@ -186,6 +186,12 @@ octopos-unixsock-proxy --listen /tmp/proxy.sock --target /cluster/run/app.sock
 octopos-unixsock-proxy --stdio --target /cluster/run/app.sock
 ```
 
+Run the bounded remote-child IPC validation matrix against a live cluster with:
+
+```bash
+scripts/validate-remote-children.sh shedwards-octo1:50051
+```
+
 Inherited locked regular files force local by default. After validating the
 active SSI filesystem lock behavior across nodes, opt in with:
 
