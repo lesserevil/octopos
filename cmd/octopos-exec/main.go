@@ -27,6 +27,8 @@ var (
 	nvidiaProjection   = flag.String("nvidia-projection", nvidia.DefaultProjectionRoot, "Host NVIDIA projection root")
 	nvidiaCapabilities = flag.String("nvidia-capabilities", nvidia.DefaultDriverCapabilities, "NVIDIA driver capabilities")
 	nvidiaDevRoot      = flag.String("nvidia-dev-root", "/dev", "Host NVIDIA device root")
+	vfioGroups         = flag.String("vfio-groups", "", "Allocated VFIO group IDs (internal)")
+	vfioDevRoot        = flag.String("vfio-dev-root", "/dev/vfio", "Host VFIO device root")
 	ttySlave           = flag.String("tty-slave", "", "Host PTY slave path (internal)")
 
 	mknod = unix.Mknod
@@ -50,9 +52,17 @@ func main() {
 		capabilities: *nvidiaCapabilities,
 		devRoot:      *nvidiaDevRoot,
 	}
+	vfioGroupIDs, err := parseVFIOGroups(*vfioGroups)
+	if err != nil {
+		fatalf("%v", err)
+	}
+	vfioRuntime := vfioRuntimeConfig{
+		groups:  vfioGroupIDs,
+		devRoot: *vfioDevRoot,
+	}
 	ttyRuntime := ttyRuntimeConfig{slave: *ttySlave}
 
-	if err := enterSSI(*rootFS, *mountBase, *cwd, *requireVFS, nvidiaRuntime, ttyRuntime, argv); err != nil {
+	if err := enterSSI(*rootFS, *mountBase, *cwd, *requireVFS, nvidiaRuntime, vfioRuntime, ttyRuntime, argv); err != nil {
 		fatalf("%v", err)
 	}
 }
@@ -68,6 +78,15 @@ func (c nvidiaRuntimeConfig) enabled() bool {
 	return len(c.devices) > 0
 }
 
+type vfioRuntimeConfig struct {
+	groups  []int
+	devRoot string
+}
+
+func (c vfioRuntimeConfig) enabled() bool {
+	return len(c.groups) > 0
+}
+
 type ttyRuntimeConfig struct {
 	slave string
 }
@@ -76,11 +95,38 @@ func (c ttyRuntimeConfig) enabled() bool {
 	return c.slave != ""
 }
 
-func enterSSI(root, base, workdir string, strictVFS bool, gpu nvidiaRuntimeConfig, tty ttyRuntimeConfig, argv []string) error {
+func parseVFIOGroups(spec string) ([]int, error) {
+	spec = strings.TrimSpace(spec)
+	if spec == "" {
+		return nil, nil
+	}
+	parts := strings.Split(spec, ",")
+	groups := make([]int, 0, len(parts))
+	seen := make(map[int]bool)
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		groupID, err := strconv.Atoi(part)
+		if err != nil || groupID <= 0 {
+			return nil, fmt.Errorf("invalid VFIO group %q", part)
+		}
+		if seen[groupID] {
+			continue
+		}
+		seen[groupID] = true
+		groups = append(groups, groupID)
+	}
+	return groups, nil
+}
+
+func enterSSI(root, base, workdir string, strictVFS bool, gpu nvidiaRuntimeConfig, vfio vfioRuntimeConfig, tty ttyRuntimeConfig, argv []string) error {
 	root = filepath.Clean(root)
 	base = filepath.Clean(base)
 	gpu.projection = filepath.Clean(gpu.projection)
 	gpu.devRoot = filepath.Clean(gpu.devRoot)
+	vfio.devRoot = filepath.Clean(vfio.devRoot)
 	if tty.enabled() {
 		tty.slave = filepath.Clean(tty.slave)
 		if err := validateTTYSlave(tty.slave); err != nil {
@@ -104,6 +150,9 @@ func enterSSI(root, base, workdir string, strictVFS bool, gpu nvidiaRuntimeConfi
 			return fmt.Errorf("prepare NVIDIA projection: %w", err)
 		}
 	}
+	if vfio.enabled() && !filepath.IsAbs(vfio.devRoot) {
+		return fmt.Errorf("VFIO device root %s must be absolute", vfio.devRoot)
+	}
 
 	if err := unix.Unshare(unix.CLONE_NEWNS | unix.CLONE_NEWUTS | unix.CLONE_NEWIPC); err != nil {
 		return fmt.Errorf("unshare SSI namespaces: %w", err)
@@ -120,13 +169,13 @@ func enterSSI(root, base, workdir string, strictVFS bool, gpu nvidiaRuntimeConfi
 			return err
 		}
 	}
-	if err := mountVirtualFS(root, base, "proc", strictVFS, gpu, tty); err != nil {
+	if err := mountVirtualFS(root, base, "proc", strictVFS, gpu, vfio, tty); err != nil {
 		return err
 	}
-	if err := mountVirtualFS(root, base, "dev", strictVFS, gpu, tty); err != nil {
+	if err := mountVirtualFS(root, base, "dev", strictVFS, gpu, vfio, tty); err != nil {
 		return err
 	}
-	if err := mountVirtualFS(root, base, "sys", strictVFS, gpu, tty); err != nil {
+	if err := mountVirtualFS(root, base, "sys", strictVFS, gpu, vfio, tty); err != nil {
 		return err
 	}
 	if gpu.enabled() {
@@ -253,10 +302,10 @@ func ensureSSIRootDir(root, name string) error {
 	return nil
 }
 
-func mountVirtualFS(root, base, name string, strict bool, gpu nvidiaRuntimeConfig, tty ttyRuntimeConfig) error {
+func mountVirtualFS(root, base, name string, strict bool, gpu nvidiaRuntimeConfig, vfio vfioRuntimeConfig, tty ttyRuntimeConfig) error {
 	target := filepath.Join(root, name)
 	if name == "dev" {
-		return mountPrivateDev(target, gpu, tty)
+		return mountPrivateDev(target, gpu, vfio, tty)
 	}
 	source := filepath.Join(base, name)
 	if mounted, _ := ssi.IsMountPoint(source); mounted {
@@ -278,7 +327,7 @@ func mountVirtualFS(root, base, name string, strict bool, gpu nvidiaRuntimeConfi
 	}
 }
 
-func mountPrivateDev(target string, gpu nvidiaRuntimeConfig, tty ttyRuntimeConfig) error {
+func mountPrivateDev(target string, gpu nvidiaRuntimeConfig, vfio vfioRuntimeConfig, tty ttyRuntimeConfig) error {
 	if err := unix.Mount("tmpfs", target, "tmpfs", unix.MS_NOSUID|unix.MS_STRICTATIME, "mode=755,size=65536k"); err != nil {
 		return fmt.Errorf("mount private /dev: %w", err)
 	}
@@ -303,6 +352,11 @@ func mountPrivateDev(target string, gpu nvidiaRuntimeConfig, tty ttyRuntimeConfi
 	}
 	if gpu.enabled() {
 		if err := createNVIDIADeviceNodes(target, gpu); err != nil {
+			return err
+		}
+	}
+	if vfio.enabled() {
+		if err := createVFIODeviceNodes(target, vfio); err != nil {
 			return err
 		}
 	}
@@ -411,6 +465,23 @@ func createNVIDIADeviceNodes(devTarget string, gpu nvidiaRuntimeConfig) error {
 	return createNVIDIACapDeviceNodes(devTarget, gpu.devRoot)
 }
 
+func createVFIODeviceNodes(devTarget string, vfio vfioRuntimeConfig) error {
+	targetDir := filepath.Join(devTarget, "vfio")
+	if err := os.MkdirAll(targetDir, 0755); err != nil {
+		return fmt.Errorf("create /dev/vfio: %w", err)
+	}
+	if err := createHostDeviceNodeWithLabel(devTarget, filepath.Join(vfio.devRoot, "vfio"), filepath.Join("vfio", "vfio"), "VFIO", true); err != nil {
+		return err
+	}
+	for _, groupID := range vfio.groups {
+		name := strconv.Itoa(groupID)
+		if err := createHostDeviceNodeWithLabel(devTarget, filepath.Join(vfio.devRoot, name), filepath.Join("vfio", name), "VFIO", true); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func hostNVIDIADevicePath(devRoot string, dev cluster.GPUDevice, name string) string {
 	if dev.Path != "" && devRoot == "/dev" {
 		return dev.Path
@@ -444,7 +515,11 @@ func createNVIDIACapDeviceNodes(devTarget, devRoot string) error {
 }
 
 func createHostDeviceNode(devTarget, hostPath, name string, required bool) error {
-	dev, ok, err := hostDeviceNode(hostPath, name)
+	return createHostDeviceNodeWithLabel(devTarget, hostPath, name, "NVIDIA", required)
+}
+
+func createHostDeviceNodeWithLabel(devTarget, hostPath, name, label string, required bool) error {
+	dev, ok, err := hostDeviceNode(hostPath, name, label)
 	if err != nil {
 		if required {
 			return err
@@ -453,7 +528,7 @@ func createHostDeviceNode(devTarget, hostPath, name string, required bool) error
 	}
 	if !ok {
 		if required {
-			return fmt.Errorf("required NVIDIA device %s is not a character device", hostPath)
+			return fmt.Errorf("required %s device %s is not a character device", label, hostPath)
 		}
 		return nil
 	}
@@ -464,13 +539,13 @@ func createHostDeviceNode(devTarget, hostPath, name string, required bool) error
 	return createDeviceNode(target, dev)
 }
 
-func hostDeviceNode(path, name string) (deviceNode, bool, error) {
+func hostDeviceNode(path, name, label string) (deviceNode, bool, error) {
 	var st unix.Stat_t
 	if err := unix.Stat(path, &st); err != nil {
 		if os.IsNotExist(err) {
-			return deviceNode{}, false, fmt.Errorf("NVIDIA device %s does not exist", path)
+			return deviceNode{}, false, fmt.Errorf("%s device %s does not exist", label, path)
 		}
-		return deviceNode{}, false, fmt.Errorf("stat NVIDIA device %s: %w", path, err)
+		return deviceNode{}, false, fmt.Errorf("stat %s device %s: %w", label, path, err)
 	}
 	if st.Mode&unix.S_IFMT != unix.S_IFCHR {
 		return deviceNode{}, false, nil

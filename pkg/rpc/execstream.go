@@ -1009,6 +1009,9 @@ func (s *ClusterServerImpl) buildSSICommand(ctx context.Context, req *ExecuteReq
 			"--nvidia-capabilities", nvidia.DefaultDriverCapabilities,
 		)
 	}
+	if len(reqs.VFIOGroups) > 0 {
+		args = append(args, "--vfio-groups", vfioGroupFlag(reqs.VFIOGroups))
+	}
 	args = append(args, "--")
 	args = append(args, req.Command...)
 	cmd := exec.CommandContext(ctx, cfg.Executor, args...)
@@ -1017,6 +1020,10 @@ func (s *ClusterServerImpl) buildSSICommand(ctx context.Context, req *ExecuteReq
 		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	}
 	return cmd, nil
+}
+
+func vfioGroupFlag(groups []int) string {
+	return strings.Join(vfioGroupStrings(groups), ",")
 }
 
 func (s *ClusterServerImpl) normalizeScheduledRequest(req *ExecuteRequest) error {

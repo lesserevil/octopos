@@ -127,6 +127,24 @@ func TestApplyNVIDIAEnv(t *testing.T) {
 	}
 }
 
+func TestParseVFIOGroups(t *testing.T) {
+	groups, err := parseVFIOGroups("7, 8,7")
+	if err != nil {
+		t.Fatalf("parseVFIOGroups: %v", err)
+	}
+	if len(groups) != 2 || groups[0] != 7 || groups[1] != 8 {
+		t.Fatalf("groups = %+v, want [7 8]", groups)
+	}
+}
+
+func TestParseVFIOGroupsRejectsInvalid(t *testing.T) {
+	for _, spec := range []string{"abc", "0", "-1"} {
+		if _, err := parseVFIOGroups(spec); err == nil {
+			t.Fatalf("parseVFIOGroups(%q) succeeded, want error", spec)
+		}
+	}
+}
+
 func TestApplyFDReopenPlan(t *testing.T) {
 	target := filepath.Join(t.TempDir(), "fd-target")
 	if err := os.WriteFile(target, []byte("start"), 0600); err != nil {

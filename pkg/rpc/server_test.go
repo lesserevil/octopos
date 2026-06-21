@@ -1496,6 +1496,49 @@ func TestStrictSSIPTYCommandIncludesSlaveProjection(t *testing.T) {
 	}
 }
 
+func TestStrictSSICommandIncludesVFIOGroups(t *testing.T) {
+	root := t.TempDir()
+	for _, dir := range []string{"usr/bin", "usr/lib"} {
+		if err := os.MkdirAll(filepath.Join(root, dir), 0755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	executor := filepath.Join(t.TempDir(), "octopos-exec")
+	if err := os.WriteFile(executor, []byte("#!/bin/sh\n"), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	server := NewClusterServerImplWithOptions(
+		cluster.NodeID("worker-node"),
+		scheduler.NewScheduler(&scheduler.BinPackPolicy{}),
+		tracker.NewTracker(),
+		nil,
+		ServerOptions{SSI: ssi.Config{
+			ClusterRoot:  root,
+			RootFS:       root,
+			Executor:     executor,
+			RequireMount: false,
+			Required:     true,
+		}},
+	)
+
+	req := &ExecuteRequest{
+		Command: []string{"/bin/sh"},
+		Cwd:     "/",
+	}
+	if err := server.normalizeScheduledRequest(req); err != nil {
+		t.Fatalf("normalizeScheduledRequest: %v", err)
+	}
+
+	cmd, err := server.buildSSICommand(context.Background(), req, cluster.Requirements{VFIOGroups: []int{7, 8}}, false, "")
+	if err != nil {
+		t.Fatalf("buildSSICommand: %v", err)
+	}
+	if !argPairBeforeCommand(cmd.Args, "--vfio-groups", "7,8") {
+		t.Fatalf("command args missing --vfio-groups before command separator: %v", cmd.Args)
+	}
+}
+
 func TestCloneExecuteRequestForNodePinsNodeAndPreservesAffinity(t *testing.T) {
 	req := &ExecuteRequest{
 		Resources: &Requirements{

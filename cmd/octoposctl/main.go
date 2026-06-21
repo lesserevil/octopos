@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -131,6 +132,46 @@ func clusterExecDefaultsForCommand(cmd *cobra.Command, configPath string) (clust
 		}
 	}
 	return defaults.WithDefaults(), nil
+}
+
+func parseVFIORequirements(specs []string) ([]*octopospb.VFIORequirement, error) {
+	reqs := make([]*octopospb.VFIORequirement, 0, len(specs))
+	for _, spec := range specs {
+		spec = strings.TrimSpace(spec)
+		if spec == "" {
+			continue
+		}
+		req := &octopospb.VFIORequirement{Count: 1}
+		for _, field := range strings.Split(spec, ",") {
+			key, value, ok := strings.Cut(strings.TrimSpace(field), "=")
+			if !ok {
+				return nil, fmt.Errorf("invalid --vfio field %q in %q", field, spec)
+			}
+			key = strings.TrimSpace(key)
+			value = strings.TrimSpace(value)
+			switch key {
+			case "vendor":
+				req.VendorId = value
+			case "device":
+				req.DeviceId = value
+			case "class":
+				req.Class = value
+			case "count":
+				count, err := strconv.Atoi(value)
+				if err != nil || count <= 0 {
+					return nil, fmt.Errorf("invalid --vfio count %q", value)
+				}
+				req.Count = int32(count)
+			default:
+				return nil, fmt.Errorf("unknown --vfio key %q", key)
+			}
+		}
+		if req.VendorId == "" && req.DeviceId == "" && req.Class == "" {
+			return nil, fmt.Errorf("--vfio %q must include vendor, device, or class", spec)
+		}
+		reqs = append(reqs, req)
+	}
+	return reqs, nil
 }
 
 func init() {
@@ -416,6 +457,11 @@ var execCmd = &cobra.Command{
 		cwd, _ := cmd.Flags().GetString("cwd")
 		background, _ := cmd.Flags().GetBool("background")
 		tty, _ := cmd.Flags().GetBool("tty")
+		vfioSpecs, _ := cmd.Flags().GetStringArray("vfio")
+		vfioReqs, err := parseVFIORequirements(vfioSpecs)
+		if err != nil {
+			return err
+		}
 		remoteChildren, _ := cmd.Flags().GetString("remote-children")
 		remoteIPCCompat, _ := cmd.Flags().GetString("remote-ipc-compat")
 		remoteEnv, err := remoteChildrenEnvironment(remoteChildren, remoteIPCCompat)
@@ -436,6 +482,7 @@ var execCmd = &cobra.Command{
 				CpuMillicores: int64(cpu * 1000),
 				MemoryBytes:   int64(mem * 1024 * 1024 * 1024),
 				Gpus:          int32(gpus),
+				VfioDevs:      vfioReqs,
 			},
 		}
 		req.Env = append(req.Env, remoteEnv...)
@@ -791,6 +838,7 @@ func main() {
 	execCmd.Flags().Int("mem", 1, "Memory required (GB)")
 	execCmd.Flags().Int("gpus", 0, "GPUs required")
 	execCmd.Flags().Int("gpu", 0, "GPUs required (alias for --gpus)")
+	execCmd.Flags().StringArray("vfio", nil, "VFIO requirement as vendor=...,device=...,class=...,count=... (repeatable)")
 	execCmd.Flags().String("node", "", "Node affinity")
 	execCmd.Flags().String("cwd", "", "Working directory inside the SSI root (default: /)")
 	execCmd.Flags().BoolP("interactive", "i", false, "Keep stdin open for interactive commands")

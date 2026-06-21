@@ -125,6 +125,33 @@ func TestClusterExecDefaultsForCommandUsesConfigAndFlagOverrides(t *testing.T) {
 	}
 }
 
+func TestParseVFIORequirements(t *testing.T) {
+	got, err := parseVFIORequirements([]string{
+		"vendor=8086,device=10fb,class=0200,count=2",
+		"class=0300",
+	})
+	if err != nil {
+		t.Fatalf("parseVFIORequirements: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("requirements = %+v, want two", got)
+	}
+	if got[0].VendorId != "8086" || got[0].DeviceId != "10fb" || got[0].Class != "0200" || got[0].Count != 2 {
+		t.Fatalf("first requirement = %+v", got[0])
+	}
+	if got[1].Class != "0300" || got[1].Count != 1 {
+		t.Fatalf("second requirement = %+v", got[1])
+	}
+}
+
+func TestParseVFIORequirementsRejectsInvalid(t *testing.T) {
+	for _, spec := range []string{"count=1", "class=0200,count=0", "foo=bar", "class"} {
+		if _, err := parseVFIORequirements([]string{spec}); err == nil {
+			t.Fatalf("parseVFIORequirements(%q) succeeded, want error", spec)
+		}
+	}
+}
+
 func resourceDefaultsTestCommand() *cobra.Command {
 	cmd := &cobra.Command{}
 	cmd.Flags().Int("cpu", 1, "")
