@@ -92,6 +92,7 @@ type FDPlan struct {
 type FDPlanOptions struct {
 	AllowReopen    bool
 	AllowFileLocks bool
+	AllowFIFOProxy bool
 	AllowPipeProxy bool
 }
 
@@ -165,6 +166,11 @@ func PrepareFDPlans(plans []FDPlan, opts FDPlanOptions) []FDPlan {
 			plan.Reason = "descriptor will be proxied through the OctopOS pipe graph"
 			plan.ReasonCode = FDReasonPipe
 		}
+		if opts.AllowFIFOProxy && fifoProxyFDPlan(plan) {
+			plan.Action = FDActionProxyStream
+			plan.Reason = "FIFO endpoint will be proxied through the OctopOS pipe graph"
+			plan.ReasonCode = FDReasonFIFO
+		}
 		if opts.AllowReopen && reopenableFDPlan(plan, opts) {
 			plan.Action = FDActionReopen
 			plan.Reason = "descriptor will be reopened in the remote SSI namespace"
@@ -177,6 +183,10 @@ func PrepareFDPlans(plans []FDPlan, opts FDPlanOptions) []FDPlan {
 
 func pipeProxyFDPlan(plan FDPlan) bool {
 	return plan.Kind == FDKindPipe && plan.PipeID != "" && plan.FD >= 0 && plan.FD <= 2
+}
+
+func fifoProxyFDPlan(plan FDPlan) bool {
+	return plan.Kind == FDKindPipe && plan.FIFOPath != "" && plan.FD >= 0 && plan.FD <= 2
 }
 
 func ReopenFDs(plans []FDPlan) []ReopenFD {

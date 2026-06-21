@@ -168,7 +168,9 @@ to run locally or require an explicit `octopos-remote-child` launch. Transparent
 mode falls back local for host-sensitive commands and inherited descriptors that
 cannot yet be recreated on a remote node. Regular files and safe character
 devices inherited as non-stdio descriptors are reopened in the remote SSI
-namespace when possible.
+namespace when possible. Anonymous pipes and already-open FIFO endpoints on
+stdin/stdout/stderr are proxied through the OctopOS pipe graph; FIFO opens
+performed after process start are still local kernel operations.
 
 Inherited locked regular files force local by default. After validating the
 active SSI filesystem lock behavior across nodes, opt in with:

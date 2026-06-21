@@ -121,6 +121,9 @@ func TestFDPlanOptionsAllowsFileLocksOnlyWhenExplicit(t *testing.T) {
 	if !opts.AllowPipeProxy {
 		t.Fatal("AllowPipeProxy = false")
 	}
+	if !opts.AllowFIFOProxy {
+		t.Fatal("AllowFIFOProxy = false")
+	}
 	if opts.AllowFileLocks {
 		t.Fatal("AllowFileLocks = true without opt-in")
 	}

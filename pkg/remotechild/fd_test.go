@@ -197,6 +197,26 @@ func TestClassifyInheritedFDsReportsNamedFIFO(t *testing.T) {
 	if plan.ReasonCode != FDReasonFIFO {
 		t.Fatalf("reason code = %q, want %q; plan=%#v", plan.ReasonCode, FDReasonFIFO, plan)
 	}
+	prepared := PrepareFDPlans([]FDPlan{plan}, FDPlanOptions{AllowFIFOProxy: true})
+	if prepared[0].Action != FDActionForceLocal {
+		t.Fatalf("non-stdio FIFO action = %s, want %s; plan=%#v", prepared[0].Action, FDActionForceLocal, prepared[0])
+	}
+}
+
+func TestPrepareFDPlansAllowsStdioFIFOProxy(t *testing.T) {
+	plan := FDPlan{
+		FD:         0,
+		Kind:       FDKindPipe,
+		Action:     FDActionForceLocal,
+		Path:       "/cluster/tmp/fifo",
+		FIFOPath:   "/cluster/tmp/fifo",
+		Reason:     "named FIFO requires coordinated FIFO broker semantics",
+		ReasonCode: FDReasonFIFO,
+	}
+	prepared := PrepareFDPlans([]FDPlan{plan}, FDPlanOptions{AllowFIFOProxy: true})
+	if prepared[0].Action != FDActionProxyStream {
+		t.Fatalf("stdio FIFO action = %s, want %s; plan=%#v", prepared[0].Action, FDActionProxyStream, prepared[0])
+	}
 }
 
 func TestClassifyInheritedFDsReportsDeviceNumbers(t *testing.T) {

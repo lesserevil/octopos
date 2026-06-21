@@ -139,6 +139,7 @@ func fdPlanOptions(env []string) remotechild.FDPlanOptions {
 	return remotechild.FDPlanOptions{
 		AllowReopen:    ssiEnvActive(env),
 		AllowFileLocks: truthyEnvValue(lookupEnv(env, remotechild.EnvAllowFileLocks)),
+		AllowFIFOProxy: true,
 		AllowPipeProxy: true,
 	}
 }
