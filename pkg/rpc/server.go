@@ -4,6 +4,7 @@ import (
 	"context"
 	"log"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -41,9 +42,18 @@ type ClusterServerImpl struct {
 
 // ClusterState holds the cluster-wide state
 type ClusterState struct {
-	nodes    map[cluster.NodeID]*cluster.NodeInfo
-	sessions map[cluster.SessionID]*cluster.Session
-	jobs     map[cluster.JobID]*cluster.JobInfo
+	nodes           map[cluster.NodeID]*cluster.NodeInfo
+	sessions        map[cluster.SessionID]*cluster.Session
+	jobs            map[cluster.JobID]*cluster.JobInfo
+	vfioAllocations map[string]vfioAllocation
+}
+
+type vfioAllocation struct {
+	NodeID    cluster.NodeID
+	SessionID cluster.SessionID
+	JobID     cluster.JobID
+	GroupID   int
+	CreatedAt time.Time
 }
 
 type ServerOptions struct {
@@ -97,9 +107,10 @@ func NewClusterServerImplWithOptions(nodeID cluster.NodeID, sched *scheduler.Sch
 	server := &ClusterServerImpl{
 		nodeID: nodeID,
 		cluster: &ClusterState{
-			nodes:    make(map[cluster.NodeID]*cluster.NodeInfo),
-			sessions: make(map[cluster.SessionID]*cluster.Session),
-			jobs:     make(map[cluster.JobID]*cluster.JobInfo),
+			nodes:           make(map[cluster.NodeID]*cluster.NodeInfo),
+			sessions:        make(map[cluster.SessionID]*cluster.Session),
+			jobs:            make(map[cluster.JobID]*cluster.JobInfo),
+			vfioAllocations: make(map[string]vfioAllocation),
 		},
 		scheduler:                   sched,
 		tracker:                     trk,
@@ -452,17 +463,125 @@ func (s *ClusterServerImpl) GetJobStatus(ctx context.Context, req *GetJobStatusR
 
 // AllocateVFIO allocates a VFIO device
 func (s *ClusterServerImpl) AllocateVFIO(ctx context.Context, req *AllocateVFIORequest) (*AllocateVFIOResponse, error) {
-	return &AllocateVFIOResponse{Success: false, Error: "not implemented"}, nil
+	if req.SessionId == "" {
+		return &AllocateVFIOResponse{Success: false, Error: "session_id is required"}, nil
+	}
+	if req.JobId == "" {
+		return &AllocateVFIOResponse{Success: false, Error: "job_id is required"}, nil
+	}
+	if req.Device == nil {
+		return &AllocateVFIOResponse{Success: false, Error: "device requirement is required"}, nil
+	}
+	count := req.Device.Count
+	if count <= 0 {
+		count = 1
+	}
+	if count != 1 {
+		return &AllocateVFIOResponse{Success: false, Error: "AllocateVFIO currently supports exactly one group per request"}, nil
+	}
+	if s.scheduler == nil {
+		return &AllocateVFIOResponse{Success: false, Error: "scheduler is not configured"}, nil
+	}
+
+	requirements := cluster.Requirements{
+		VFIODevs:  []cluster.VFIORequirement{s.vfioRequirementFromProto(req.Device)},
+		SessionID: cluster.SessionID(req.SessionId),
+		JobID:     cluster.JobID(req.JobId),
+	}
+	requirements.VFIODevs[0].Count = 1
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if job, exists := s.cluster.jobs[cluster.JobID(req.JobId)]; exists && job.SessionID != cluster.SessionID(req.SessionId) {
+		return &AllocateVFIOResponse{Success: false, Error: "job belongs to a different session"}, nil
+	}
+
+	node, allocated, err := s.scheduler.ScheduleWithAllocation(requirements)
+	if err != nil {
+		return &AllocateVFIOResponse{Success: false, Error: err.Error()}, nil
+	}
+	if len(allocated.VFIOGroups) != 1 {
+		s.scheduler.Release(node.ID, allocated)
+		return &AllocateVFIOResponse{Success: false, Error: "scheduler did not return a concrete VFIO group"}, nil
+	}
+	groupID := allocated.VFIOGroups[0]
+	key := vfioAllocationKey(node.ID, groupID)
+	if _, exists := s.cluster.vfioAllocations[key]; exists {
+		s.scheduler.Release(node.ID, allocated)
+		return &AllocateVFIOResponse{Success: false, Error: "VFIO group was already allocated"}, nil
+	}
+	s.cluster.vfioAllocations[key] = vfioAllocation{
+		NodeID:    node.ID,
+		SessionID: cluster.SessionID(req.SessionId),
+		JobID:     cluster.JobID(req.JobId),
+		GroupID:   groupID,
+		CreatedAt: time.Now(),
+	}
+	return &AllocateVFIOResponse{
+		Success:     true,
+		GroupId:     int32(groupID),
+		ContainerFd: -1,
+		DeviceFd:    -1,
+		DevicePath:  vfioDevicePath(groupID),
+	}, nil
 }
 
 // ReleaseVFIO releases a VFIO device
 func (s *ClusterServerImpl) ReleaseVFIO(ctx context.Context, req *ReleaseVFIORequest) (*ReleaseVFIOResponse, error) {
-	return &ReleaseVFIOResponse{Success: false, Error: "not implemented"}, nil
+	if req.SessionId == "" {
+		return &ReleaseVFIOResponse{Success: false, Error: "session_id is required"}, nil
+	}
+	groupID := int(req.GroupId)
+	if groupID <= 0 {
+		return &ReleaseVFIOResponse{Success: false, Error: "group_id is required"}, nil
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var foundForeign bool
+	for key, alloc := range s.cluster.vfioAllocations {
+		if alloc.GroupID != groupID {
+			continue
+		}
+		if alloc.SessionID != cluster.SessionID(req.SessionId) {
+			foundForeign = true
+			continue
+		}
+		if s.scheduler != nil {
+			s.scheduler.Release(alloc.NodeID, cluster.Requirements{
+				JobID:      alloc.JobID,
+				VFIOGroups: []int{groupID},
+			})
+		}
+		delete(s.cluster.vfioAllocations, key)
+		return &ReleaseVFIOResponse{Success: true}, nil
+	}
+	if foundForeign {
+		return &ReleaseVFIOResponse{Success: false, Error: "VFIO group is owned by a different session"}, nil
+	}
+	if s.vfioGroupExistsLocked(groupID) {
+		return &ReleaseVFIOResponse{Success: true}, nil
+	}
+	return &ReleaseVFIOResponse{Success: false, Error: "VFIO group not found"}, nil
 }
 
 // GetVFIODevices returns available VFIO devices
 func (s *ClusterServerImpl) GetVFIODevices(ctx context.Context, req *GetVFIODevicesRequest) (*GetVFIODevicesResponse, error) {
-	return &GetVFIODevicesResponse{}, nil
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if req.NodeId != "" {
+		node, ok := s.cluster.nodes[cluster.NodeID(req.NodeId)]
+		if !ok {
+			return &GetVFIODevicesResponse{}, nil
+		}
+		return &GetVFIODevicesResponse{Groups: s.vfioGroupsToProto(vfioGroupsWithClaims(node.VFIOGroups, node.Resources.VFIOGroups))}, nil
+	}
+
+	var groups []*VFIOGroup
+	for _, node := range s.cluster.nodes {
+		groups = append(groups, s.vfioGroupsToProto(vfioGroupsWithClaims(node.VFIOGroups, node.Resources.VFIOGroups))...)
+	}
+	return &GetVFIODevicesResponse{Groups: groups}, nil
 }
 
 // CreateSession creates a new session
@@ -584,6 +703,42 @@ func (s *ClusterServerImpl) pciDevicesFromProto(devices []*PCIDevice) []cluster.
 	return out
 }
 
+func (s *ClusterServerImpl) vfioRequirementFromProto(req *VFIORequirement) cluster.VFIORequirement {
+	if req == nil {
+		return cluster.VFIORequirement{}
+	}
+	return cluster.VFIORequirement{
+		VendorID: req.VendorId,
+		DeviceID: req.DeviceId,
+		Class:    req.Class,
+		Count:    int(req.Count),
+	}
+}
+
+func (s *ClusterServerImpl) vfioRequirementsFromProto(reqs []*VFIORequirement) []cluster.VFIORequirement {
+	out := make([]cluster.VFIORequirement, 0, len(reqs))
+	for _, req := range reqs {
+		if req == nil {
+			continue
+		}
+		out = append(out, s.vfioRequirementFromProto(req))
+	}
+	return out
+}
+
+func (s *ClusterServerImpl) vfioRequirementsToProto(reqs []cluster.VFIORequirement) []*VFIORequirement {
+	out := make([]*VFIORequirement, 0, len(reqs))
+	for _, req := range reqs {
+		out = append(out, &VFIORequirement{
+			VendorId: req.VendorID,
+			DeviceId: req.DeviceID,
+			Class:    req.Class,
+			Count:    int32(req.Count),
+		})
+	}
+	return out
+}
+
 func (s *ClusterServerImpl) vfioGroupsToProto(groups []cluster.VFIOGroup) []*VFIOGroup {
 	out := make([]*VFIOGroup, 0, len(groups))
 	for _, group := range groups {
@@ -615,6 +770,32 @@ func vfioGroupsFromPCIDevices(devices []cluster.PCIDevice) []cluster.VFIOGroup {
 		return groups[i].GroupID < groups[j].GroupID
 	})
 	return groups
+}
+
+func vfioGroupsWithClaims(primary, fallback []cluster.VFIOGroup) []cluster.VFIOGroup {
+	if len(primary) > 0 {
+		return primary
+	}
+	return fallback
+}
+
+func vfioAllocationKey(nodeID cluster.NodeID, groupID int) string {
+	return string(nodeID) + ":" + strconv.Itoa(groupID)
+}
+
+func vfioDevicePath(groupID int) string {
+	return "/dev/vfio/" + strconv.Itoa(groupID)
+}
+
+func (s *ClusterServerImpl) vfioGroupExistsLocked(groupID int) bool {
+	for _, node := range s.cluster.nodes {
+		for _, group := range vfioGroupsWithClaims(node.VFIOGroups, node.Resources.VFIOGroups) {
+			if group.GroupID == groupID {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (s *ClusterServerImpl) sessionToProto(sess *cluster.Session) *SessionInfo {
@@ -943,6 +1124,7 @@ func (s *ClusterServerImpl) protoToRequirements(pb *Requirements) cluster.Requir
 		Memory:       pb.MemoryBytes,
 		GPUs:         int(pb.Gpus),
 		GPUMem:       pb.GpuMemBytes,
+		VFIODevs:     s.vfioRequirementsFromProto(pb.VfioDevs),
 		NodeAffinity: pb.NodeAffinity,
 		SessionID:    cluster.SessionID(pb.SessionId),
 		JobID:        cluster.JobID(pb.JobId),
@@ -957,6 +1139,7 @@ func (s *ClusterServerImpl) requirementsToProto(req cluster.Requirements) *Requi
 		MemoryBytes:   req.Memory,
 		Gpus:          int32(req.GPUs),
 		GpuMemBytes:   req.GPUMem,
+		VfioDevs:      s.vfioRequirementsToProto(req.VFIODevs),
 		NodeAffinity:  req.NodeAffinity,
 		SessionId:     string(req.SessionID),
 		JobId:         string(req.JobID),
@@ -967,8 +1150,16 @@ func (s *ClusterServerImpl) requirementsToProto(req cluster.Requirements) *Requi
 
 func (s *ClusterServerImpl) protoToCommands(argv []string, env []string, cwd string, req cluster.Requirements) []cluster.CommandSpec {
 	return []cluster.CommandSpec{
-		{Argv: argv, Env: env, Resources: req},
+		{Argv: argv, Env: env, Resources: req, VFIOGroups: vfioGroupStrings(req.VFIOGroups)},
 	}
+}
+
+func vfioGroupStrings(groups []int) []string {
+	out := make([]string, 0, len(groups))
+	for _, groupID := range groups {
+		out = append(out, strconv.Itoa(groupID))
+	}
+	return out
 }
 
 func int32SliceToProto(s []int) []int32 {

@@ -170,6 +170,129 @@ func TestRegisterNodeCarriesVFIOGroupsFromPCIDevices(t *testing.T) {
 	}
 }
 
+func TestVFIOAllocateListAndRelease(t *testing.T) {
+	sched := scheduler.NewScheduler(&scheduler.BinPackPolicy{})
+	node := testVFIONode()
+	sched.AddNode(node)
+	server := NewClusterServerImpl("test-node", sched, tracker.NewTracker(), nil)
+
+	listBefore, err := server.GetVFIODevices(context.Background(), &GetVFIODevicesRequest{NodeId: "node-1"})
+	if err != nil {
+		t.Fatalf("GetVFIODevices before: %v", err)
+	}
+	if len(listBefore.Groups) != 1 || listBefore.Groups[0].ClaimedBy != "" {
+		t.Fatalf("groups before = %+v, want one unclaimed group", listBefore.Groups)
+	}
+
+	alloc, err := server.AllocateVFIO(context.Background(), &AllocateVFIORequest{
+		SessionId: "sess-1",
+		JobId:     "job-1",
+		Device: &VFIORequirement{
+			VendorId: "8086",
+			DeviceId: "10fb",
+			Class:    "0200",
+			Count:    1,
+		},
+	})
+	if err != nil {
+		t.Fatalf("AllocateVFIO: %v", err)
+	}
+	if !alloc.Success {
+		t.Fatalf("AllocateVFIO failed: %s", alloc.Error)
+	}
+	if alloc.GroupId != 7 || alloc.DevicePath != "/dev/vfio/7" || alloc.ContainerFd != -1 || alloc.DeviceFd != -1 {
+		t.Fatalf("allocation = %+v, want group 7 and fd placeholders", alloc)
+	}
+	if node.VFIOAllocations[7] != "job-1" {
+		t.Fatalf("node VFIO allocations = %+v, want job-1 owner", node.VFIOAllocations)
+	}
+
+	listAfter, err := server.GetVFIODevices(context.Background(), &GetVFIODevicesRequest{NodeId: "node-1"})
+	if err != nil {
+		t.Fatalf("GetVFIODevices after: %v", err)
+	}
+	if len(listAfter.Groups) != 1 || listAfter.Groups[0].ClaimedBy != "job-1" {
+		t.Fatalf("groups after = %+v, want claimed by job-1", listAfter.Groups)
+	}
+
+	foreignRelease, err := server.ReleaseVFIO(context.Background(), &ReleaseVFIORequest{
+		SessionId: "sess-2",
+		GroupId:   7,
+	})
+	if err != nil {
+		t.Fatalf("foreign ReleaseVFIO: %v", err)
+	}
+	if foreignRelease.Success {
+		t.Fatal("foreign release succeeded, want denial")
+	}
+
+	release, err := server.ReleaseVFIO(context.Background(), &ReleaseVFIORequest{
+		SessionId: "sess-1",
+		GroupId:   7,
+	})
+	if err != nil {
+		t.Fatalf("ReleaseVFIO: %v", err)
+	}
+	if !release.Success {
+		t.Fatalf("ReleaseVFIO failed: %s", release.Error)
+	}
+	if len(node.VFIOAllocations) != 0 {
+		t.Fatalf("node VFIO allocations = %+v, want empty", node.VFIOAllocations)
+	}
+}
+
+func TestAllocateVFIORejectsDoubleAllocation(t *testing.T) {
+	sched := scheduler.NewScheduler(&scheduler.BinPackPolicy{})
+	sched.AddNode(testVFIONode())
+	server := NewClusterServerImpl("test-node", sched, tracker.NewTracker(), nil)
+	req := &AllocateVFIORequest{
+		SessionId: "sess-1",
+		JobId:     "job-1",
+		Device:    &VFIORequirement{VendorId: "8086", Count: 1},
+	}
+	first, err := server.AllocateVFIO(context.Background(), req)
+	if err != nil {
+		t.Fatalf("first AllocateVFIO: %v", err)
+	}
+	if !first.Success {
+		t.Fatalf("first AllocateVFIO failed: %s", first.Error)
+	}
+
+	second, err := server.AllocateVFIO(context.Background(), &AllocateVFIORequest{
+		SessionId: "sess-2",
+		JobId:     "job-2",
+		Device:    &VFIORequirement{VendorId: "8086", Count: 1},
+	})
+	if err != nil {
+		t.Fatalf("second AllocateVFIO: %v", err)
+	}
+	if second.Success {
+		t.Fatal("second AllocateVFIO succeeded, want no eligible node")
+	}
+}
+
+func testVFIONode() *cluster.NodeInfo {
+	return &cluster.NodeInfo{
+		ID:    "node-1",
+		State: cluster.NodeStateActive,
+		Resources: cluster.ResourceSpec{
+			CPU:    8000,
+			Memory: 16_000_000_000,
+			VFIOGroups: []cluster.VFIOGroup{{
+				GroupID: 7,
+				Devices: []cluster.PCIDevice{{
+					Address:   "0000:01:00.0",
+					VendorID:  "8086",
+					DeviceID:  "10fb",
+					Class:     "020000",
+					Driver:    "vfio-pci",
+					VFIOGroup: 7,
+				}},
+			}},
+		},
+	}
+}
+
 func TestExecStreamStreamsStdio(t *testing.T) {
 	client, cleanup := newTestClusterClient(t)
 	defer cleanup()
