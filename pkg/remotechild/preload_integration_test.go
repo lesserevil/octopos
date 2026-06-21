@@ -65,6 +65,39 @@ func TestPreloadRelaxedIPCCompatBlocksDevShmMapping(t *testing.T) {
 	}
 }
 
+func TestPreloadWrapsSystem(t *testing.T) {
+	so := buildTestPreload(t)
+	probe := buildSystemProbe(t)
+	dir := t.TempDir()
+	helper := filepath.Join(dir, "octopos-remote-child")
+	logPath := filepath.Join(dir, "helper.log")
+	helperScript := "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$OCTOPOS_SYSTEM_PROBE_LOG\"\nexit 0\n"
+	if err := os.WriteFile(helper, []byte(helperScript), 0700); err != nil {
+		t.Fatalf("write helper: %v", err)
+	}
+
+	cmd := exec.Command(probe)
+	cmd.Env = append(os.Environ(),
+		"LD_PRELOAD="+so,
+		"OCTOPOS_REMOTE_CHILDREN=safe",
+		"OCTOPOS_REMOTE_CHILD_PATH="+helper,
+		"OCTOPOS_SYSTEM_PROBE_LOG="+logPath,
+	)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("system probe failed: %v\n%s", err, output)
+	}
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read helper log: %v", err)
+	}
+	got := strings.Split(strings.TrimSpace(string(data)), "\n")
+	want := []string{"--", "/bin/sh", "-c", "printf system-probe"}
+	if strings.Join(got, "\x00") != strings.Join(want, "\x00") {
+		t.Fatalf("helper args = %#v, want %#v", got, want)
+	}
+}
+
 func buildTestPreload(t *testing.T) string {
 	t.Helper()
 	if goruntime.GOOS != "linux" {
@@ -115,6 +148,25 @@ func testCCompiler(t *testing.T) string {
 		t.Skipf("C compiler %q unavailable: %v", cc, err)
 	}
 	return path
+}
+
+func buildSystemProbe(t *testing.T) string {
+	t.Helper()
+	if goruntime.GOOS != "linux" {
+		t.Skip("remote child preload is Linux-only")
+	}
+	cc := testCCompiler(t)
+	dir := t.TempDir()
+	src := filepath.Join(dir, "system_probe.c")
+	bin := filepath.Join(dir, "system_probe")
+	if err := os.WriteFile(src, []byte(systemProbeSource), 0600); err != nil {
+		t.Fatalf("write system probe: %v", err)
+	}
+	cmd := exec.Command(cc, "-O2", "-Wall", "-Wextra", "-o", bin, src)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("build system probe: %v\n%s", err, output)
+	}
+	return bin
 }
 
 func writeMMapProbeFile(t *testing.T, path string) string {
@@ -205,6 +257,22 @@ int main(int argc, char **argv) {
     printf("%c\n", ((char *)mapped)[0]);
     munmap(mapped, 4096);
     close(fd);
+    return 0;
+}
+`
+
+const systemProbeSource = `
+#include <stdlib.h>
+#include <sys/wait.h>
+
+int main(void) {
+    int status = system("printf system-probe");
+    if (status == -1) {
+        return 2;
+    }
+    if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+        return 3;
+    }
     return 0;
 }
 `

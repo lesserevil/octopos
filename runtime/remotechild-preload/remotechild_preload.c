@@ -11,6 +11,7 @@
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 #ifndef AT_FDCWD
@@ -32,6 +33,7 @@
 extern char **environ;
 
 static const char *remote_child_path = "/usr/local/bin/octopos-remote-child";
+static const char *remote_child_path_env = "OCTOPOS_REMOTE_CHILD_PATH";
 static const char *active_env = "OCTOPOS_REMOTE_CHILD_PRELOAD_ACTIVE=1";
 static const char *ipc_compat_env = "OCTOPOS_REMOTE_IPC_COMPAT";
 static const char *ipc_compat_warned_env = "OCTOPOS_REMOTE_IPC_COMPAT_WARNED";
@@ -78,6 +80,14 @@ static int remoting_enabled(char *const envp[]) {
 static int remote_child_process(void) {
     const char *remote_child = getenv("OCTOPOS_REMOTE_CHILD");
     return remote_child != NULL && strcmp(remote_child, "1") == 0;
+}
+
+static const char *remote_child_binary(void) {
+    const char *override = getenv(remote_child_path_env);
+    if (override != NULL && override[0] != '\0') {
+        return override;
+    }
+    return remote_child_path;
 }
 
 static int shared_mapping(int flags) {
@@ -213,7 +223,8 @@ static int should_wrap_path(const char *path, char *const envp[]) {
     if (!remoting_enabled(envp) || path == NULL || path[0] == '\0') {
         return 0;
     }
-    if (strcmp(path, remote_child_path) == 0 || strcmp(path, "octopos-remote-child") == 0) {
+    const char *helper = remote_child_binary();
+    if (strcmp(path, helper) == 0 || strcmp(path, remote_child_path) == 0 || strcmp(path, "octopos-remote-child") == 0) {
         return 0;
     }
     if (has_prefix(path, "/proc/") || has_prefix(path, "/dev/fd/")) {
@@ -239,7 +250,7 @@ static char **build_child_argv(const char *path, char *const argv[]) {
     if (out == NULL) {
         return NULL;
     }
-    out[0] = (char *)remote_child_path;
+    out[0] = (char *)remote_child_binary();
     out[1] = "--";
     out[2] = (char *)path;
     for (size_t i = 1; i < argc; i++) {
@@ -272,6 +283,7 @@ typedef int (*execvpe_fn)(const char *, char *const [], char *const []);
 typedef void *(*mmap_fn)(void *, size_t, int, int, int, off_t);
 typedef void *(*mmap64_fn)(void *, size_t, int, int, int, off64_t);
 typedef int (*posix_spawn_fn)(pid_t *, const char *, const posix_spawn_file_actions_t *, const posix_spawnattr_t *, char *const [], char *const []);
+typedef int (*system_fn)(const char *);
 
 int execve(const char *pathname, char *const argv[], char *const envp[]) {
     execve_fn real_execve = (execve_fn)dlsym(RTLD_NEXT, "execve");
@@ -290,7 +302,7 @@ int execve(const char *pathname, char *const argv[], char *const envp[]) {
         errno = ENOMEM;
         return -1;
     }
-    int rc = real_execve(remote_child_path, child_argv, child_env);
+    int rc = real_execve(remote_child_binary(), child_argv, child_env);
     int saved = errno;
     free(child_argv);
     free(child_env);
@@ -369,7 +381,7 @@ int posix_spawn(pid_t *pid, const char *path, const posix_spawn_file_actions_t *
         free(child_env);
         return ENOMEM;
     }
-    int rc = real_spawn(pid, remote_child_path, actions, attrp, child_argv, child_env);
+    int rc = real_spawn(pid, remote_child_binary(), actions, attrp, child_argv, child_env);
     free(child_argv);
     free(child_env);
     return rc;
@@ -390,10 +402,44 @@ int posix_spawnp(pid_t *pid, const char *file, const posix_spawn_file_actions_t 
         free(child_env);
         return ENOMEM;
     }
-    int rc = real_spawnp(pid, remote_child_path, actions, attrp, child_argv, child_env);
+    int rc = real_spawnp(pid, remote_child_binary(), actions, attrp, child_argv, child_env);
     free(child_argv);
     free(child_env);
     return rc;
+}
+
+int system(const char *command) {
+    system_fn real_system = (system_fn)dlsym(RTLD_NEXT, "system");
+    if (real_system == NULL) {
+        errno = ENOSYS;
+        return -1;
+    }
+    if (command == NULL || !remoting_enabled(environ)) {
+        return real_system(command);
+    }
+
+    pid_t pid = fork();
+    if (pid < 0) {
+        return -1;
+    }
+    if (pid == 0) {
+        char *shell_argv[] = {"sh", "-c", (char *)command, NULL};
+        char **child_argv = build_child_argv("/bin/sh", shell_argv);
+        char **child_env = build_child_env(environ);
+        execve_fn real_execve = (execve_fn)dlsym(RTLD_NEXT, "execve");
+        if (child_argv != NULL && child_env != NULL && real_execve != NULL) {
+            real_execve(remote_child_binary(), child_argv, child_env);
+        }
+        _exit(127);
+    }
+
+    int status = 0;
+    while (waitpid(pid, &status, 0) < 0) {
+        if (errno != EINTR) {
+            return -1;
+        }
+    }
+    return status;
 }
 
 void *mmap(void *addr, size_t length, int prot, int flags, int fd, off_t offset) {
