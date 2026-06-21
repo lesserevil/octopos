@@ -7,15 +7,19 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
 	"github.com/octopos/octopos/pkg/cluster"
+	"github.com/octopos/octopos/pkg/remotechild"
 	"github.com/octopos/octopos/pkg/scheduler"
 	"github.com/octopos/octopos/pkg/ssi"
 	"github.com/octopos/octopos/pkg/tracker"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/test/bufconn"
+	"google.golang.org/protobuf/proto"
 )
 
 func TestClusterServer(t *testing.T) {
@@ -211,7 +215,7 @@ func TestExecStreamTTYAllocatesPTY(t *testing.T) {
 	if err := stream.Send(&ExecStreamRequest{Payload: &ExecStreamRequest_Exec{Exec: &ExecuteRequest{
 		SessionId: "sess-tty",
 		JobId:     "job-tty",
-		Command:   []string{"/bin/sh", "-c", "test -t 0 && echo tty-ok"},
+		Command:   []string{"/bin/sh", "-c", "test -t 0 && tty"},
 		Stdin:     true,
 		Stdout:    true,
 		Stderr:    true,
@@ -250,11 +254,48 @@ func TestExecStreamTTYAllocatesPTY(t *testing.T) {
 		}
 	}
 
-	if !strings.Contains(output.String(), "tty-ok") {
-		t.Fatalf("PTY output missing tty-ok: %q", output.String())
+	if strings.Contains(output.String(), "not a tty") || !strings.Contains(output.String(), "/dev/") {
+		t.Fatalf("PTY output does not name a tty: %q", output.String())
 	}
 	if exitCode != 0 {
 		t.Fatalf("exit code = %d, want 0", exitCode)
+	}
+}
+
+func TestRemoteChildStreamRequiresRemoteChildMarker(t *testing.T) {
+	client, cleanup := newTestClusterClient(t)
+	defer cleanup()
+
+	registerTestNode(t, client)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	stream, err := client.RemoteChildStream(ctx)
+	if err != nil {
+		t.Fatalf("RemoteChildStream: %v", err)
+	}
+	if err := stream.Send(&ExecStreamRequest{Payload: &ExecStreamRequest_Exec{Exec: &ExecuteRequest{
+		SessionId: "sess-child",
+		JobId:     "job-child",
+		Command:   []string{"/bin/true"},
+		Resources: &Requirements{
+			CpuMillicores: 1000,
+			MemoryBytes:   1000000000,
+		},
+	}}}); err != nil {
+		t.Fatalf("send exec: %v", err)
+	}
+	resp, err := stream.Recv()
+	if err != nil {
+		t.Fatalf("recv: %v", err)
+	}
+	payload, ok := resp.Payload.(*ExecStreamResponse_Error)
+	if !ok {
+		t.Fatalf("response payload = %T, want error", resp.Payload)
+	}
+	if !strings.Contains(payload.Error, remotechild.EnvRemoteChild) {
+		t.Fatalf("error = %q, want missing marker", payload.Error)
 	}
 }
 
@@ -389,6 +430,823 @@ func TestStrictSSIEnvIsAuthoritativePerExecutingNode(t *testing.T) {
 	}
 }
 
+func TestRemoteChildInfoFromEnv(t *testing.T) {
+	req := &ExecuteRequest{
+		Command: []string{"/bin/sh", "-c", "echo child"},
+		Env: []string{
+			"OCTOPOS_REMOTE_CHILD=1",
+			"OCTOPOS_REMOTE_CHILD_REASON=explicit",
+			"OCTOPOS_PARENT_JOB_ID=job-parent",
+			"OCTOPOS_PARENT_PID=100",
+			"OCTOPOS_SHADOW_PID=101",
+		},
+	}
+
+	info := remoteChildInfoFromEnv(req, cluster.JobID("job-child"), cluster.NodeID("node-2"))
+	if info == nil {
+		t.Fatal("remoteChildInfoFromEnv returned nil")
+	}
+	if info.ParentJobID != "job-parent" || info.RemoteJobID != "job-child" || info.RemoteNodeID != "node-2" {
+		t.Fatalf("job/node metadata = %#v", info)
+	}
+	if info.ParentPID != 100 || info.ShadowPID != 101 {
+		t.Fatalf("pid metadata = parent %d shadow %d", info.ParentPID, info.ShadowPID)
+	}
+	if got := strings.Join(info.Command, " "); got != "/bin/sh -c echo child" {
+		t.Fatalf("command = %q", got)
+	}
+	if info.PlacementReason != "explicit" {
+		t.Fatalf("placement reason = %q", info.PlacementReason)
+	}
+}
+
+func TestScheduleJobAppliesSelectedNodeEnv(t *testing.T) {
+	root := t.TempDir()
+	server := NewClusterServerImplWithOptions(
+		cluster.NodeID("ingress-node"),
+		scheduler.NewScheduler(&scheduler.BinPackPolicy{}),
+		tracker.NewTracker(),
+		nil,
+		ServerOptions{SSI: ssi.Config{
+			ClusterRoot:  root,
+			RootFS:       root,
+			RequireMount: false,
+			Required:     true,
+		}},
+	)
+	for _, nodeID := range []string{"ingress-node", "worker-node"} {
+		resp, err := server.RegisterNode(context.Background(), &RegisterNodeRequest{
+			NodeId:  nodeID,
+			Address: "10.0.0.1",
+			Resources: &NodeResources{
+				CpuMillicores: 2000,
+				MemoryBytes:   2 * 1024 * 1024 * 1024,
+			},
+		})
+		if err != nil {
+			t.Fatalf("RegisterNode(%s): %v", nodeID, err)
+		}
+		if !resp.Success {
+			t.Fatalf("RegisterNode(%s) failed: %s", nodeID, resp.Error)
+		}
+	}
+
+	req := &ExecuteRequest{
+		SessionId: "session-1",
+		JobId:     "job-1",
+		Command:   []string{"env"},
+		Resources: &Requirements{
+			CpuMillicores: 1000,
+			MemoryBytes:   1024 * 1024 * 1024,
+			NodeAffinity:  map[string]string{"node_id": "worker-node"},
+		},
+	}
+	node, _, jobID, err := server.scheduleJob(req)
+	if err != nil {
+		t.Fatalf("scheduleJob: %v", err)
+	}
+	if node.ID != "worker-node" {
+		t.Fatalf("scheduled node = %q, want worker-node", node.ID)
+	}
+	job := server.cluster.jobs[jobID]
+	if got, want := envValue(job.Commands[0].Env, "OCTOPOS_NODE_ID"), "worker-node"; got != want {
+		t.Fatalf("job command OCTOPOS_NODE_ID = %q, want %q; env=%v", got, want, job.Commands[0].Env)
+	}
+	if got := envValue(job.Commands[0].Env, remotechild.EnvChildToken); got == "" {
+		t.Fatalf("%s missing from scheduled env: %v", remotechild.EnvChildToken, job.Commands[0].Env)
+	} else if got != job.ChildToken {
+		t.Fatalf("scheduled env token does not match job token")
+	}
+}
+
+func TestAuthorizeRemoteChildRequestRequiresParentToken(t *testing.T) {
+	server := NewClusterServerImpl(
+		cluster.NodeID("node-1"),
+		scheduler.NewScheduler(&scheduler.BinPackPolicy{}),
+		tracker.NewTracker(),
+		nil,
+	)
+	parentJob := &cluster.JobInfo{
+		ID:         "job-parent",
+		SessionID:  "session-1",
+		Status:     cluster.JobStatusRunning,
+		ChildToken: "parent-token",
+	}
+	server.cluster.jobs[parentJob.ID] = parentJob
+
+	validReq := &ExecuteRequest{
+		SessionId: "session-1",
+		Command:   []string{"true"},
+		Env: []string{
+			remotechild.EnvRemoteChild + "=1",
+			remotechild.EnvParentJobID + "=job-parent",
+			remotechild.EnvChildToken + "=parent-token",
+		},
+	}
+	if err := server.authorizeRemoteChildRequest(context.Background(), validReq); err != nil {
+		t.Fatalf("valid remote child rejected: %v", err)
+	}
+
+	missingToken := cloneExecuteRequestForTest(validReq)
+	missingToken.Env = []string{
+		remotechild.EnvRemoteChild + "=1",
+		remotechild.EnvParentJobID + "=job-parent",
+	}
+	if err := server.authorizeRemoteChildRequest(context.Background(), missingToken); err == nil {
+		t.Fatal("missing token accepted")
+	}
+
+	wrongToken := cloneExecuteRequestForTest(validReq)
+	wrongToken.Env = []string{
+		remotechild.EnvRemoteChild + "=1",
+		remotechild.EnvParentJobID + "=job-parent",
+		remotechild.EnvChildToken + "=wrong",
+	}
+	if err := server.authorizeRemoteChildRequest(context.Background(), wrongToken); err == nil {
+		t.Fatal("wrong token accepted")
+	}
+
+	wrongSession := cloneExecuteRequestForTest(validReq)
+	wrongSession.SessionId = "other-session"
+	if err := server.authorizeRemoteChildRequest(context.Background(), wrongSession); err == nil {
+		t.Fatal("wrong session accepted")
+	}
+
+	internalCtx := metadata.NewIncomingContext(context.Background(), metadata.Pairs(internalForwardMetadata, "1"))
+	if err := server.authorizeRemoteChildRequest(internalCtx, wrongToken); err != nil {
+		t.Fatalf("internal forwarded request rejected: %v", err)
+	}
+
+	events := server.remoteChildren.AuditEvents()
+	if len(events) < 4 {
+		t.Fatalf("audit events = %d, want at least 4", len(events))
+	}
+	if events[0].Decision != "accepted" || events[0].ParentJobID != "job-parent" {
+		t.Fatalf("first audit event = %#v", events[0])
+	}
+	last := events[len(events)-1]
+	if last.Decision != "rejected" || !strings.Contains(last.AuthFailureReason, "session") {
+		t.Fatalf("last audit event = %#v, want session rejection", last)
+	}
+}
+
+func TestAuthorizeRemoteChildRequestRequiresRunningParentAndLimit(t *testing.T) {
+	server := NewClusterServerImplWithOptions(
+		cluster.NodeID("node-1"),
+		scheduler.NewScheduler(&scheduler.BinPackPolicy{}),
+		tracker.NewTracker(),
+		nil,
+		ServerOptions{MaxRemoteChildrenPerParent: 1},
+	)
+	parentJob := &cluster.JobInfo{
+		ID:         "job-parent",
+		SessionID:  "session-1",
+		Status:     cluster.JobStatusRunning,
+		ChildToken: "parent-token",
+	}
+	server.cluster.jobs[parentJob.ID] = parentJob
+
+	req := &ExecuteRequest{
+		SessionId: "session-1",
+		JobId:     "job-new-child",
+		Command:   []string{"true"},
+		Env: []string{
+			remotechild.EnvRemoteChild + "=1",
+			remotechild.EnvParentJobID + "=job-parent",
+			remotechild.EnvChildToken + "=parent-token",
+		},
+	}
+	server.remoteChildren.Upsert(remotechild.ShadowRecord{
+		SessionID:   "session-1",
+		ParentJobID: "job-parent",
+		RemoteJobID: "job-existing-child",
+		State:       remotechild.StateRunning,
+	})
+	if err := server.authorizeRemoteChildRequest(context.Background(), req); err == nil {
+		t.Fatal("request accepted despite remote child limit")
+	}
+
+	server.remoteChildren.MarkFinished("job-existing-child", remotechild.StateCompleted, 0, 0, "", time.Now())
+	if err := server.authorizeRemoteChildRequest(context.Background(), req); err != nil {
+		t.Fatalf("request rejected after completed child no longer counts: %v", err)
+	}
+
+	parentJob.Status = cluster.JobStatusCompleted
+	if err := server.authorizeRemoteChildRequest(context.Background(), req); err == nil {
+		t.Fatal("request accepted after parent completed")
+	}
+}
+
+func TestAuthorizeRemoteChildRequestRejectsExpiredToken(t *testing.T) {
+	server := NewClusterServerImpl(
+		cluster.NodeID("node-1"),
+		scheduler.NewScheduler(&scheduler.BinPackPolicy{}),
+		tracker.NewTracker(),
+		nil,
+	)
+	parentJob := &cluster.JobInfo{
+		ID:                  "job-parent",
+		SessionID:           "session-1",
+		Status:              cluster.JobStatusRunning,
+		ChildToken:          "parent-token",
+		ChildTokenExpiresAt: time.Now().Add(-time.Second),
+	}
+	server.cluster.jobs[parentJob.ID] = parentJob
+
+	req := &ExecuteRequest{
+		SessionId: "session-1",
+		Command:   []string{"true"},
+		Env: []string{
+			remotechild.EnvRemoteChild + "=1",
+			remotechild.EnvParentJobID + "=job-parent",
+			remotechild.EnvChildToken + "=parent-token",
+		},
+	}
+	if err := server.authorizeRemoteChildRequest(context.Background(), req); err == nil {
+		t.Fatal("expired token accepted")
+	}
+	events := server.remoteChildren.AuditEvents()
+	if len(events) != 1 || !strings.Contains(events[0].AuthFailureReason, "expired") {
+		t.Fatalf("audit events = %#v, want expired rejection", events)
+	}
+}
+
+func TestRemoteChildLifecycleStateTransitions(t *testing.T) {
+	server := NewClusterServerImpl(
+		cluster.NodeID("node-1"),
+		scheduler.NewScheduler(&scheduler.BinPackPolicy{}),
+		tracker.NewTracker(),
+		nil,
+	)
+	resp, err := server.RegisterNode(context.Background(), &RegisterNodeRequest{
+		NodeId:  "node-1",
+		Address: "10.0.0.1",
+		Resources: &NodeResources{
+			CpuMillicores: 2000,
+			MemoryBytes:   2 * 1024 * 1024 * 1024,
+		},
+	})
+	if err != nil {
+		t.Fatalf("RegisterNode: %v", err)
+	}
+	if !resp.Success {
+		t.Fatalf("RegisterNode failed: %s", resp.Error)
+	}
+
+	req := &ExecuteRequest{
+		SessionId: "session-1",
+		JobId:     "job-child",
+		Command:   []string{"true"},
+		Env: []string{
+			remotechild.EnvRemoteChild + "=1",
+			remotechild.EnvParentJobID + "=job-parent",
+			remotechild.EnvParentPID + "=100",
+			remotechild.EnvShadowPID + "=101",
+		},
+		Resources: &Requirements{
+			CpuMillicores: 1000,
+			MemoryBytes:   1024 * 1024 * 1024,
+		},
+	}
+	node, reqs, jobID, err := server.scheduleJob(req)
+	if err != nil {
+		t.Fatalf("scheduleJob: %v", err)
+	}
+	job := server.cluster.jobs[jobID]
+	if job.RemoteChild == nil {
+		t.Fatal("remote child metadata missing")
+	}
+	if job.RemoteChild.State != remotechild.StateScheduled {
+		t.Fatalf("state = %q, want %q", job.RemoteChild.State, remotechild.StateScheduled)
+	}
+	record, ok := server.remoteChildren.Get(string(jobID))
+	if !ok {
+		t.Fatal("remote child lifecycle record missing")
+	}
+	if record.State != remotechild.StateScheduled {
+		t.Fatalf("record state = %q, want %q", record.State, remotechild.StateScheduled)
+	}
+
+	server.recordRemoteChildWorker(jobID, cluster.GlobalPID(42))
+	if got := job.RemoteChild.State; got != remotechild.StateRunning {
+		t.Fatalf("state after worker = %q, want %q", got, remotechild.StateRunning)
+	}
+	if job.RemoteChild.RemoteGlobalPID != 42 {
+		t.Fatalf("remote global pid = %d", job.RemoteChild.RemoteGlobalPID)
+	}
+	if job.RemoteChild.StartedAt.IsZero() {
+		t.Fatal("started_at not set after worker registration")
+	}
+	record, _ = server.remoteChildren.Get(string(jobID))
+	if record.State != remotechild.StateRunning || record.RemoteGlobalPID != 42 {
+		t.Fatalf("record after worker = %#v", record)
+	}
+
+	server.finishJob(jobID, node.ID, reqs, 0)
+	if got := job.RemoteChild.State; got != remotechild.StateCompleted {
+		t.Fatalf("state after finish = %q, want %q", got, remotechild.StateCompleted)
+	}
+	if job.RemoteChild.FinishedAt.IsZero() {
+		t.Fatal("finished_at not set after completion")
+	}
+	record, _ = server.remoteChildren.Get(string(jobID))
+	if record.State != remotechild.StateCompleted || record.ExitCode != 0 {
+		t.Fatalf("record after finish = %#v", record)
+	}
+}
+
+func TestRemoteChildSignalStateTransitions(t *testing.T) {
+	server := NewClusterServerImpl(
+		cluster.NodeID("node-1"),
+		scheduler.NewScheduler(&scheduler.BinPackPolicy{}),
+		tracker.NewTracker(),
+		nil,
+	)
+	jobID := cluster.JobID("job-child")
+	server.cluster.jobs[jobID] = &cluster.JobInfo{
+		ID:        jobID,
+		SessionID: "session-1",
+		Status:    cluster.JobStatusRunning,
+		RemoteChild: &cluster.RemoteChildInfo{
+			RemoteJobID: jobID,
+			State:       remotechild.StateRunning,
+		},
+	}
+	server.remoteChildren.Upsert(remotechild.ShadowRecord{
+		SessionID:   "session-1",
+		RemoteJobID: string(jobID),
+		State:       remotechild.StateRunning,
+	})
+
+	server.markJobSignalState(jobID, syscall.SIGTSTP)
+	job := server.cluster.jobs[jobID]
+	if job.Status != cluster.JobStatusStopped {
+		t.Fatalf("job status = %s, want stopped", job.Status)
+	}
+	if job.RemoteChild.State != remotechild.StateStopped {
+		t.Fatalf("remote child state = %s, want stopped", job.RemoteChild.State)
+	}
+	record, _ := server.remoteChildren.Get(string(jobID))
+	if record.State != remotechild.StateStopped || record.FailureReason == "" {
+		t.Fatalf("record after stop = %#v", record)
+	}
+
+	server.markJobSignalState(jobID, syscall.SIGCONT)
+	if job.Status != cluster.JobStatusRunning {
+		t.Fatalf("job status after cont = %s, want running", job.Status)
+	}
+	if job.RemoteChild.State != remotechild.StateRunning || job.RemoteChild.FailureReason != "" {
+		t.Fatalf("remote child after cont = %#v", job.RemoteChild)
+	}
+	record, _ = server.remoteChildren.Get(string(jobID))
+	if record.State != remotechild.StateRunning || record.FailureReason != "" {
+		t.Fatalf("record after cont = %#v", record)
+	}
+}
+
+func TestCommandContextForRemoteChildSurvivesStreamCancel(t *testing.T) {
+	parentCtx, cancel := context.WithCancel(context.Background())
+	workerCtx := commandContextForStream(parentCtx, true)
+	cancel()
+
+	select {
+	case <-workerCtx.Done():
+		t.Fatal("remote-child worker context was canceled with stream context")
+	default:
+	}
+}
+
+func TestCommandContextForNormalExecFollowsStreamCancel(t *testing.T) {
+	parentCtx, cancel := context.WithCancel(context.Background())
+	workerCtx := commandContextForStream(parentCtx, false)
+	cancel()
+
+	select {
+	case <-workerCtx.Done():
+	case <-time.After(time.Second):
+		t.Fatal("normal exec worker context did not follow stream cancellation")
+	}
+}
+
+func TestRecoverRemoteChildRecordFromRunningJob(t *testing.T) {
+	server := NewClusterServerImpl(
+		cluster.NodeID("node-1"),
+		scheduler.NewScheduler(&scheduler.BinPackPolicy{}),
+		tracker.NewTracker(),
+		nil,
+	)
+	now := time.Unix(200, 0)
+	record := remotechild.ShadowRecord{
+		SessionID:    "sess-1",
+		ParentJobID:  "job-parent",
+		RemoteJobID:  "job-child",
+		RemoteNodeID: "node-2",
+		State:        remotechild.StateRecovering,
+		UpdatedAt:    now,
+	}
+	server.remoteChildren.Upsert(record)
+
+	outcome := server.applyRecoveredRemoteChildJob(record, &JobInfo{
+		JobId:     "job-child",
+		SessionId: "sess-1",
+		Status:    JobStatus_JOB_STATUS_RUNNING,
+		StartedAt: now.Unix(),
+		RemoteChild: &RemoteChildInfo{
+			ParentJobId:     "job-parent",
+			RemoteJobId:     "job-child",
+			RemoteNodeId:    "node-2",
+			RemoteGlobalPid: 42,
+			Command:         []string{"/bin/sleep", "100"},
+			State:           remotechild.StateRunning,
+		},
+	}, now)
+	if outcome != remoteChildRecoveryRunning {
+		t.Fatalf("outcome = %v, want running", outcome)
+	}
+	recovered, ok := server.remoteChildren.Get("job-child")
+	if !ok {
+		t.Fatal("record missing after recovery")
+	}
+	if recovered.State != remotechild.StateRunning || recovered.RemoteGlobalPID != 42 || recovered.FailureReason != "" {
+		t.Fatalf("recovered record = %#v", recovered)
+	}
+	if len(recovered.Command) != 2 || recovered.Command[0] != "/bin/sleep" {
+		t.Fatalf("recovered command = %#v", recovered.Command)
+	}
+}
+
+func TestRecoverRemoteChildRecordFromStoppedJob(t *testing.T) {
+	server := NewClusterServerImpl(
+		cluster.NodeID("node-1"),
+		scheduler.NewScheduler(&scheduler.BinPackPolicy{}),
+		tracker.NewTracker(),
+		nil,
+	)
+	now := time.Unix(200, 0)
+	record := remotechild.ShadowRecord{
+		SessionID:    "sess-1",
+		ParentJobID:  "job-parent",
+		RemoteJobID:  "job-child",
+		RemoteNodeID: "node-2",
+		State:        remotechild.StateRecovering,
+		UpdatedAt:    now,
+	}
+	server.remoteChildren.Upsert(record)
+
+	outcome := server.applyRecoveredRemoteChildJob(record, &JobInfo{
+		JobId:     "job-child",
+		SessionId: "sess-1",
+		Status:    JobStatus_JOB_STATUS_STOPPED,
+		RemoteChild: &RemoteChildInfo{
+			ParentJobId:     "job-parent",
+			RemoteJobId:     "job-child",
+			RemoteNodeId:    "node-2",
+			RemoteGlobalPid: 42,
+			State:           remotechild.StateStopped,
+			FailureReason:   "stopped by signal 20",
+		},
+	}, now)
+	if outcome != remoteChildRecoveryStopped {
+		t.Fatalf("outcome = %v, want stopped", outcome)
+	}
+	recovered, _ := server.remoteChildren.Get("job-child")
+	if recovered.State != remotechild.StateStopped || recovered.FailureReason != "stopped by signal 20" {
+		t.Fatalf("recovered stopped record = %#v", recovered)
+	}
+	job, ok := server.cluster.jobs["job-child"]
+	if !ok || job.Status != cluster.JobStatusStopped {
+		t.Fatalf("recovered job = %#v, ok=%v", job, ok)
+	}
+}
+
+func TestRecoverRemoteChildRecordFromCompletedJob(t *testing.T) {
+	server := NewClusterServerImpl(
+		cluster.NodeID("node-1"),
+		scheduler.NewScheduler(&scheduler.BinPackPolicy{}),
+		tracker.NewTracker(),
+		nil,
+	)
+	now := time.Unix(200, 0)
+	record := remotechild.ShadowRecord{
+		SessionID:    "sess-1",
+		ParentJobID:  "job-parent",
+		RemoteJobID:  "job-child",
+		RemoteNodeID: "node-2",
+		State:        remotechild.StateRecovering,
+		UpdatedAt:    now,
+	}
+	server.remoteChildren.Upsert(record)
+
+	outcome := server.applyRecoveredRemoteChildJob(record, &JobInfo{
+		JobId:      "job-child",
+		SessionId:  "sess-1",
+		Status:     JobStatus_JOB_STATUS_COMPLETED,
+		FinishedAt: now.Unix(),
+		ExitCodes:  []int32{7},
+		RemoteChild: &RemoteChildInfo{
+			ParentJobId:  "job-parent",
+			RemoteJobId:  "job-child",
+			RemoteNodeId: "node-2",
+			State:        remotechild.StateCompleted,
+		},
+	}, now)
+	if outcome != remoteChildRecoveryCompleted {
+		t.Fatalf("outcome = %v, want completed", outcome)
+	}
+	recovered, _ := server.remoteChildren.Get("job-child")
+	if recovered.State != remotechild.StateCompleted || recovered.ExitCode != 7 || recovered.FinishedAt.IsZero() {
+		t.Fatalf("recovered completed record = %#v", recovered)
+	}
+	job := server.cluster.jobs["job-child"]
+	if job.RemoteChild == nil || job.RemoteChild.State != remotechild.StateCompleted || job.RemoteChild.FinishedAt.IsZero() {
+		t.Fatalf("recovered job remote child = %#v", job.RemoteChild)
+	}
+}
+
+func TestRecoverRemoteChildRecordExpiresUnobservableChild(t *testing.T) {
+	server := NewClusterServerImplWithOptions(
+		cluster.NodeID("node-1"),
+		scheduler.NewScheduler(&scheduler.BinPackPolicy{}),
+		tracker.NewTracker(),
+		nil,
+		ServerOptions{RemoteChildLeaseTimeout: time.Second},
+	)
+	now := time.Unix(200, 0)
+	record := remotechild.ShadowRecord{
+		SessionID:    "sess-1",
+		ParentJobID:  "job-parent",
+		RemoteJobID:  "job-child",
+		RemoteNodeID: "node-2",
+		State:        remotechild.StateRecovering,
+		UpdatedAt:    now.Add(-2 * time.Second),
+	}
+	server.remoteChildren.Upsert(record)
+
+	outcome := server.recoverRemoteChildRecord(context.Background(), record, nil, now)
+	if outcome != remoteChildRecoveryOrphaned {
+		t.Fatalf("outcome = %v, want orphaned", outcome)
+	}
+	recovered, _ := server.remoteChildren.Get("job-child")
+	if recovered.State != remotechild.StateOrphaned || recovered.FailureReason == "" {
+		t.Fatalf("orphaned record = %#v", recovered)
+	}
+}
+
+func TestRecoverLocalRemoteChildRecordReattachesLivePID(t *testing.T) {
+	server := NewClusterServerImpl(
+		cluster.NodeID("node-1"),
+		scheduler.NewScheduler(&scheduler.BinPackPolicy{}),
+		tracker.NewTracker(),
+		nil,
+	)
+	now := time.Unix(200, 0)
+	record := remotechild.ShadowRecord{
+		SessionID:       "sess-1",
+		ParentJobID:     "job-parent",
+		ParentPID:       os.Getppid(),
+		RemoteJobID:     "job-child",
+		RemoteNodeID:    "node-1",
+		RemoteGlobalPID: 42,
+		RemoteLocalPID:  os.Getpid(),
+		Command:         []string{"/bin/sleep", "75"},
+		State:           remotechild.StateRecovering,
+		UpdatedAt:       now,
+	}
+	server.remoteChildren.Upsert(record)
+
+	outcome := server.recoverLocalRemoteChildRecord(record, now)
+	if outcome != remoteChildRecoveryRunning {
+		t.Fatalf("outcome = %v, want running", outcome)
+	}
+	recovered, _ := server.remoteChildren.Get("job-child")
+	if recovered.State != remotechild.StateRunning || recovered.RemoteLocalPID != os.Getpid() || recovered.RemoteGlobalPID != 42 {
+		t.Fatalf("recovered local record = %#v", recovered)
+	}
+	proc, ok := server.tracker.Get(42)
+	if !ok || proc.LocalPID != os.Getpid() || proc.JobID != "job-child" {
+		t.Fatalf("tracker proc = %#v, ok=%v", proc, ok)
+	}
+}
+
+func TestRecoverLocalRemoteChildRecordOrphansMissingPID(t *testing.T) {
+	server := NewClusterServerImplWithOptions(
+		cluster.NodeID("node-1"),
+		scheduler.NewScheduler(&scheduler.BinPackPolicy{}),
+		tracker.NewTracker(),
+		nil,
+		ServerOptions{RemoteChildLeaseTimeout: time.Second},
+	)
+	now := time.Unix(200, 0)
+	record := remotechild.ShadowRecord{
+		SessionID:       "sess-1",
+		ParentJobID:     "job-parent",
+		RemoteJobID:     "job-child",
+		RemoteNodeID:    "node-1",
+		RemoteGlobalPID: 42,
+		RemoteLocalPID:  99999999,
+		Command:         []string{"/bin/sleep", "75"},
+		State:           remotechild.StateRecovering,
+		UpdatedAt:       now,
+	}
+	server.remoteChildren.Upsert(record)
+
+	outcome := server.recoverLocalRemoteChildRecord(record, now)
+	if outcome != remoteChildRecoveryOrphaned {
+		t.Fatalf("outcome = %v, want orphaned", outcome)
+	}
+	recovered, _ := server.remoteChildren.Get("job-child")
+	if recovered.State != remotechild.StateOrphaned || recovered.FailureReason == "" {
+		t.Fatalf("orphaned local record = %#v", recovered)
+	}
+	job := server.cluster.jobs["job-child"]
+	if job.RemoteChild == nil || job.RemoteChild.State != remotechild.StateOrphaned || job.RemoteChild.FailureReason == "" {
+		t.Fatalf("orphaned local job remote child = %#v", job.RemoteChild)
+	}
+}
+
+func TestScheduleJobSetsChildTokenExpiry(t *testing.T) {
+	server := NewClusterServerImplWithOptions(
+		cluster.NodeID("node-1"),
+		scheduler.NewScheduler(&scheduler.BinPackPolicy{}),
+		tracker.NewTracker(),
+		nil,
+		ServerOptions{RemoteChildTokenTTL: time.Minute},
+	)
+	if _, err := server.RegisterNode(context.Background(), &RegisterNodeRequest{
+		NodeId:  "node-1",
+		Address: "10.0.0.1",
+		Resources: &NodeResources{
+			CpuMillicores: 2000,
+			MemoryBytes:   2 * 1024 * 1024 * 1024,
+		},
+	}); err != nil {
+		t.Fatalf("RegisterNode: %v", err)
+	}
+	req := &ExecuteRequest{
+		SessionId: "session-1",
+		JobId:     "job-parent",
+		Command:   []string{"true"},
+		Resources: &Requirements{
+			CpuMillicores: 1000,
+			MemoryBytes:   1024 * 1024 * 1024,
+		},
+	}
+	_, _, jobID, err := server.scheduleJob(req)
+	if err != nil {
+		t.Fatalf("scheduleJob: %v", err)
+	}
+	job := server.cluster.jobs[jobID]
+	if job.ChildToken == "" {
+		t.Fatal("ChildToken missing")
+	}
+	if job.ChildTokenExpiresAt.IsZero() {
+		t.Fatal("ChildTokenExpiresAt missing")
+	}
+	if time.Until(job.ChildTokenExpiresAt) <= 0 || time.Until(job.ChildTokenExpiresAt) > time.Minute {
+		t.Fatalf("ChildTokenExpiresAt = %s, want within configured TTL", job.ChildTokenExpiresAt)
+	}
+}
+
+func TestListRemoteChildrenUsesLifecycleStore(t *testing.T) {
+	server := NewClusterServerImpl(
+		cluster.NodeID("node-1"),
+		scheduler.NewScheduler(&scheduler.BinPackPolicy{}),
+		tracker.NewTracker(),
+		nil,
+	)
+	server.remoteChildren.Upsert(remotechild.ShadowRecord{
+		SessionID:       "session-1",
+		ParentJobID:     "job-parent",
+		ParentPID:       100,
+		ShadowPID:       101,
+		RemoteJobID:     "job-child",
+		RemoteNodeID:    "node-2",
+		RemoteGlobalPID: 42,
+		Command:         []string{"hostname"},
+		State:           remotechild.StateRunning,
+		StartedAt:       time.Unix(20, 0),
+	})
+	server.remoteChildren.Upsert(remotechild.ShadowRecord{
+		SessionID:    "session-1",
+		ParentJobID:  "job-parent",
+		RemoteJobID:  "job-complete",
+		RemoteNodeID: "node-2",
+		Command:      []string{"true"},
+		State:        remotechild.StateCompleted,
+		FinishedAt:   time.Unix(21, 0),
+	})
+
+	resp, err := server.ListRemoteChildren(context.Background(), &ListRemoteChildrenRequest{
+		ParentJobId: "job-parent",
+		ActiveOnly:  true,
+	})
+	if err != nil {
+		t.Fatalf("ListRemoteChildren: %v", err)
+	}
+	if len(resp.Children) != 1 {
+		t.Fatalf("children = %d, want 1: %#v", len(resp.Children), resp.Children)
+	}
+	child := resp.Children[0]
+	if child.RemoteJobId != "job-child" || child.State != remotechild.StateRunning {
+		t.Fatalf("child = %#v", child)
+	}
+}
+
+func TestJobInfoToProtoIncludesRemoteChild(t *testing.T) {
+	server := NewClusterServerImpl(
+		cluster.NodeID("node-1"),
+		scheduler.NewScheduler(&scheduler.BinPackPolicy{}),
+		tracker.NewTracker(),
+		nil,
+	)
+	job := &cluster.JobInfo{
+		ID:          "job-child",
+		SessionID:   "session-1",
+		Status:      cluster.JobStatusRunning,
+		CreatedAt:   time.Unix(10, 0),
+		PrimaryNode: "node-2",
+		Commands: []cluster.CommandSpec{{
+			Argv: []string{"hostname"},
+			Env:  []string{"PATH=/usr/bin", remotechild.EnvChildToken + "=secret"},
+		}},
+		RemoteChild: &cluster.RemoteChildInfo{
+			ParentJobID:     "job-parent",
+			ParentPID:       100,
+			ShadowPID:       101,
+			RemoteJobID:     "job-child",
+			RemoteNodeID:    "node-2",
+			RemoteGlobalPID: 42,
+			Command:         []string{"hostname"},
+			PlacementReason: "explicit",
+			State:           remotechild.StateRunning,
+			StartedAt:       time.Unix(20, 0),
+		},
+	}
+
+	protoJob := server.jobInfoToProto(job)
+	if protoJob.RemoteChild == nil {
+		t.Fatal("RemoteChild = nil")
+	}
+	if protoJob.RemoteChild.ParentJobId != "job-parent" || protoJob.RemoteChild.RemoteNodeId != "node-2" {
+		t.Fatalf("remote child = %#v", protoJob.RemoteChild)
+	}
+	if protoJob.RemoteChild.RemoteGlobalPid != 42 {
+		t.Fatalf("remote global pid = %d", protoJob.RemoteChild.RemoteGlobalPid)
+	}
+	if protoJob.RemoteChild.State != remotechild.StateRunning || protoJob.RemoteChild.StartedAt != 20 {
+		t.Fatalf("remote lifecycle fields = %#v", protoJob.RemoteChild)
+	}
+	for _, entry := range protoJob.Commands[0].Env {
+		if strings.HasPrefix(entry, remotechild.EnvChildToken+"=") {
+			t.Fatalf("child token leaked in proto env: %v", protoJob.Commands[0].Env)
+		}
+	}
+}
+
+func TestStrictSSIPTYCommandIncludesSlaveProjection(t *testing.T) {
+	root := t.TempDir()
+	for _, dir := range []string{"usr/bin", "usr/lib"} {
+		if err := os.MkdirAll(filepath.Join(root, dir), 0755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	executor := filepath.Join(t.TempDir(), "octopos-exec")
+	if err := os.WriteFile(executor, []byte("#!/bin/sh\n"), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	server := NewClusterServerImplWithOptions(
+		cluster.NodeID("worker-node"),
+		scheduler.NewScheduler(&scheduler.BinPackPolicy{}),
+		tracker.NewTracker(),
+		nil,
+		ServerOptions{SSI: ssi.Config{
+			ClusterRoot:  root,
+			RootFS:       root,
+			Executor:     executor,
+			RequireMount: false,
+			Required:     true,
+		}},
+	)
+
+	req := &ExecuteRequest{
+		Command: []string{"/bin/sh"},
+		Cwd:     "/",
+	}
+	if err := server.normalizeScheduledRequest(req); err != nil {
+		t.Fatalf("normalizeScheduledRequest: %v", err)
+	}
+
+	cmd, err := server.buildPTYCommand(context.Background(), req, cluster.Requirements{}, "/dev/pts/7")
+	if err != nil {
+		t.Fatalf("buildPTYCommand: %v", err)
+	}
+
+	if !argPairBeforeCommand(cmd.Args, "--tty-slave", "/dev/pts/7") {
+		t.Fatalf("command args missing --tty-slave before command separator: %v", cmd.Args)
+	}
+}
+
 func TestCloneExecuteRequestForNodePinsNodeAndPreservesAffinity(t *testing.T) {
 	req := &ExecuteRequest{
 		Resources: &Requirements{
@@ -425,6 +1283,22 @@ func envValue(env []string, key string) string {
 		}
 	}
 	return ""
+}
+
+func cloneExecuteRequestForTest(req *ExecuteRequest) *ExecuteRequest {
+	return proto.Clone(req).(*ExecuteRequest)
+}
+
+func argPairBeforeCommand(args []string, key, value string) bool {
+	for i := 0; i < len(args)-1; i++ {
+		if args[i] == "--" {
+			return false
+		}
+		if args[i] == key && args[i+1] == value {
+			return true
+		}
+	}
+	return false
 }
 
 func newTestClusterClient(t *testing.T) (ClusterClient, func()) {

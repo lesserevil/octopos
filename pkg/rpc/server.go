@@ -3,11 +3,14 @@ package rpc
 import (
 	"context"
 	"log"
+	"sort"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
 
 	"github.com/octopos/octopos/pkg/cluster"
+	"github.com/octopos/octopos/pkg/remotechild"
 	"github.com/octopos/octopos/pkg/scheduler"
 	"github.com/octopos/octopos/pkg/ssi"
 	"github.com/octopos/octopos/pkg/tracker"
@@ -18,15 +21,21 @@ import (
 type ClusterServerImpl struct {
 	UnimplementedClusterServer
 
-	nodeID          cluster.NodeID
-	grpcPort        int32
-	cluster         *ClusterState
-	scheduler       *scheduler.Scheduler
-	tracker         *tracker.Tracker
-	clientPool      *ClusterClientPool
-	ssiConfig       ssi.Config
-	localPIDCounter uint64
-	mu              sync.RWMutex
+	nodeID                      cluster.NodeID
+	grpcPort                    int32
+	cluster                     *ClusterState
+	scheduler                   *scheduler.Scheduler
+	tracker                     *tracker.Tracker
+	clientPool                  *ClusterClientPool
+	ssiConfig                   ssi.Config
+	maxRemoteChildrenPerParent  int
+	maxRemoteChildrenPerSession int
+	maxRemoteChildrenPerNode    int
+	remoteChildLeaseTimeout     time.Duration
+	remoteChildTokenTTL         time.Duration
+	remoteChildren              *remotechild.Store
+	localPIDCounter             uint64
+	mu                          sync.RWMutex
 }
 
 // ClusterState holds the cluster-wide state
@@ -37,7 +46,13 @@ type ClusterState struct {
 }
 
 type ServerOptions struct {
-	SSI ssi.Config
+	SSI                         ssi.Config
+	MaxRemoteChildrenPerParent  int
+	MaxRemoteChildrenPerSession int
+	MaxRemoteChildrenPerNode    int
+	RemoteChildStorePath        string
+	RemoteChildLeaseTimeout     time.Duration
+	RemoteChildTokenTTL         time.Duration
 }
 
 // NewClusterServerImpl creates a new cluster gRPC server implementation
@@ -46,6 +61,38 @@ func NewClusterServerImpl(nodeID cluster.NodeID, sched *scheduler.Scheduler, trk
 }
 
 func NewClusterServerImplWithOptions(nodeID cluster.NodeID, sched *scheduler.Scheduler, trk *tracker.Tracker, pool *ClusterClientPool, opts ServerOptions) *ClusterServerImpl {
+	maxRemoteChildren := opts.MaxRemoteChildrenPerParent
+	if maxRemoteChildren <= 0 {
+		maxRemoteChildren = 128
+	}
+	maxSessionChildren := opts.MaxRemoteChildrenPerSession
+	if maxSessionChildren <= 0 {
+		maxSessionChildren = 256
+	}
+	maxNodeChildren := opts.MaxRemoteChildrenPerNode
+	if maxNodeChildren <= 0 {
+		maxNodeChildren = 128
+	}
+	remoteChildLeaseTimeout := opts.RemoteChildLeaseTimeout
+	if remoteChildLeaseTimeout <= 0 {
+		remoteChildLeaseTimeout = 2 * time.Minute
+	}
+	remoteChildTokenTTL := opts.RemoteChildTokenTTL
+	if remoteChildTokenTTL <= 0 {
+		remoteChildTokenTTL = 24 * time.Hour
+	}
+	remoteChildren := remotechild.NewStore()
+	if opts.RemoteChildStorePath != "" {
+		persistentStore, err := remotechild.NewPersistentStore(opts.RemoteChildStorePath)
+		if err != nil {
+			log.Printf("remote-child lifecycle persistence disabled: load %s: %v", opts.RemoteChildStorePath, err)
+		} else {
+			if recovering := persistentStore.RecoveringOnLoad(); recovering > 0 {
+				log.Printf("Loaded %d remote-child lifecycle records for daemon restart recovery", recovering)
+			}
+			remoteChildren = persistentStore
+		}
+	}
 	server := &ClusterServerImpl{
 		nodeID: nodeID,
 		cluster: &ClusterState{
@@ -53,11 +100,17 @@ func NewClusterServerImplWithOptions(nodeID cluster.NodeID, sched *scheduler.Sch
 			sessions: make(map[cluster.SessionID]*cluster.Session),
 			jobs:     make(map[cluster.JobID]*cluster.JobInfo),
 		},
-		scheduler:       sched,
-		tracker:         trk,
-		clientPool:      pool,
-		ssiConfig:       opts.SSI.WithDefaults(),
-		localPIDCounter: 0,
+		scheduler:                   sched,
+		tracker:                     trk,
+		clientPool:                  pool,
+		ssiConfig:                   opts.SSI.WithDefaults(),
+		maxRemoteChildrenPerParent:  maxRemoteChildren,
+		maxRemoteChildrenPerSession: maxSessionChildren,
+		maxRemoteChildrenPerNode:    maxNodeChildren,
+		remoteChildLeaseTimeout:     remoteChildLeaseTimeout,
+		remoteChildTokenTTL:         remoteChildTokenTTL,
+		remoteChildren:              remoteChildren,
+		localPIDCounter:             0,
 	}
 	if sched != nil {
 		for _, node := range sched.ListNodes() {
@@ -65,6 +118,13 @@ func NewClusterServerImplWithOptions(nodeID cluster.NodeID, sched *scheduler.Sch
 		}
 	}
 	return server
+}
+
+func (s *ClusterServerImpl) PruneRemoteChildren(retention time.Duration) int {
+	if s == nil || s.remoteChildren == nil || retention <= 0 {
+		return 0
+	}
+	return s.remoteChildren.PruneTerminal(time.Now().Add(-retention))
 }
 
 // RegisterNode registers a new node in the cluster
@@ -170,6 +230,18 @@ func (s *ClusterServerImpl) Execute(ctx context.Context, req *ExecuteRequest) (*
 	return s.executeBackground(ctx, req)
 }
 
+// RemoteChildExecute submits a detached distributed-child execution request.
+func (s *ClusterServerImpl) RemoteChildExecute(ctx context.Context, req *ExecuteRequest) (*ExecuteResponse, error) {
+	if !isRemoteChildRequest(req) {
+		return &ExecuteResponse{
+			JobId:    req.GetJobId(),
+			ExitCode: -1,
+			Error:    "remote child request missing " + remotechild.EnvRemoteChild + "=1",
+		}, nil
+	}
+	return s.executeBackground(ctx, req)
+}
+
 func (s *ClusterServerImpl) releaseAndFail(jobID cluster.JobID, node *cluster.NodeInfo, reqProto *Requirements) {
 	s.mu.Lock()
 	if job, exists := s.cluster.jobs[jobID]; exists {
@@ -208,6 +280,7 @@ func (s *ClusterServerImpl) signalLocal(req *SignalRequest, proc *cluster.Proces
 	if proc.LocalPID <= 0 {
 		return &SignalResponse{Success: false, Error: "process has no local PID"}, nil
 	}
+	s.markJobSignalState(proc.JobID, syscall.Signal(req.Signal))
 	if err := syscall.Kill(-proc.LocalPID, syscall.Signal(req.Signal)); err != nil {
 		return &SignalResponse{Success: false, Error: err.Error()}, nil
 	}
@@ -215,6 +288,10 @@ func (s *ClusterServerImpl) signalLocal(req *SignalRequest, proc *cluster.Proces
 }
 
 func (s *ClusterServerImpl) forwardSignalToPeer(ctx context.Context, req *SignalRequest) (*SignalResponse, error) {
+	if isInternalForward(ctx) {
+		return &SignalResponse{Success: false, Error: "process not found on this peer"}, nil
+	}
+	ctx = internalForwardContext(ctx)
 	peers := s.clientPool.ListPeers()
 	for _, peer := range peers {
 		resp, err := peer.Client.Signal(ctx, req)
@@ -234,10 +311,11 @@ func (s *ClusterServerImpl) ListProcesses(ctx context.Context, req *ListProcesse
 		// Get local processes
 		procs = s.getLocalProcesses(req)
 		// Also get from all peers
-		if s.clientPool != nil {
+		if s.clientPool != nil && !isInternalForward(ctx) {
+			peerCtx := internalForwardContext(ctx)
 			peers := s.clientPool.ListPeers()
 			for _, peer := range peers {
-				peerProcs, err := peer.Client.ListProcesses(ctx, req)
+				peerProcs, err := peer.Client.ListProcesses(peerCtx, req)
 				if err == nil && peerProcs != nil {
 					for _, p := range peerProcs.Processes {
 						procs = append(procs, s.processInfoFromProto(p))
@@ -247,9 +325,9 @@ func (s *ClusterServerImpl) ListProcesses(ctx context.Context, req *ListProcesse
 		}
 	} else {
 		// Query specific peer
-		if s.clientPool != nil {
+		if s.clientPool != nil && !isInternalForward(ctx) {
 			if client, ok := s.clientPool.GetPeer(cluster.NodeID(req.NodeId)); ok {
-				resp, err := client.ListProcesses(ctx, req)
+				resp, err := client.ListProcesses(internalForwardContext(ctx), req)
 				if err == nil && resp != nil {
 					for _, p := range resp.Processes {
 						procs = append(procs, s.processInfoFromProto(p))
@@ -259,11 +337,41 @@ func (s *ClusterServerImpl) ListProcesses(ctx context.Context, req *ListProcesse
 		}
 	}
 
+	procs = s.appendRemoteChildProcessRecords(procs, req)
 	pbProcs := make([]*ProcessInfo, len(procs))
 	for i, p := range procs {
 		pbProcs[i] = s.processInfoToProto(p)
 	}
 	return &ListProcessesResponse{Processes: pbProcs}, nil
+}
+
+func (s *ClusterServerImpl) ListRemoteChildren(ctx context.Context, req *ListRemoteChildrenRequest) (*ListRemoteChildrenResponse, error) {
+	filter := remotechild.ListFilter{
+		SessionID:    req.SessionId,
+		ParentJobID:  req.ParentJobId,
+		RemoteJobID:  req.RemoteJobId,
+		RemoteNodeID: req.RemoteNodeId,
+		ActiveOnly:   req.ActiveOnly,
+	}
+	records := s.remoteChildren.List(filter)
+	if s.clientPool != nil && !isInternalForward(ctx) {
+		peerCtx := internalForwardContext(ctx)
+		for _, peer := range s.clientPool.ListPeers() {
+			resp, err := peer.Client.ListRemoteChildren(peerCtx, req)
+			if err != nil || resp == nil {
+				continue
+			}
+			for _, child := range resp.Children {
+				records = append(records, remoteChildRecordFromProto(child))
+			}
+		}
+	}
+	records = dedupeRemoteChildRecords(records)
+	out := make([]*RemoteChildRecord, 0, len(records))
+	for _, record := range records {
+		out = append(out, remoteChildRecordToProto(record))
+	}
+	return &ListRemoteChildrenResponse{Children: out}, nil
 }
 
 func (s *ClusterServerImpl) getLocalProcesses(req *ListProcessesRequest) []*cluster.ProcessInfo {
@@ -277,24 +385,29 @@ func (s *ClusterServerImpl) getLocalProcesses(req *ListProcessesRequest) []*clus
 }
 
 func (s *ClusterServerImpl) processInfoFromProto(p *ProcessInfo) *cluster.ProcessInfo {
-	return &cluster.ProcessInfo{
-		GlobalPID:  cluster.GlobalPID(p.GlobalPid),
-		NodeID:     cluster.NodeID(p.NodeId),
-		LocalPID:   int(p.LocalPid),
-		PPID:       int(p.Ppid),
-		UID:        p.Uid,
-		GID:        p.Gid,
-		SessionID:  cluster.SessionID(p.SessionId),
-		JobID:      cluster.JobID(p.JobId),
-		Comm:       p.Comm,
-		Cmdline:    p.Cmdline,
-		CWD:        p.Cwd,
-		StartTime:  time.Unix(p.StartTime, 0),
-		CPUPercent: p.CpuPercent,
-		RSSBytes:   p.RssBytes,
-		State:      p.State,
-		VFIOGroups: p.VfioGroups,
+	out := &cluster.ProcessInfo{
+		GlobalPID:   cluster.GlobalPID(p.GlobalPid),
+		NodeID:      cluster.NodeID(p.NodeId),
+		LocalPID:    int(p.LocalPid),
+		PPID:        int(p.Ppid),
+		UID:         p.Uid,
+		GID:         p.Gid,
+		SessionID:   cluster.SessionID(p.SessionId),
+		JobID:       cluster.JobID(p.JobId),
+		Comm:        p.Comm,
+		Cmdline:     p.Cmdline,
+		CWD:         p.Cwd,
+		StartTime:   time.Unix(p.StartTime, 0),
+		CPUPercent:  p.CpuPercent,
+		RSSBytes:    p.RssBytes,
+		State:       p.State,
+		VFIOGroups:  p.VfioGroups,
+		ProcessKind: p.ProcessKind,
 	}
+	if p.RemoteChild != nil {
+		out.RemoteChild = remoteChildInfoFromProto(p.RemoteChild)
+	}
+	return out
 }
 
 // GetProcess returns a single process
@@ -302,10 +415,11 @@ func (s *ClusterServerImpl) GetProcess(ctx context.Context, req *GetProcessReque
 	proc, ok := s.tracker.Get(cluster.GlobalPID(req.GlobalPid))
 	if !ok {
 		// Try peers
-		if s.clientPool != nil {
+		if s.clientPool != nil && !isInternalForward(ctx) {
+			peerCtx := internalForwardContext(ctx)
 			peers := s.clientPool.ListPeers()
 			for _, peer := range peers {
-				resp, err := peer.Client.GetProcess(ctx, req)
+				resp, err := peer.Client.GetProcess(peerCtx, req)
 				if err == nil && resp.Found {
 					return resp, nil
 				}
@@ -321,10 +435,11 @@ func (s *ClusterServerImpl) GetJobStatus(ctx context.Context, req *GetJobStatusR
 	job, exists := s.cluster.jobs[cluster.JobID(req.JobId)]
 	if !exists {
 		// Try peers
-		if s.clientPool != nil {
+		if s.clientPool != nil && !isInternalForward(ctx) {
+			peerCtx := internalForwardContext(ctx)
 			peers := s.clientPool.ListPeers()
 			for _, peer := range peers {
-				resp, err := peer.Client.GetJobStatus(ctx, req)
+				resp, err := peer.Client.GetJobStatus(peerCtx, req)
 				if err == nil && resp.Found {
 					return resp, nil
 				}
@@ -430,23 +545,194 @@ func (s *ClusterServerImpl) jobInfoToProto(job *cluster.JobInfo) *JobInfo {
 	for i, c := range job.Commands {
 		cmds[i] = &CommandSpec{
 			Argv:       c.Argv,
-			Env:        c.Env,
+			Env:        redactCommandEnv(c.Env),
 			Resources:  s.requirementsToProto(c.Resources),
 			VfioGroups: c.VFIOGroups,
 		}
 	}
-	return &JobInfo{
+	out := &JobInfo{
 		JobId:       string(job.ID),
 		SessionId:   string(job.SessionID),
 		Commands:    cmds,
 		PipeMap:     job.PipeMap,
 		Status:      jobStatusToProto(job.Status),
-		CreatedAt:   job.CreatedAt.Unix(),
-		StartedAt:   job.StartedAt.Unix(),
-		FinishedAt:  job.FinishedAt.Unix(),
+		CreatedAt:   unixTimeOrZero(job.CreatedAt),
+		StartedAt:   unixTimeOrZero(job.StartedAt),
+		FinishedAt:  unixTimeOrZero(job.FinishedAt),
 		ExitCodes:   int32SliceToProto(job.ExitCodes),
 		PrimaryNode: string(job.PrimaryNode),
 	}
+	if job.RemoteChild != nil {
+		out.RemoteChild = remoteChildInfoToProto(job.RemoteChild)
+	}
+	return out
+}
+
+func remoteChildInfoToProto(info *cluster.RemoteChildInfo) *RemoteChildInfo {
+	if info == nil {
+		return nil
+	}
+	return &RemoteChildInfo{
+		ParentJobId:     string(info.ParentJobID),
+		ParentPid:       int32(info.ParentPID),
+		ShadowPid:       int32(info.ShadowPID),
+		RemoteJobId:     string(info.RemoteJobID),
+		RemoteNodeId:    string(info.RemoteNodeID),
+		RemoteGlobalPid: info.RemoteGlobalPID,
+		Command:         append([]string{}, info.Command...),
+		PlacementReason: info.PlacementReason,
+		FallbackReason:  info.FallbackReason,
+		State:           info.State,
+		FailureReason:   info.FailureReason,
+		StartedAt:       unixTimeOrZero(info.StartedAt),
+		FinishedAt:      unixTimeOrZero(info.FinishedAt),
+	}
+}
+
+func remoteChildInfoFromProto(info *RemoteChildInfo) *cluster.RemoteChildInfo {
+	if info == nil {
+		return nil
+	}
+	return &cluster.RemoteChildInfo{
+		ParentJobID:     cluster.JobID(info.ParentJobId),
+		ParentPID:       int(info.ParentPid),
+		ShadowPID:       int(info.ShadowPid),
+		RemoteJobID:     cluster.JobID(info.RemoteJobId),
+		RemoteNodeID:    cluster.NodeID(info.RemoteNodeId),
+		RemoteGlobalPID: info.RemoteGlobalPid,
+		Command:         append([]string{}, info.Command...),
+		PlacementReason: info.PlacementReason,
+		FallbackReason:  info.FallbackReason,
+		State:           info.State,
+		FailureReason:   info.FailureReason,
+		StartedAt:       unixTimeFromProto(info.StartedAt),
+		FinishedAt:      unixTimeFromProto(info.FinishedAt),
+	}
+}
+
+func remoteChildInfoFromRecord(record remotechild.ShadowRecord) *cluster.RemoteChildInfo {
+	return &cluster.RemoteChildInfo{
+		ParentJobID:     cluster.JobID(record.ParentJobID),
+		ParentPID:       record.ParentPID,
+		ShadowPID:       record.ShadowPID,
+		RemoteJobID:     cluster.JobID(record.RemoteJobID),
+		RemoteNodeID:    cluster.NodeID(record.RemoteNodeID),
+		RemoteGlobalPID: record.RemoteGlobalPID,
+		RemoteLocalPID:  record.RemoteLocalPID,
+		Command:         append([]string{}, record.Command...),
+		PlacementReason: record.PlacementReason,
+		FallbackReason:  record.FallbackReason,
+		State:           string(record.State),
+		FailureReason:   record.FailureReason,
+		StartedAt:       record.StartedAt,
+		FinishedAt:      record.FinishedAt,
+	}
+}
+
+func remoteChildRecordToProto(record remotechild.ShadowRecord) *RemoteChildRecord {
+	return &RemoteChildRecord{
+		SessionId:       record.SessionID,
+		ParentJobId:     record.ParentJobID,
+		ParentPid:       int32(record.ParentPID),
+		ShadowPid:       int32(record.ShadowPID),
+		RemoteJobId:     record.RemoteJobID,
+		RemoteNodeId:    record.RemoteNodeID,
+		RemoteGlobalPid: record.RemoteGlobalPID,
+		Command:         append([]string{}, record.Command...),
+		State:           string(record.State),
+		StartedAt:       unixTimeOrZero(record.StartedAt),
+		FinishedAt:      unixTimeOrZero(record.FinishedAt),
+		ExitCode:        int32(record.ExitCode),
+		Signal:          int32(record.Signal),
+		PlacementReason: record.PlacementReason,
+		FallbackReason:  record.FallbackReason,
+		FailureReason:   record.FailureReason,
+		CreatedAt:       unixTimeOrZero(record.CreatedAt),
+		UpdatedAt:       unixTimeOrZero(record.UpdatedAt),
+	}
+}
+
+func remoteChildRecordFromProto(record *RemoteChildRecord) remotechild.ShadowRecord {
+	if record == nil {
+		return remotechild.ShadowRecord{}
+	}
+	return remotechild.ShadowRecord{
+		SessionID:       record.SessionId,
+		ParentJobID:     record.ParentJobId,
+		ParentPID:       int(record.ParentPid),
+		ShadowPID:       int(record.ShadowPid),
+		RemoteJobID:     record.RemoteJobId,
+		RemoteNodeID:    record.RemoteNodeId,
+		RemoteGlobalPID: record.RemoteGlobalPid,
+		Command:         append([]string{}, record.Command...),
+		State:           remotechild.ShadowState(record.State),
+		StartedAt:       unixTimeFromProto(record.StartedAt),
+		FinishedAt:      unixTimeFromProto(record.FinishedAt),
+		ExitCode:        int(record.ExitCode),
+		Signal:          int(record.Signal),
+		PlacementReason: record.PlacementReason,
+		FallbackReason:  record.FallbackReason,
+		FailureReason:   record.FailureReason,
+		CreatedAt:       unixTimeFromProto(record.CreatedAt),
+		UpdatedAt:       unixTimeFromProto(record.UpdatedAt),
+	}
+}
+
+func unixTimeOrZero(t time.Time) int64 {
+	if t.IsZero() {
+		return 0
+	}
+	return t.Unix()
+}
+
+func unixTimeFromProto(seconds int64) time.Time {
+	if seconds == 0 {
+		return time.Time{}
+	}
+	return time.Unix(seconds, 0)
+}
+
+func dedupeRemoteChildRecords(records []remotechild.ShadowRecord) []remotechild.ShadowRecord {
+	byJob := make(map[string]remotechild.ShadowRecord, len(records))
+	for _, record := range records {
+		if record.RemoteJobID == "" {
+			continue
+		}
+		existing, exists := byJob[record.RemoteJobID]
+		if !exists || preferRemoteChildRecord(record, existing) {
+			byJob[record.RemoteJobID] = record
+		}
+	}
+	out := make([]remotechild.ShadowRecord, 0, len(byJob))
+	for _, record := range byJob {
+		out = append(out, record)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].CreatedAt.Before(out[j].CreatedAt)
+	})
+	return out
+}
+
+func preferRemoteChildRecord(candidate, existing remotechild.ShadowRecord) bool {
+	if candidate.RemoteGlobalPID != 0 && existing.RemoteGlobalPID == 0 {
+		return true
+	}
+	if candidate.UpdatedAt.After(existing.UpdatedAt) {
+		return true
+	}
+	return false
+}
+
+func redactCommandEnv(env []string) []string {
+	out := make([]string, 0, len(env))
+	tokenPrefix := remotechild.EnvChildToken + "="
+	for _, entry := range env {
+		if strings.HasPrefix(entry, tokenPrefix) {
+			continue
+		}
+		out = append(out, entry)
+	}
+	return out
 }
 
 func nodeStateToProto(state cluster.NodeState) NodeState {
@@ -484,24 +770,74 @@ func jobStatusToProto(status cluster.JobStatus) JobStatus {
 }
 
 func (s *ClusterServerImpl) processInfoToProto(p *cluster.ProcessInfo) *ProcessInfo {
-	return &ProcessInfo{
-		GlobalPid:  uint64(p.GlobalPID),
-		NodeId:     string(p.NodeID),
-		LocalPid:   int32(p.LocalPID),
-		Ppid:       int32(p.PPID),
-		Uid:        p.UID,
-		Gid:        p.GID,
-		SessionId:  string(p.SessionID),
-		JobId:      string(p.JobID),
-		Comm:       p.Comm,
-		Cmdline:    p.Cmdline,
-		Cwd:        p.CWD,
-		StartTime:  p.StartTime.Unix(),
-		CpuPercent: p.CPUPercent,
-		RssBytes:   p.RSSBytes,
-		State:      p.State,
-		VfioGroups: p.VFIOGroups,
+	out := &ProcessInfo{
+		GlobalPid:   uint64(p.GlobalPID),
+		NodeId:      string(p.NodeID),
+		LocalPid:    int32(p.LocalPID),
+		Ppid:        int32(p.PPID),
+		Uid:         p.UID,
+		Gid:         p.GID,
+		SessionId:   string(p.SessionID),
+		JobId:       string(p.JobID),
+		Comm:        p.Comm,
+		Cmdline:     p.Cmdline,
+		Cwd:         p.CWD,
+		StartTime:   unixTimeOrZero(p.StartTime),
+		CpuPercent:  p.CPUPercent,
+		RssBytes:    p.RSSBytes,
+		State:       p.State,
+		VfioGroups:  p.VFIOGroups,
+		ProcessKind: p.ProcessKind,
 	}
+	if p.RemoteChild != nil {
+		out.RemoteChild = remoteChildInfoToProto(p.RemoteChild)
+	}
+	return out
+}
+
+func (s *ClusterServerImpl) appendRemoteChildProcessRecords(procs []*cluster.ProcessInfo, req *ListProcessesRequest) []*cluster.ProcessInfo {
+	seenJobs := make(map[cluster.JobID]bool, len(procs))
+	for _, proc := range procs {
+		seenJobs[proc.JobID] = true
+	}
+	for _, record := range s.remoteChildren.List(remotechild.ListFilter{ActiveOnly: true}) {
+		if req.SessionId != "" && record.SessionID != req.SessionId {
+			continue
+		}
+		if req.JobId != "" && record.RemoteJobID != req.JobId && record.ParentJobID != req.JobId {
+			continue
+		}
+		if req.NodeId != "" && record.RemoteNodeID != req.NodeId {
+			continue
+		}
+		jobID := cluster.JobID(record.RemoteJobID)
+		if seenJobs[jobID] {
+			continue
+		}
+		procs = append(procs, &cluster.ProcessInfo{
+			GlobalPID:   cluster.GlobalPID(record.RemoteGlobalPID),
+			NodeID:      cluster.NodeID(record.RemoteNodeID),
+			LocalPID:    0,
+			PPID:        record.ParentPID,
+			SessionID:   cluster.SessionID(record.SessionID),
+			JobID:       jobID,
+			Comm:        firstArg(record.Command),
+			Cmdline:     strings.Join(record.Command, " "),
+			StartTime:   record.StartedAt,
+			State:       string(record.State),
+			ProcessKind: "remote-child",
+			RemoteChild: remoteChildInfoFromRecord(record),
+		})
+		seenJobs[jobID] = true
+	}
+	return procs
+}
+
+func firstArg(argv []string) string {
+	if len(argv) == 0 {
+		return ""
+	}
+	return argv[0]
 }
 
 func (s *ClusterServerImpl) protoToRequirements(pb *Requirements) cluster.Requirements {
@@ -550,12 +886,13 @@ func int32SliceToProto(s []int) []int32 {
 }
 
 // RegisterClusterServerImpl registers the cluster server implementation with gRPC
-func RegisterClusterServerImpl(grpcServer *grpc.Server, nodeID cluster.NodeID, sched *scheduler.Scheduler, trk *tracker.Tracker, grpcPort int32, pool *ClusterClientPool) {
-	RegisterClusterServerImplWithOptions(grpcServer, nodeID, sched, trk, grpcPort, pool, ServerOptions{})
+func RegisterClusterServerImpl(grpcServer *grpc.Server, nodeID cluster.NodeID, sched *scheduler.Scheduler, trk *tracker.Tracker, grpcPort int32, pool *ClusterClientPool) *ClusterServerImpl {
+	return RegisterClusterServerImplWithOptions(grpcServer, nodeID, sched, trk, grpcPort, pool, ServerOptions{})
 }
 
-func RegisterClusterServerImplWithOptions(grpcServer *grpc.Server, nodeID cluster.NodeID, sched *scheduler.Scheduler, trk *tracker.Tracker, grpcPort int32, pool *ClusterClientPool, opts ServerOptions) {
+func RegisterClusterServerImplWithOptions(grpcServer *grpc.Server, nodeID cluster.NodeID, sched *scheduler.Scheduler, trk *tracker.Tracker, grpcPort int32, pool *ClusterClientPool, opts ServerOptions) *ClusterServerImpl {
 	server := NewClusterServerImplWithOptions(nodeID, sched, trk, pool, opts)
 	server.grpcPort = grpcPort
 	RegisterClusterServer(grpcServer, server)
+	return server
 }

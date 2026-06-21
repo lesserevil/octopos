@@ -83,22 +83,24 @@ type VFIORequirement struct {
 
 // ProcessInfo describes a running process
 type ProcessInfo struct {
-	GlobalPID  GlobalPID `json:"global_pid"`
-	NodeID     NodeID    `json:"node_id"`
-	LocalPID   int       `json:"local_pid"`
-	PPID       int       `json:"ppid"`
-	UID        uint32    `json:"uid"`
-	GID        uint32    `json:"gid"`
-	SessionID  SessionID `json:"session_id"`
-	JobID      JobID     `json:"job_id"`
-	Comm       string    `json:"comm"`
-	Cmdline    string    `json:"cmdline"`
-	CWD        string    `json:"cwd"`
-	StartTime  time.Time `json:"start_time"`
-	CPUPercent float64   `json:"cpu_percent"`
-	RSSBytes   uint64    `json:"rss_bytes"`
-	State      string    `json:"state"` // R, S, D, Z, etc.
-	VFIOGroups []string  `json:"vfio_groups"`
+	GlobalPID   GlobalPID        `json:"global_pid"`
+	NodeID      NodeID           `json:"node_id"`
+	LocalPID    int              `json:"local_pid"`
+	PPID        int              `json:"ppid"`
+	UID         uint32           `json:"uid"`
+	GID         uint32           `json:"gid"`
+	SessionID   SessionID        `json:"session_id"`
+	JobID       JobID            `json:"job_id"`
+	Comm        string           `json:"comm"`
+	Cmdline     string           `json:"cmdline"`
+	CWD         string           `json:"cwd"`
+	StartTime   time.Time        `json:"start_time"`
+	CPUPercent  float64          `json:"cpu_percent"`
+	RSSBytes    uint64           `json:"rss_bytes"`
+	State       string           `json:"state"` // R, S, D, Z, etc.
+	VFIOGroups  []string         `json:"vfio_groups"`
+	ProcessKind string           `json:"process_kind,omitempty"`
+	RemoteChild *RemoteChildInfo `json:"remote_child,omitempty"`
 }
 
 // ExecRequest represents a command execution request
@@ -166,16 +168,38 @@ type CommandSpec struct {
 
 // JobInfo tracks a job across nodes
 type JobInfo struct {
-	ID          JobID           `json:"id"`
-	SessionID   SessionID       `json:"session_id"`
-	Commands    []CommandSpec   `json:"commands"`
-	PipeMap     map[int32]int32 `json:"pipe_map"`
-	Status      JobStatus       `json:"status"`
-	CreatedAt   time.Time       `json:"created_at"`
-	StartedAt   time.Time       `json:"started_at,omitempty"`
-	FinishedAt  time.Time       `json:"finished_at,omitempty"`
-	ExitCodes   []int           `json:"exit_codes,omitempty"`
-	PrimaryNode NodeID          `json:"primary_node"`
+	ID                  JobID            `json:"id"`
+	SessionID           SessionID        `json:"session_id"`
+	Commands            []CommandSpec    `json:"commands"`
+	PipeMap             map[int32]int32  `json:"pipe_map"`
+	Status              JobStatus        `json:"status"`
+	CreatedAt           time.Time        `json:"created_at"`
+	StartedAt           time.Time        `json:"started_at,omitempty"`
+	FinishedAt          time.Time        `json:"finished_at,omitempty"`
+	ExitCodes           []int            `json:"exit_codes,omitempty"`
+	PrimaryNode         NodeID           `json:"primary_node"`
+	RemoteChild         *RemoteChildInfo `json:"remote_child,omitempty"`
+	ChildToken          string           `json:"-"`
+	ChildTokenExpiresAt time.Time        `json:"-"`
+}
+
+// RemoteChildInfo records the explicit local-shadow to remote-worker mapping
+// used by octopos-remote-child.
+type RemoteChildInfo struct {
+	ParentJobID     JobID     `json:"parent_job_id,omitempty"`
+	ParentPID       int       `json:"parent_pid,omitempty"`
+	ShadowPID       int       `json:"shadow_pid,omitempty"`
+	RemoteJobID     JobID     `json:"remote_job_id,omitempty"`
+	RemoteNodeID    NodeID    `json:"remote_node_id,omitempty"`
+	RemoteGlobalPID uint64    `json:"remote_global_pid,omitempty"`
+	RemoteLocalPID  int       `json:"remote_local_pid,omitempty"`
+	Command         []string  `json:"command,omitempty"`
+	PlacementReason string    `json:"placement_reason,omitempty"`
+	FallbackReason  string    `json:"fallback_reason,omitempty"`
+	State           string    `json:"state,omitempty"`
+	FailureReason   string    `json:"failure_reason,omitempty"`
+	StartedAt       time.Time `json:"started_at,omitempty"`
+	FinishedAt      time.Time `json:"finished_at,omitempty"`
 }
 
 // NodeInfo describes a cluster node

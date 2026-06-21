@@ -10,6 +10,7 @@ import (
 
 	"github.com/hanwen/go-fuse/v2/fs"
 	"github.com/hanwen/go-fuse/v2/fuse"
+	octopospb "github.com/octopos/octopos/pkg/rpc"
 )
 
 func TestProcRootOnAddPopulatesSyntheticProcesses(t *testing.T) {
@@ -49,7 +50,7 @@ func TestProcDirReaddirIncludesExpectedProcessFiles(t *testing.T) {
 	stream, errno := dir.Readdir(context.Background())
 	names := dirEntryNames(t, stream, errno)
 
-	for _, want := range []string{"status", "comm", "cmdline", "exe", "mounts", "mountinfo", "mountstats", "fd", "ns"} {
+	for _, want := range []string{"status", "comm", "cmdline", "cwd", "exe", "octopos", "mounts", "mountinfo", "mountstats", "fd", "ns"} {
 		if !names[want] {
 			t.Fatalf("process directory listing missing %q: %#v", want, names)
 		}
@@ -101,6 +102,87 @@ func TestProcFileReadAndAttributes(t *testing.T) {
 		if !strings.Contains(string(fsData), want) {
 			t.Fatalf("filesystems content missing %q:\n%s", want, fsData)
 		}
+	}
+}
+
+func TestProcessToProcInfoUsesShadowPIDForRemoteChild(t *testing.T) {
+	info := processToProcInfo(&octopospb.ProcessInfo{
+		GlobalPid:   9001,
+		NodeId:      "remote-node",
+		Ppid:        111,
+		Uid:         1000,
+		Comm:        "worker",
+		Cmdline:     "worker --arg",
+		Cwd:         "/work",
+		State:       "running",
+		ProcessKind: "remote-child",
+		RemoteChild: &octopospb.RemoteChildInfo{
+			ParentJobId:     "job-parent",
+			ParentPid:       123,
+			ShadowPid:       456,
+			RemoteJobId:     "job-child",
+			RemoteNodeId:    "remote-node",
+			RemoteGlobalPid: 9001,
+			Command:         []string{"/bin/sh", "-lc", "hostname"},
+			PlacementReason: "transparent",
+			State:           "running",
+		},
+	})
+
+	if info.pid != 456 {
+		t.Fatalf("pid = %d, want shadow pid 456", info.pid)
+	}
+	if info.ppid != 123 {
+		t.Fatalf("ppid = %d, want parent pid 123", info.ppid)
+	}
+	if info.remoteNode != "remote-node" || info.remoteGlobalPID != 9001 || info.remoteJob != "job-child" {
+		t.Fatalf("remote mapping = %#v", info)
+	}
+	if info.cmdline != "/bin/sh -lc hostname" {
+		t.Fatalf("cmdline = %q", info.cmdline)
+	}
+}
+
+func TestRemoteChildProcFilesExposeOctopOSMapping(t *testing.T) {
+	info := procInfo{
+		pid:             456,
+		ppid:            123,
+		uid:             1000,
+		comm:            "sh",
+		cmdline:         "/bin/sh -lc hostname",
+		cwd:             "/work",
+		state:           "running",
+		processKind:     "remote-child",
+		remoteParentJob: "job-parent",
+		remoteJob:       "job-child",
+		remoteNode:      "shedwards-octo2",
+		remoteGlobalPID: 9001,
+		remoteWorkerPID: 9001,
+		placement:       "transparent",
+	}
+
+	statusFile := &procFile{name: "status", info: info}
+	result, errno := statusFile.Read(context.Background(), nil, make([]byte, 512), 0)
+	status := string(readResultBytes(t, result, errno))
+	for _, want := range []string{"Pid:\t456", "PPid:\t123", "OctopOSProcessKind:\tremote-child", "OctopOSRemoteNode:\tshedwards-octo2", "OctopOSRemotePID:\t9001"} {
+		if !strings.Contains(status, want) {
+			t.Fatalf("status missing %q:\n%s", want, status)
+		}
+	}
+
+	octoposFile := &procFile{name: "octopos", info: info}
+	result, errno = octoposFile.Read(context.Background(), nil, make([]byte, 1024), 0)
+	octopos := string(readResultBytes(t, result, errno))
+	for _, want := range []string{"shadow_pid: 456", "remote_job_id: job-child", "remote_node: shedwards-octo2", "remote_global_pid: 9001", "placement: transparent"} {
+		if !strings.Contains(octopos, want) {
+			t.Fatalf("octopos metadata missing %q:\n%s", want, octopos)
+		}
+	}
+
+	cwdFile := &procFile{name: "cwd", info: info}
+	result, errno = cwdFile.Read(context.Background(), nil, make([]byte, 128), 0)
+	if got := string(readResultBytes(t, result, errno)); got != "/work\n" {
+		t.Fatalf("cwd content = %q, want /work newline", got)
 	}
 }
 

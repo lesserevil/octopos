@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 
 	"github.com/octopos/octopos/pkg/ssi"
@@ -23,6 +24,9 @@ type bootstrapConfig struct {
 	RequireSSI    bool
 	ClusterFSMeta string
 	ClusterFSOpts string
+	ObjectProxy   bool
+	ObjectListen  string
+	ObjectTargets string
 }
 
 func bootstrapCluster(cfg *bootstrapConfig) error {
@@ -117,9 +121,16 @@ SaveConfig = true
 	fmt.Println("OK")
 
 	if cfg.RequireSSI {
+		if cfg.ObjectProxy {
+			fmt.Print("Installing object-store proxy service... ")
+			if err := installLocalObjectStoreProxy(cfg.ObjectListen, cfg.ObjectTargets); err != nil {
+				return fmt.Errorf("install object-store proxy service: %w", err)
+			}
+			fmt.Println("OK")
+		}
 		if cfg.ClusterFSMeta != "" {
 			fmt.Print("Installing cluster filesystem service... ")
-			if err := installLocalClusterFSService(cfg.ClusterRoot, cfg.ClusterFSMeta, cfg.ClusterFSOpts); err != nil {
+			if err := installLocalClusterFSService(cfg.ClusterRoot, cfg.ClusterFSMeta, cfg.ClusterFSOpts, cfg.ObjectProxy); err != nil {
 				return fmt.Errorf("install cluster filesystem service: %w", err)
 			}
 			fmt.Println("OK")
@@ -141,6 +152,8 @@ SaveConfig = true
 	coreTargets := []struct{ bin, pkg string }{
 		{"octoposd", "./cmd/octoposd"},
 		{"octopos-exec", "./cmd/octopos-exec"},
+		{"octopos-remote-child", "./cmd/octopos-remote-child"},
+		{"octopos-child-supervisor", "./cmd/octopos-child-supervisor"},
 	}
 	if cfg.RequireSSI {
 		coreTargets = append(coreTargets,
@@ -159,6 +172,40 @@ SaveConfig = true
 			return err
 		}
 	}
+	preloadBuildPath := remoteChildPreloadBuildPath("bin")
+	if err := ensureRemoteChildPreloadBuildDir(preloadBuildPath); err != nil {
+		return fmt.Errorf("prepare remote child preload build dir: %w", err)
+	}
+	fmt.Print("Building remote child preload runtime... ")
+	if err := runCmd(remoteChildPreloadBuildCmd(preloadBuildPath)); err != nil {
+		return fmt.Errorf("build remote child preload runtime: %w", err)
+	}
+	fmt.Println("OK")
+	if err := runCmd(exec.Command("sudo", "install", "-d", remoteChildPreloadInstallDir)); err != nil {
+		return err
+	}
+	if err := runCmd(exec.Command("sudo", "install", "-m", "0755", preloadBuildPath, remoteChildPreloadPath)); err != nil {
+		return err
+	}
+	if cfg.RequireSSI {
+		ssiBinDir := filepath.Join(cfg.SSIRootFS, "usr/local/bin")
+		if err := runCmd(exec.Command("sudo", "install", "-d", ssiBinDir)); err != nil {
+			return err
+		}
+		if err := runCmd(exec.Command("sudo", "install", "-m", "0755", "bin/octopos-remote-child", filepath.Join(ssiBinDir, "octopos-remote-child"))); err != nil {
+			return err
+		}
+		if err := runCmd(exec.Command("sudo", "install", "-m", "0755", "bin/octopos-child-supervisor", filepath.Join(ssiBinDir, "octopos-child-supervisor"))); err != nil {
+			return err
+		}
+		ssiLibDir := filepath.Join(cfg.SSIRootFS, "usr/local/lib/octopos")
+		if err := runCmd(exec.Command("sudo", "install", "-d", ssiLibDir)); err != nil {
+			return err
+		}
+		if err := runCmd(exec.Command("sudo", "install", "-m", "0755", preloadBuildPath, filepath.Join(ssiLibDir, remoteChildPreloadName))); err != nil {
+			return err
+		}
+	}
 
 	// 8. Install systemd service
 	svcContent := fmt.Sprintf(`[Unit]
@@ -171,6 +218,7 @@ Requires=octopos-clusterfs.service
 ExecStart=/usr/local/bin/octoposd --node-id %s --grpc-addr %s --wg-interface wg-octopos --cluster-root %s --ssi-rootfs %s --require-ssi=%t
 Restart=always
 RestartSec=5
+KillMode=process
 User=root
 
 [Install]

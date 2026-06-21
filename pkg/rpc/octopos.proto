@@ -20,6 +20,7 @@ service Cluster {
   // Process tracking
   rpc ListProcesses(ListProcessesRequest) returns (ListProcessesResponse);
   rpc GetProcess(GetProcessRequest) returns (GetProcessResponse);
+  rpc ListRemoteChildren(ListRemoteChildrenRequest) returns (ListRemoteChildrenResponse);
   
   // Resource management
   rpc AllocateVFIO(AllocateVFIORequest) returns (AllocateVFIOResponse);
@@ -33,6 +34,11 @@ service Cluster {
   
   // Streaming for pipes/stdin/stdout
   rpc ExecStream(stream ExecStreamRequest) returns (stream ExecStreamResponse);
+
+  // Distributed child execution. These entrypoints use the same execution
+  // payloads as normal jobs, but require authenticated remote-child metadata.
+  rpc RemoteChildExecute(ExecuteRequest) returns (ExecuteResponse);
+  rpc RemoteChildStream(stream ExecStreamRequest) returns (stream ExecStreamResponse);
 }
 
 // Node registration
@@ -306,6 +312,20 @@ message ProcessInfo {
   uint64 rss_bytes = 14;
   string state = 15;
   repeated string vfio_groups = 16;
+  string process_kind = 17;
+  RemoteChildInfo remote_child = 18;
+}
+
+message ListRemoteChildrenRequest {
+  string session_id = 1;
+  string parent_job_id = 2;
+  string remote_job_id = 3;
+  string remote_node_id = 4;
+  bool active_only = 5;
+}
+
+message ListRemoteChildrenResponse {
+  repeated RemoteChildRecord children = 1;
 }
 
 message SessionInfo {
@@ -329,6 +349,44 @@ message JobInfo {
   int64 finished_at = 8;
   repeated int32 exit_codes = 9;
   string primary_node = 10;
+  RemoteChildInfo remote_child = 11;
+}
+
+message RemoteChildInfo {
+  string parent_job_id = 1;
+  int32 parent_pid = 2;
+  int32 shadow_pid = 3;
+  string remote_job_id = 4;
+  string remote_node_id = 5;
+  uint64 remote_global_pid = 6;
+  repeated string command = 7;
+  string placement_reason = 8;
+  string fallback_reason = 9;
+  string state = 10;
+  string failure_reason = 11;
+  int64 started_at = 12;
+  int64 finished_at = 13;
+}
+
+message RemoteChildRecord {
+  string session_id = 1;
+  string parent_job_id = 2;
+  int32 parent_pid = 3;
+  int32 shadow_pid = 4;
+  string remote_job_id = 5;
+  string remote_node_id = 6;
+  uint64 remote_global_pid = 7;
+  repeated string command = 8;
+  string state = 9;
+  int64 started_at = 10;
+  int64 finished_at = 11;
+  int32 exit_code = 12;
+  int32 signal = 13;
+  string placement_reason = 14;
+  string fallback_reason = 15;
+  string failure_reason = 16;
+  int64 created_at = 17;
+  int64 updated_at = 18;
 }
 
 message CommandSpec {

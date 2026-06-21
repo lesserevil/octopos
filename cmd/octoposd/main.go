@@ -17,58 +17,73 @@ import (
 	"github.com/octopos/octopos/pkg/cluster"
 	octoebpf "github.com/octopos/octopos/pkg/ebpf"
 	"github.com/octopos/octopos/pkg/nvidia"
+	"github.com/octopos/octopos/pkg/remotechild"
 	"github.com/octopos/octopos/pkg/resources"
 	"github.com/octopos/octopos/pkg/rpc"
 	"github.com/octopos/octopos/pkg/scheduler"
 	"github.com/octopos/octopos/pkg/ssi"
 	"github.com/octopos/octopos/pkg/tracker"
+	"golang.org/x/sys/unix"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/health"
 	"google.golang.org/grpc/health/grpc_health_v1"
+	"google.golang.org/grpc/peer"
 	"google.golang.org/grpc/reflection"
+	"google.golang.org/grpc/status"
 )
 
 var (
-	configFile   = flag.String("config", "/etc/octopos/octoposd.yaml", "Config file path")
-	nodeID       = flag.String("node-id", "", "Node ID (default: hostname)")
-	grpcAddr     = flag.String("grpc-addr", "0.0.0.0:50051", "gRPC listen address")
-	wgInterface  = flag.String("wg-interface", "wg-octopos", "WireGuard interface")
-	peers        = flag.String("peers", "", "Comma-separated seed peer addresses (e.g., 10.0.0.2:50051,10.0.0.3:50051)")
-	clusterRoot  = flag.String("cluster-root", ssi.DefaultClusterRoot, "JuiceFS cluster filesystem mount point")
-	ssiRootFS    = flag.String("ssi-rootfs", "", "SSI root filesystem path (default: <cluster-root>)")
-	ssiMountBase = flag.String("ssi-mount-base", ssi.DefaultMountBase, "Base directory for SSI virtual filesystem mounts")
-	ssiExecutor  = flag.String("ssi-executor", ssi.DefaultExecutor, "Privileged SSI command launcher")
-	requireSSI   = flag.Bool("require-ssi", true, "Require a mounted cluster filesystem and bootstrapped SSI rootfs before serving jobs")
+	configFile    = flag.String("config", "/etc/octopos/octoposd.yaml", "Config file path")
+	nodeID        = flag.String("node-id", "", "Node ID (default: hostname)")
+	grpcAddr      = flag.String("grpc-addr", "0.0.0.0:50051", "gRPC listen address")
+	wgInterface   = flag.String("wg-interface", "wg-octopos", "WireGuard interface")
+	peers         = flag.String("peers", "", "Comma-separated seed peer addresses (e.g., 10.0.0.2:50051,10.0.0.3:50051)")
+	clusterRoot   = flag.String("cluster-root", ssi.DefaultClusterRoot, "JuiceFS cluster filesystem mount point")
+	ssiRootFS     = flag.String("ssi-rootfs", "", "SSI root filesystem path (default: <cluster-root>)")
+	ssiMountBase  = flag.String("ssi-mount-base", ssi.DefaultMountBase, "Base directory for SSI virtual filesystem mounts")
+	ssiExecutor   = flag.String("ssi-executor", ssi.DefaultExecutor, "Privileged SSI command launcher")
+	requireSSI    = flag.Bool("require-ssi", true, "Require a mounted cluster filesystem and bootstrapped SSI rootfs before serving jobs")
+	childSocket   = flag.String("child-socket", remotechild.DefaultSocketPath, "Unix socket exposed to exec namespaces for local child process control")
+	childState    = flag.String("remote-child-state", "/var/lib/octopos/remote-children.json", "Persistent remote-child lifecycle state file")
+	childLease    = flag.Duration("remote-child-lease-timeout", 2*time.Minute, "How long to keep polling an unobservable remote child before failing its parent-side lease")
+	childTokenTTL = flag.Duration("remote-child-token-ttl", 24*time.Hour, "How long a parent exec's remote-child token remains valid")
 )
 
 type Config struct {
-	NodeID       string `yaml:"node_id"`
-	GRPCAddr     string `yaml:"grpc_addr"`
-	WGInterface  string `yaml:"wg_interface"`
-	RedisAddrs   string `yaml:"redis_addrs"`
-	JuiceFSMount string `yaml:"juicefs_mount"`
-	SSIRootFS    string `yaml:"ssi_rootfs"`
-	SSIMountBase string `yaml:"ssi_mount_base"`
-	SSIExecutor  string `yaml:"ssi_executor"`
-	RequireSSI   bool   `yaml:"require_ssi"`
-	Peers        string `yaml:"peers"`
-	VFIOEnabled  bool   `yaml:"vfio_enabled"`
+	NodeID        string `yaml:"node_id"`
+	GRPCAddr      string `yaml:"grpc_addr"`
+	WGInterface   string `yaml:"wg_interface"`
+	RedisAddrs    string `yaml:"redis_addrs"`
+	JuiceFSMount  string `yaml:"juicefs_mount"`
+	SSIRootFS     string `yaml:"ssi_rootfs"`
+	SSIMountBase  string `yaml:"ssi_mount_base"`
+	SSIExecutor   string `yaml:"ssi_executor"`
+	RequireSSI    bool   `yaml:"require_ssi"`
+	ChildSocket   string `yaml:"child_socket"`
+	ChildState    string `yaml:"remote_child_state"`
+	ChildLease    time.Duration
+	ChildTokenTTL time.Duration
+	Peers         string `yaml:"peers"`
+	VFIOEnabled   bool   `yaml:"vfio_enabled"`
 }
 
 type Server struct {
-	config       *Config
-	nodeInfo     *cluster.NodeInfo
-	grpcPort     int32
-	scheduler    *scheduler.Scheduler
-	tracker      *tracker.Tracker
-	detector     *resources.Detector
-	clientPool   *rpc.ClusterClientPool
-	ebpfLoader   *octoebpf.Loader
-	grpcServer   *grpc.Server
-	healthServer *health.Server
-	ssiProcs     []*exec.Cmd
-	ctx          context.Context
-	cancel       context.CancelFunc
+	config        *Config
+	nodeInfo      *cluster.NodeInfo
+	grpcPort      int32
+	scheduler     *scheduler.Scheduler
+	tracker       *tracker.Tracker
+	detector      *resources.Detector
+	clientPool    *rpc.ClusterClientPool
+	clusterServer *rpc.ClusterServerImpl
+	ebpfLoader    *octoebpf.Loader
+	grpcServer    *grpc.Server
+	healthServer  *health.Server
+	localSocket   string
+	ssiProcs      []*exec.Cmd
+	ctx           context.Context
+	cancel        context.CancelFunc
 }
 
 func main() {
@@ -76,17 +91,21 @@ func main() {
 
 	// Load config
 	cfg := &Config{
-		NodeID:       *nodeID,
-		GRPCAddr:     *grpcAddr,
-		WGInterface:  *wgInterface,
-		RedisAddrs:   "10.0.0.1:6379,10.0.0.2:6379,10.0.0.3:6379",
-		JuiceFSMount: *clusterRoot,
-		SSIRootFS:    *ssiRootFS,
-		SSIMountBase: *ssiMountBase,
-		SSIExecutor:  *ssiExecutor,
-		RequireSSI:   *requireSSI,
-		Peers:        *peers,
-		VFIOEnabled:  true,
+		NodeID:        *nodeID,
+		GRPCAddr:      *grpcAddr,
+		WGInterface:   *wgInterface,
+		RedisAddrs:    "10.0.0.1:6379,10.0.0.2:6379,10.0.0.3:6379",
+		JuiceFSMount:  *clusterRoot,
+		SSIRootFS:     *ssiRootFS,
+		SSIMountBase:  *ssiMountBase,
+		SSIExecutor:   *ssiExecutor,
+		RequireSSI:    *requireSSI,
+		ChildSocket:   *childSocket,
+		ChildState:    *childState,
+		ChildLease:    *childLease,
+		ChildTokenTTL: *childTokenTTL,
+		Peers:         *peers,
+		VFIOEnabled:   true,
 	}
 
 	if *configFile != "" {
@@ -158,22 +177,22 @@ func (s *Server) init() error {
 	// Create node info
 	wgIP := s.getWGIP()
 	labels := map[string]string{"role": "compute"}
-	if resSpec.GPUCount > 0 {
-		if err := nvidia.EnsureProjection(nvidia.DefaultProjectionRoot); err != nil {
-			return fmt.Errorf("prepare NVIDIA projection: %w", err)
-		}
-		labels["octopos.io/nvidia"] = "true"
-		labels["octopos.io/nvidia-gpus"] = fmt.Sprint(resSpec.GPUCount)
-		if version := nvidia.DriverVersion(); version != "" {
-			labels["octopos.io/nvidia-driver-version"] = version
-		}
-	}
 	ssiCfg := s.ssiConfig()
 	if s.config.RequireSSI {
 		if err := ssi.Validate(ssiCfg); err != nil {
 			return fmt.Errorf("SSI validation failed: %w", err)
 		}
 		labels = ssi.MergeLabels(labels, ssiCfg.Labels())
+	}
+	if resSpec.GPUCount > 0 {
+		if err := s.ensureNVIDIARuntime(ssiCfg); err != nil {
+			return err
+		}
+		labels["octopos.io/nvidia"] = "true"
+		labels["octopos.io/nvidia-gpus"] = fmt.Sprint(resSpec.GPUCount)
+		if version := nvidia.DriverVersion(); version != "" {
+			labels["octopos.io/nvidia-driver-version"] = version
+		}
 	}
 	s.nodeInfo = &cluster.NodeInfo{
 		ID:        cluster.NodeID(s.config.NodeID),
@@ -202,6 +221,21 @@ func (s *Server) init() error {
 	log.Printf("Node %s initialized: CPU=%d, Mem=%d, GPUs=%d",
 		s.nodeInfo.ID, s.nodeInfo.Resources.CPU, s.nodeInfo.Resources.Memory, s.nodeInfo.Resources.GPUCount)
 
+	return nil
+}
+
+func (s *Server) ensureNVIDIARuntime(ssiCfg ssi.Config) error {
+	if err := nvidia.EnsureProjection(nvidia.DefaultProjectionRoot); err != nil {
+		return fmt.Errorf("prepare NVIDIA projection: %w", err)
+	}
+	if s.config.RequireSSI {
+		if err := ssi.Validate(ssiCfg); err != nil {
+			return fmt.Errorf("SSI validation failed: %w", err)
+		}
+		if err := nvidia.EnsureProfile(ssiCfg.RootFS); err != nil {
+			return fmt.Errorf("install NVIDIA profile hook: %w", err)
+		}
+	}
 	return nil
 }
 
@@ -268,12 +302,15 @@ func (s *Server) getWGIP() string {
 }
 
 func (s *Server) startGRPC() error {
-	lis, err := net.Listen("tcp", s.config.GRPCAddr)
+	tcpLis, err := net.Listen("tcp", s.config.GRPCAddr)
 	if err != nil {
 		return err
 	}
 
-	s.grpcServer = grpc.NewServer()
+	s.grpcServer = grpc.NewServer(
+		grpc.UnaryInterceptor(s.authorizeLocalSocketUnary),
+		grpc.StreamInterceptor(s.authorizeLocalSocketStream),
+	)
 	s.healthServer = health.NewServer()
 	grpc_health_v1.RegisterHealthServer(s.grpcServer, s.healthServer)
 	s.healthServer.SetServingStatus("octopos.Cluster", grpc_health_v1.HealthCheckResponse_SERVING)
@@ -282,18 +319,230 @@ func (s *Server) startGRPC() error {
 	reflection.Register(s.grpcServer)
 
 	// Register Cluster service
-	rpc.RegisterClusterServerImplWithOptions(s.grpcServer, s.nodeInfo.ID, s.scheduler, s.tracker, s.grpcPort, s.clientPool, rpc.ServerOptions{
-		SSI: s.ssiConfig(),
+	s.clusterServer = rpc.RegisterClusterServerImplWithOptions(s.grpcServer, s.nodeInfo.ID, s.scheduler, s.tracker, s.grpcPort, s.clientPool, rpc.ServerOptions{
+		SSI:                     s.ssiConfig(),
+		RemoteChildStorePath:    s.config.ChildState,
+		RemoteChildLeaseTimeout: s.config.ChildLease,
+		RemoteChildTokenTTL:     s.config.ChildTokenTTL,
 	})
+	go s.pruneRemoteChildRecords()
+	go s.recoverRemoteChildRecords()
 
-	go func() {
-		log.Printf("gRPC server listening on %s", s.config.GRPCAddr)
-		if err := s.grpcServer.Serve(lis); err != nil {
-			log.Printf("gRPC server error: %v", err)
+	s.serveGRPC(tcpLis, "tcp "+s.config.GRPCAddr)
+	if s.config.ChildSocket != "" {
+		unixLis, err := listenUnixSocket(s.config.ChildSocket)
+		if err != nil {
+			_ = tcpLis.Close()
+			s.grpcServer.Stop()
+			return err
 		}
-	}()
+		s.localSocket = s.config.ChildSocket
+		s.serveGRPC(unixLis, "unix "+s.config.ChildSocket)
+	}
 
 	return nil
+}
+
+func (s *Server) pruneRemoteChildRecords() {
+	if s.clusterServer == nil {
+		return
+	}
+	const retention = 24 * time.Hour
+	ticker := time.NewTicker(10 * time.Minute)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-s.ctx.Done():
+			return
+		case <-ticker.C:
+			if pruned := s.clusterServer.PruneRemoteChildren(retention); pruned > 0 {
+				log.Printf("Pruned %d terminal remote-child lifecycle records older than %s", pruned, retention)
+			}
+		}
+	}
+}
+
+func (s *Server) recoverRemoteChildRecords() {
+	if s.clusterServer == nil {
+		return
+	}
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+	for {
+		stats := s.clusterServer.RecoverRemoteChildren(s.ctx)
+		if stats.HasChanges() {
+			log.Printf(
+				"Remote-child recovery: recovering=%d running=%d stopped=%d completed=%d failed=%d orphaned=%d unobservable=%d",
+				stats.Recovering,
+				stats.Running,
+				stats.Stopped,
+				stats.Completed,
+				stats.Failed,
+				stats.Orphaned,
+				stats.Unobservable,
+			)
+		}
+		if stats.Recovering == 0 {
+			return
+		}
+		select {
+		case <-s.ctx.Done():
+			return
+		case <-ticker.C:
+		}
+	}
+}
+
+func (s *Server) authorizeLocalSocketUnary(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
+	if err := authorizeLocalSocketRPC(ctx, info.FullMethod); err != nil {
+		return nil, err
+	}
+	return handler(ctx, req)
+}
+
+func (s *Server) authorizeLocalSocketStream(srv any, stream grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
+	if err := authorizeLocalSocketRPC(stream.Context(), info.FullMethod); err != nil {
+		return err
+	}
+	return handler(srv, stream)
+}
+
+func authorizeLocalSocketRPC(ctx context.Context, method string) error {
+	cred, ok := localUnixPeerCred(ctx)
+	if !ok {
+		return nil
+	}
+	switch method {
+	case rpc.Cluster_RemoteChildExecute_FullMethodName, rpc.Cluster_RemoteChildStream_FullMethodName:
+	default:
+		return status.Errorf(codes.PermissionDenied, "method %s is not available on the local child socket", method)
+	}
+	if cred.uid != 0 {
+		return status.Errorf(codes.PermissionDenied, "local child socket requires uid 0, got uid %d", cred.uid)
+	}
+	return nil
+}
+
+func localUnixPeerCred(ctx context.Context) (unixPeerCred, bool) {
+	p, ok := peer.FromContext(ctx)
+	if !ok {
+		return unixPeerCred{}, false
+	}
+	addr, ok := p.Addr.(unixPeerAddr)
+	if !ok {
+		return unixPeerCred{}, false
+	}
+	return addr.cred, true
+}
+
+func (s *Server) serveGRPC(lis net.Listener, label string) {
+	go func() {
+		log.Printf("gRPC server listening on %s", label)
+		if err := s.grpcServer.Serve(lis); err != nil {
+			log.Printf("gRPC server error on %s: %v", label, err)
+		}
+	}()
+}
+
+func listenUnixSocket(path string) (net.Listener, error) {
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		return nil, fmt.Errorf("create %s: %w", filepath.Dir(path), err)
+	}
+	if info, err := os.Lstat(path); err == nil {
+		if info.Mode()&os.ModeSocket == 0 {
+			return nil, fmt.Errorf("refusing to replace non-socket %s", path)
+		}
+		if err := os.Remove(path); err != nil {
+			return nil, fmt.Errorf("remove stale socket %s: %w", path, err)
+		}
+	} else if !os.IsNotExist(err) {
+		return nil, fmt.Errorf("stat socket %s: %w", path, err)
+	}
+	lis, err := net.Listen("unix", path)
+	if err != nil {
+		return nil, fmt.Errorf("listen unix %s: %w", path, err)
+	}
+	if err := os.Chmod(path, 0600); err != nil {
+		_ = lis.Close()
+		return nil, fmt.Errorf("chmod unix socket %s: %w", path, err)
+	}
+	return &peerCredUnixListener{Listener: lis}, nil
+}
+
+type unixPeerCred struct {
+	pid int32
+	uid uint32
+	gid uint32
+}
+
+type unixPeerAddr struct {
+	net.Addr
+	cred unixPeerCred
+}
+
+func (a unixPeerAddr) Network() string {
+	return "unix"
+}
+
+func (a unixPeerAddr) String() string {
+	if a.Addr == nil {
+		return fmt.Sprintf("unix pid=%d uid=%d gid=%d", a.cred.pid, a.cred.uid, a.cred.gid)
+	}
+	return fmt.Sprintf("%s pid=%d uid=%d gid=%d", a.Addr.String(), a.cred.pid, a.cred.uid, a.cred.gid)
+}
+
+type peerCredConn struct {
+	net.Conn
+	addr unixPeerAddr
+}
+
+func (c *peerCredConn) RemoteAddr() net.Addr {
+	return c.addr
+}
+
+type peerCredUnixListener struct {
+	net.Listener
+}
+
+func (l *peerCredUnixListener) Accept() (net.Conn, error) {
+	conn, err := l.Listener.Accept()
+	if err != nil {
+		return nil, err
+	}
+	cred, err := peerCred(conn)
+	if err != nil {
+		_ = conn.Close()
+		return nil, err
+	}
+	return &peerCredConn{
+		Conn: conn,
+		addr: unixPeerAddr{Addr: conn.RemoteAddr(), cred: cred},
+	}, nil
+}
+
+func peerCred(conn net.Conn) (unixPeerCred, error) {
+	unixConn, ok := conn.(*net.UnixConn)
+	if !ok {
+		return unixPeerCred{}, fmt.Errorf("local child socket accepted non-Unix connection %T", conn)
+	}
+	rawConn, err := unixConn.SyscallConn()
+	if err != nil {
+		return unixPeerCred{}, fmt.Errorf("get raw Unix connection: %w", err)
+	}
+	var cred *unix.Ucred
+	var controlErr error
+	if err := rawConn.Control(func(fd uintptr) {
+		cred, controlErr = unix.GetsockoptUcred(int(fd), unix.SOL_SOCKET, unix.SO_PEERCRED)
+	}); err != nil {
+		return unixPeerCred{}, fmt.Errorf("inspect Unix peer credentials: %w", err)
+	}
+	if controlErr != nil {
+		return unixPeerCred{}, fmt.Errorf("inspect Unix peer credentials: %w", controlErr)
+	}
+	if cred == nil {
+		return unixPeerCred{}, fmt.Errorf("inspect Unix peer credentials: no credentials returned")
+	}
+	return unixPeerCred{pid: cred.Pid, uid: cred.Uid, gid: cred.Gid}, nil
 }
 
 func (s *Server) startSSIVirtualFS() error {
@@ -410,8 +659,8 @@ func (s *Server) resourceUpdateLoop() {
 				continue
 			}
 			if resSpec.GPUCount > 0 {
-				if err := nvidia.EnsureProjection(nvidia.DefaultProjectionRoot); err != nil {
-					log.Printf("NVIDIA projection refresh failed: %v", err)
+				if err := s.ensureNVIDIARuntime(s.ssiConfig()); err != nil {
+					log.Printf("NVIDIA runtime refresh failed: %v", err)
 					continue
 				}
 				s.nodeInfo.Labels["octopos.io/nvidia"] = "true"
@@ -438,12 +687,30 @@ func (s *Server) shutdown() {
 		s.ebpfLoader.Close()
 	}
 	if s.grpcServer != nil {
-		s.grpcServer.GracefulStop()
+		s.stopGRPC(5 * time.Second)
+	}
+	if s.localSocket != "" {
+		_ = os.Remove(s.localSocket)
 	}
 	if s.healthServer != nil {
 		s.healthServer.Shutdown()
 	}
 	s.cancel()
+}
+
+func (s *Server) stopGRPC(timeout time.Duration) {
+	done := make(chan struct{})
+	go func() {
+		s.grpcServer.GracefulStop()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(timeout):
+		log.Printf("gRPC graceful stop timed out after %s; forcing stop", timeout)
+		s.grpcServer.Stop()
+		<-done
+	}
 }
 
 func (s *Server) stopSSIVirtualFS() {

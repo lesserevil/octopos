@@ -1,6 +1,9 @@
 package nvidia
 
 import (
+	"os"
+	"os/exec"
+	"path/filepath"
 	"reflect"
 	"testing"
 
@@ -53,5 +56,33 @@ func TestVisibleDevicesValue(t *testing.T) {
 	}
 	if got := VisibleDevicesValue(withoutUUID); got != "3,5" {
 		t.Fatalf("VisibleDevicesValue without full UUIDs = %q", got)
+	}
+}
+
+func TestEnsureProfile(t *testing.T) {
+	root := t.TempDir()
+	if err := EnsureProfile(root); err != nil {
+		t.Fatalf("EnsureProfile: %v", err)
+	}
+
+	path := filepath.Join(root, ProfileScriptRelPath)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read profile script: %v", err)
+	}
+	if string(data) != ProfileScript {
+		t.Fatal("profile script content mismatch")
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat profile script: %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0644 {
+		t.Fatalf("profile script mode = %#o, want 0644", got)
+	}
+	if sh, err := exec.LookPath("sh"); err == nil {
+		if out, err := exec.Command(sh, "-n", path).CombinedOutput(); err != nil {
+			t.Fatalf("profile script syntax: %v\n%s", err, out)
+		}
 	}
 }

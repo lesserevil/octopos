@@ -1,12 +1,16 @@
 package main
 
 import (
+	"errors"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/octopos/octopos/pkg/cluster"
+	"github.com/octopos/octopos/pkg/remotechild"
 	"golang.org/x/sys/unix"
 )
 
@@ -67,6 +71,32 @@ func TestCreateDeviceNodeRestoresModeAfterUmask(t *testing.T) {
 	}
 }
 
+func TestEnsureSSIRootDirAcceptsExistingDirectory(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, "proc"), 0755); err != nil {
+		t.Fatalf("mkdir proc: %v", err)
+	}
+
+	if err := ensureSSIRootDir(root, "proc"); err != nil {
+		t.Fatalf("ensureSSIRootDir: %v", err)
+	}
+}
+
+func TestEnsureSSIRootDirRejectsFile(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "proc"), []byte("not a directory"), 0644); err != nil {
+		t.Fatalf("write proc file: %v", err)
+	}
+
+	err := ensureSSIRootDir(root, "proc")
+	if err == nil {
+		t.Fatal("ensureSSIRootDir succeeded for file")
+	}
+	if !errors.Is(err, syscall.ENOTDIR) && !strings.Contains(err.Error(), "not a directory") {
+		t.Fatalf("ensureSSIRootDir error = %v, want not a directory", err)
+	}
+}
+
 func TestApplyNVIDIAEnv(t *testing.T) {
 	env := []string{
 		"PATH=/usr/bin:/bin",
@@ -94,5 +124,87 @@ func TestApplyNVIDIAEnv(t *testing.T) {
 	}
 	if value := envValue(got, "LD_LIBRARY_PATH"); !strings.HasPrefix(value, "/usr/local/nvidia/lib64:/usr/local/cuda/lib64:") {
 		t.Fatalf("LD_LIBRARY_PATH = %q, missing NVIDIA/CUDA prefixes", value)
+	}
+}
+
+func TestApplyFDReopenPlan(t *testing.T) {
+	target := filepath.Join(t.TempDir(), "fd-target")
+	if err := os.WriteFile(target, []byte("start"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	fd := 9
+	_ = unix.Close(fd)
+	encoded, err := remotechild.EncodeReopenFDs([]remotechild.ReopenFD{{
+		FD:     fd,
+		Path:   target,
+		Flags:  os.O_WRONLY | os.O_APPEND,
+		Offset: 0,
+		Kind:   remotechild.FDKindRegular,
+	}})
+	if err != nil {
+		t.Fatalf("EncodeReopenFDs: %v", err)
+	}
+	defer unix.Close(fd)
+	if err := applyFDReopenPlan([]string{remotechild.EnvFDPlan + "=" + encoded}); err != nil {
+		t.Fatalf("applyFDReopenPlan: %v", err)
+	}
+	file := os.NewFile(uintptr(fd), "fd-target")
+	if file == nil {
+		t.Fatal("fd 9 was not opened")
+	}
+	if _, err := file.Write([]byte("-remote")); err != nil {
+		t.Fatalf("write reopened fd: %v", err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatalf("close reopened fd: %v", err)
+	}
+	data, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatalf("read target: %v", err)
+	}
+	if string(data) != "start-remote" {
+		t.Fatalf("target data = %q, want start-remote", string(data))
+	}
+}
+
+func TestCreateBindFileTargetReplacesStaleSocket(t *testing.T) {
+	target := filepath.Join(t.TempDir(), "childd.sock")
+	listener, err := net.Listen("unix", target)
+	if err != nil {
+		t.Fatalf("listen unix: %v", err)
+	}
+	if err := listener.Close(); err != nil {
+		t.Fatalf("close listener: %v", err)
+	}
+	file, err := createBindFileTarget(target)
+	if err != nil {
+		t.Fatalf("createBindFileTarget: %v", err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatalf("close target: %v", err)
+	}
+	info, err := os.Lstat(target)
+	if err != nil {
+		t.Fatalf("stat target: %v", err)
+	}
+	if info.Mode()&os.ModeSocket != 0 {
+		t.Fatalf("target is still a socket: %s", info.Mode())
+	}
+}
+
+func TestCreateBindDirTargetReplacesStaleFile(t *testing.T) {
+	target := filepath.Join(t.TempDir(), "host-fd")
+	if err := os.WriteFile(target, []byte("stale"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := createBindDirTarget(target); err != nil {
+		t.Fatalf("createBindDirTarget: %v", err)
+	}
+	info, err := os.Stat(target)
+	if err != nil {
+		t.Fatalf("stat target: %v", err)
+	}
+	if !info.IsDir() {
+		t.Fatalf("target is not a directory: %s", info.Mode())
 	}
 }

@@ -1,27 +1,27 @@
 //go:build linux
 
-package main
+package termio
 
 import (
 	"syscall"
 	"unsafe"
 )
 
-type terminalState struct {
+type State struct {
 	termios syscall.Termios
 }
 
-type terminalSize struct {
-	rows uint16
-	cols uint16
+type Size struct {
+	Rows uint16
+	Cols uint16
 }
 
-func isTerminal(fd uintptr) bool {
+func IsTerminal(fd uintptr) bool {
 	_, err := getTermios(fd)
 	return err == nil
 }
 
-func makeTerminalRaw(fd uintptr) (*terminalState, error) {
+func MakeRaw(fd uintptr) (*State, error) {
 	oldState, err := getTermios(fd)
 	if err != nil {
 		return nil, err
@@ -39,17 +39,17 @@ func makeTerminalRaw(fd uintptr) (*terminalState, error) {
 	if err := setTermios(fd, raw); err != nil {
 		return nil, err
 	}
-	return &terminalState{termios: oldState}, nil
+	return &State{termios: oldState}, nil
 }
 
-func restoreTerminal(fd uintptr, state *terminalState) {
+func Restore(fd uintptr, state *State) {
 	if state == nil {
 		return
 	}
 	_ = setTermios(fd, state.termios)
 }
 
-func getTerminalSize(fd uintptr) (terminalSize, error) {
+func GetSize(fd uintptr) (Size, error) {
 	var ws struct {
 		Row    uint16
 		Col    uint16
@@ -58,9 +58,9 @@ func getTerminalSize(fd uintptr) (terminalSize, error) {
 	}
 	_, _, errno := syscall.Syscall(syscall.SYS_IOCTL, fd, uintptr(syscall.TIOCGWINSZ), uintptr(unsafe.Pointer(&ws)))
 	if errno != 0 {
-		return terminalSize{}, errno
+		return Size{}, errno
 	}
-	return terminalSize{rows: ws.Row, cols: ws.Col}, nil
+	return Size{Rows: ws.Row, Cols: ws.Col}, nil
 }
 
 func getTermios(fd uintptr) (syscall.Termios, error) {

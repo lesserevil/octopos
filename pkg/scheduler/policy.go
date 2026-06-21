@@ -7,6 +7,14 @@ import (
 	"github.com/octopos/octopos/pkg/ssi"
 )
 
+const (
+	affinityNodeID          = "node_id"
+	affinityNode            = "node"
+	affinityPreferNotNodeID = "prefer_not_node_id"
+	affinityPreferNotNode   = "prefer_not_node"
+	softAvoidNodePenalty    = 1_000_000
+)
+
 // Policy defines scheduling policy interface
 type Policy interface {
 	Filter(nodes []*cluster.NodeInfo, req cluster.Requirements) []*cluster.NodeInfo
@@ -29,15 +37,15 @@ func (b *BinPackPolicy) Filter(nodes []*cluster.NodeInfo, req cluster.Requiremen
 			continue
 		}
 		if req.NodeAffinity != nil {
-			if nodeID := req.NodeAffinity["node_id"]; nodeID != "" && string(n.ID) != nodeID {
+			if nodeID := req.NodeAffinity[affinityNodeID]; nodeID != "" && string(n.ID) != nodeID {
 				continue
 			}
-			if nodeID := req.NodeAffinity["node"]; nodeID != "" && string(n.ID) != nodeID {
+			if nodeID := req.NodeAffinity[affinityNode]; nodeID != "" && string(n.ID) != nodeID {
 				continue
 			}
 			matched := true
 			for key, value := range req.NodeAffinity {
-				if key == "node" || key == "node_id" {
+				if isSchedulerAffinityKey(key) {
 					continue
 				}
 				if n.Labels[key] != value {
@@ -62,7 +70,7 @@ func (b *BinPackPolicy) Score(node *cluster.NodeInfo, req cluster.Requirements) 
 	// Score = allocated / capacity ratio (higher = more packed)
 	cpuRatio := float64(node.Allocated.CPU) / float64(node.Resources.CPU)
 	memRatio := float64(node.Allocated.Memory) / float64(node.Resources.Memory)
-	return int((cpuRatio + memRatio) * 5000) // 0-10000
+	return applySoftAvoidNodePenalty(int((cpuRatio+memRatio)*5000), node, req) // 0-10000
 }
 
 // SpreadPolicy spreads jobs across nodes
@@ -78,7 +86,30 @@ func (s *SpreadPolicy) Score(node *cluster.NodeInfo, req cluster.Requirements) i
 	// Prefer nodes with fewer allocated resources (spread out)
 	cpuRatio := float64(node.Allocated.CPU) / float64(node.Resources.CPU)
 	memRatio := float64(node.Allocated.Memory) / float64(node.Resources.Memory)
-	return int((2.0 - cpuRatio - memRatio) * 5000) // 0-10000, inverted
+	return applySoftAvoidNodePenalty(int((2.0-cpuRatio-memRatio)*5000), node, req) // 0-10000, inverted
+}
+
+func isSchedulerAffinityKey(key string) bool {
+	switch key {
+	case affinityNodeID, affinityNode, affinityPreferNotNodeID, affinityPreferNotNode:
+		return true
+	default:
+		return false
+	}
+}
+
+func applySoftAvoidNodePenalty(score int, node *cluster.NodeInfo, req cluster.Requirements) int {
+	if req.NodeAffinity == nil {
+		return score
+	}
+	preferNot := req.NodeAffinity[affinityPreferNotNodeID]
+	if preferNot == "" {
+		preferNot = req.NodeAffinity[affinityPreferNotNode]
+	}
+	if preferNot != "" && string(node.ID) == preferNot {
+		return score - softAvoidNodePenalty
+	}
+	return score
 }
 
 // Scheduler manages job scheduling

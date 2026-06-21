@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -32,13 +33,23 @@ type procRoot struct {
 }
 
 type procInfo struct {
-	pid     uint32
-	ppid    uint32
-	uid     uint32
-	comm    string
-	cmdline string
-	rss     uint64
-	state   string
+	pid             uint32
+	ppid            uint32
+	uid             uint32
+	comm            string
+	cmdline         string
+	cwd             string
+	rss             uint64
+	state           string
+	processKind     string
+	remoteParentJob string
+	remoteJob       string
+	remoteNode      string
+	remoteGlobalPID uint64
+	remoteWorkerPID uint32
+	placement       string
+	fallbackReason  string
+	failureReason   string
 }
 
 type procDir struct {
@@ -133,17 +144,52 @@ func (r *procRoot) clusterProcesses(ctx context.Context) []procInfo {
 	}
 	infos := make([]procInfo, 0, len(resp.Processes))
 	for _, p := range resp.Processes {
-		infos = append(infos, procInfo{
-			pid:     uint32(p.GlobalPid),
-			ppid:    uint32(p.Ppid),
-			uid:     p.Uid,
-			comm:    p.Comm,
-			cmdline: p.Cmdline,
-			rss:     p.RssBytes,
-			state:   p.State,
-		})
+		infos = append(infos, processToProcInfo(p))
 	}
 	return infos
+}
+
+func processToProcInfo(p *octopospb.ProcessInfo) procInfo {
+	info := procInfo{
+		pid:         uint32(p.GlobalPid),
+		ppid:        uint32(p.Ppid),
+		uid:         p.Uid,
+		comm:        p.Comm,
+		cmdline:     p.Cmdline,
+		cwd:         p.Cwd,
+		rss:         p.RssBytes,
+		state:       p.State,
+		processKind: p.ProcessKind,
+	}
+	if p.RemoteChild == nil {
+		return info
+	}
+	child := p.RemoteChild
+	if child.ShadowPid > 0 {
+		info.pid = uint32(child.ShadowPid)
+	}
+	if child.ParentPid > 0 {
+		info.ppid = uint32(child.ParentPid)
+	}
+	info.processKind = "remote-child"
+	info.remoteParentJob = child.ParentJobId
+	info.remoteJob = child.RemoteJobId
+	info.remoteNode = child.RemoteNodeId
+	info.remoteGlobalPID = child.RemoteGlobalPid
+	info.remoteWorkerPID = uint32(child.RemoteGlobalPid)
+	info.placement = child.PlacementReason
+	info.fallbackReason = child.FallbackReason
+	info.failureReason = child.FailureReason
+	if len(child.Command) > 0 {
+		info.cmdline = strings.Join(child.Command, " ")
+		if info.comm == "" {
+			info.comm = child.Command[0]
+		}
+	}
+	if child.State != "" {
+		info.state = child.State
+	}
+	return info
 }
 
 func (r *procRoot) clusterMemory(ctx context.Context) uint64 {
@@ -170,7 +216,7 @@ func (r *procRoot) clusterMemory(ctx context.Context) uint64 {
 
 func (d *procDir) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (*fs.Inode, syscall.Errno) {
 	switch name {
-	case "status", "comm", "cmdline", "exe", "mounts", "mountinfo", "mountstats":
+	case "status", "comm", "cmdline", "cwd", "exe", "mounts", "mountinfo", "mountstats", "octopos":
 		child := &procFile{name: name, info: d.info}
 		return d.NewInode(ctx, child, fs.StableAttr{Mode: syscall.S_IFREG}), 0
 	case "fd", "fdinfo", "ns":
@@ -185,7 +231,9 @@ func (d *procDir) Readdir(ctx context.Context) (fs.DirStream, syscall.Errno) {
 		{Name: "status", Mode: syscall.S_IFREG},
 		{Name: "comm", Mode: syscall.S_IFREG},
 		{Name: "cmdline", Mode: syscall.S_IFREG},
+		{Name: "cwd", Mode: syscall.S_IFREG},
 		{Name: "exe", Mode: syscall.S_IFLNK},
+		{Name: "octopos", Mode: syscall.S_IFREG},
 		{Name: "mounts", Mode: syscall.S_IFREG},
 		{Name: "mountinfo", Mode: syscall.S_IFREG},
 		{Name: "mountstats", Mode: syscall.S_IFREG},
@@ -254,16 +302,61 @@ func (f *procFile) content() []byte {
 	case "filesystems":
 		return []byte("nodev\tsysfs\nnodev\tproc\nnodev\tdevpts\nnodev\ttmpfs\nfuse.juicefs\n")
 	case "status":
-		return []byte(fmt.Sprintf("Name:\t%s\nState:\t%s\nPid:\t%d\nPPid:\t%d\nUid:\t%d\nVmRSS:\t%d kB\n",
-			f.info.comm, f.info.state, f.info.pid, f.info.ppid, f.info.uid, f.info.rss/1024))
+		return []byte(f.info.statusContent())
 	case "comm":
 		return []byte(f.info.comm + "\n")
 	case "cmdline":
 		return []byte(f.info.cmdline + "\x00")
+	case "cwd":
+		if f.info.cwd != "" {
+			return []byte(f.info.cwd + "\n")
+		}
+		return []byte("/\n")
 	case "exe":
 		return []byte("/proc/self/exe")
+	case "octopos":
+		return []byte(f.info.octoposContent())
 	}
 	return nil
+}
+
+func (p procInfo) statusContent() string {
+	content := fmt.Sprintf("Name:\t%s\nState:\t%s\nPid:\t%d\nPPid:\t%d\nUid:\t%d\nVmRSS:\t%d kB\n",
+		p.comm, p.state, p.pid, p.ppid, p.uid, p.rss/1024)
+	if p.processKind == "remote-child" {
+		content += fmt.Sprintf("OctopOSProcessKind:\tremote-child\nOctopOSRemoteNode:\t%s\nOctopOSRemoteJob:\t%s\nOctopOSRemotePID:\t%d\n",
+			p.remoteNode, p.remoteJob, p.remoteGlobalPID)
+	}
+	return content
+}
+
+func (p procInfo) octoposContent() string {
+	placement := p.placement
+	if placement == "" && p.processKind == "remote-child" {
+		placement = "remote"
+	}
+	content := fmt.Sprintf("process_kind: %s\nshadow_pid: %d\nparent_pid: %d\ncmdline: %s\n",
+		firstNonEmpty(p.processKind, "local"), p.pid, p.ppid, p.cmdline)
+	if p.processKind == "remote-child" {
+		content += fmt.Sprintf("parent_job_id: %s\nremote_job_id: %s\nremote_node: %s\nremote_global_pid: %d\nremote_worker_pid: %d\nplacement: %s\nstate: %s\n",
+			p.remoteParentJob, p.remoteJob, p.remoteNode, p.remoteGlobalPID, p.remoteWorkerPID, placement, p.state)
+		if p.fallbackReason != "" {
+			content += "fallback_reason: " + p.fallbackReason + "\n"
+		}
+		if p.failureReason != "" {
+			content += "failure_reason: " + p.failureReason + "\n"
+		}
+	}
+	return content
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func main() {

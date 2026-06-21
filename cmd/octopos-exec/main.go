@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/octopos/octopos/pkg/cluster"
 	"github.com/octopos/octopos/pkg/nvidia"
+	"github.com/octopos/octopos/pkg/remotechild"
 	"github.com/octopos/octopos/pkg/ssi"
 	"golang.org/x/sys/unix"
 )
@@ -25,6 +27,7 @@ var (
 	nvidiaProjection   = flag.String("nvidia-projection", nvidia.DefaultProjectionRoot, "Host NVIDIA projection root")
 	nvidiaCapabilities = flag.String("nvidia-capabilities", nvidia.DefaultDriverCapabilities, "NVIDIA driver capabilities")
 	nvidiaDevRoot      = flag.String("nvidia-dev-root", "/dev", "Host NVIDIA device root")
+	ttySlave           = flag.String("tty-slave", "", "Host PTY slave path (internal)")
 
 	mknod = unix.Mknod
 	chmod = os.Chmod
@@ -47,8 +50,9 @@ func main() {
 		capabilities: *nvidiaCapabilities,
 		devRoot:      *nvidiaDevRoot,
 	}
+	ttyRuntime := ttyRuntimeConfig{slave: *ttySlave}
 
-	if err := enterSSI(*rootFS, *mountBase, *cwd, *requireVFS, nvidiaRuntime, argv); err != nil {
+	if err := enterSSI(*rootFS, *mountBase, *cwd, *requireVFS, nvidiaRuntime, ttyRuntime, argv); err != nil {
 		fatalf("%v", err)
 	}
 }
@@ -64,11 +68,25 @@ func (c nvidiaRuntimeConfig) enabled() bool {
 	return len(c.devices) > 0
 }
 
-func enterSSI(root, base, workdir string, strictVFS bool, gpu nvidiaRuntimeConfig, argv []string) error {
+type ttyRuntimeConfig struct {
+	slave string
+}
+
+func (c ttyRuntimeConfig) enabled() bool {
+	return c.slave != ""
+}
+
+func enterSSI(root, base, workdir string, strictVFS bool, gpu nvidiaRuntimeConfig, tty ttyRuntimeConfig, argv []string) error {
 	root = filepath.Clean(root)
 	base = filepath.Clean(base)
 	gpu.projection = filepath.Clean(gpu.projection)
 	gpu.devRoot = filepath.Clean(gpu.devRoot)
+	if tty.enabled() {
+		tty.slave = filepath.Clean(tty.slave)
+		if err := validateTTYSlave(tty.slave); err != nil {
+			return err
+		}
+	}
 	if err := validateRoot(root); err != nil {
 		return err
 	}
@@ -78,6 +96,9 @@ func enterSSI(root, base, workdir string, strictVFS bool, gpu nvidiaRuntimeConfi
 		}
 		if !filepath.IsAbs(gpu.devRoot) {
 			return fmt.Errorf("NVIDIA device root %s must be absolute", gpu.devRoot)
+		}
+		if err := nvidia.EnsureProfile(root); err != nil {
+			return fmt.Errorf("install NVIDIA profile hook: %w", err)
 		}
 		if err := nvidia.EnsureProjection(gpu.projection); err != nil {
 			return fmt.Errorf("prepare NVIDIA projection: %w", err)
@@ -95,23 +116,30 @@ func enterSSI(root, base, workdir string, strictVFS bool, gpu nvidiaRuntimeConfi
 	}
 
 	for _, name := range []string{"proc", "dev", "sys", "tmp"} {
-		if err := os.MkdirAll(filepath.Join(root, name), 0755); err != nil {
-			return fmt.Errorf("create /%s in SSI root: %w", name, err)
+		if err := ensureSSIRootDir(root, name); err != nil {
+			return err
 		}
 	}
-	if err := mountVirtualFS(root, base, "proc", strictVFS, gpu); err != nil {
+	if err := mountVirtualFS(root, base, "proc", strictVFS, gpu, tty); err != nil {
 		return err
 	}
-	if err := mountVirtualFS(root, base, "dev", strictVFS, gpu); err != nil {
+	if err := mountVirtualFS(root, base, "dev", strictVFS, gpu, tty); err != nil {
 		return err
 	}
-	if err := mountVirtualFS(root, base, "sys", strictVFS, gpu); err != nil {
+	if err := mountVirtualFS(root, base, "sys", strictVFS, gpu, tty); err != nil {
 		return err
 	}
 	if gpu.enabled() {
 		if err := mountNVIDIAProjection(root, gpu.projection); err != nil {
 			return err
 		}
+	}
+	if err := mountRuntimeSocket(root, remotechild.DefaultSocketPath); err != nil {
+		return err
+	}
+	hostFDDir, err := mountHostFDDir(root)
+	if err != nil {
+		return err
 	}
 
 	if err := syscall.Chroot(root); err != nil {
@@ -125,14 +153,66 @@ func enterSSI(root, base, workdir string, strictVFS bool, gpu nvidiaRuntimeConfi
 	}
 
 	env := ensureDefaultEnv(os.Environ())
+	if hostFDDir != "" {
+		env = setEnvValue(env, remotechild.EnvHostFDDir, hostFDDir)
+	}
 	if gpu.enabled() {
 		env = applyNVIDIAEnv(env, gpu)
+	}
+	if err := applyFDReopenPlan(env); err != nil {
+		return err
 	}
 	path, err := lookPathInRoot(argv[0], env)
 	if err != nil {
 		return err
 	}
 	return syscall.Exec(path, argv, env)
+}
+
+func applyFDReopenPlan(env []string) error {
+	raw := envValue(env, remotechild.EnvFDPlan)
+	if raw == "" {
+		return nil
+	}
+	fds, err := remotechild.DecodeReopenFDs(raw)
+	if err != nil {
+		return fmt.Errorf("decode remote-child fd plan: %w", err)
+	}
+	for _, plan := range fds {
+		if plan.FD < 3 {
+			return fmt.Errorf("refusing to reopen reserved fd %d", plan.FD)
+		}
+		if plan.Path == "" || !filepath.IsAbs(plan.Path) {
+			return fmt.Errorf("fd %d reopen path %q must be absolute", plan.FD, plan.Path)
+		}
+		flags := plan.Flags
+		if flags == 0 {
+			flags = os.O_RDONLY
+		}
+		file, err := os.OpenFile(plan.Path, flags, 0)
+		if err != nil {
+			return fmt.Errorf("reopen fd %d from %s: %w", plan.FD, plan.Path, err)
+		}
+		if plan.Offset > 0 && flags&os.O_APPEND == 0 {
+			if _, err := file.Seek(plan.Offset, 0); err != nil {
+				_ = file.Close()
+				return fmt.Errorf("seek fd %d to %d: %w", plan.FD, plan.Offset, err)
+			}
+		}
+		if int(file.Fd()) != plan.FD {
+			if err := unix.Dup2(int(file.Fd()), plan.FD); err != nil {
+				_ = file.Close()
+				return fmt.Errorf("dup fd %d to %d: %w", file.Fd(), plan.FD, err)
+			}
+			if err := file.Close(); err != nil {
+				return fmt.Errorf("close temporary fd for %d: %w", plan.FD, err)
+			}
+		}
+		if _, err := unix.FcntlInt(uintptr(plan.FD), unix.F_SETFD, 0); err != nil {
+			return fmt.Errorf("clear close-on-exec for fd %d: %w", plan.FD, err)
+		}
+	}
+	return nil
 }
 
 func validateRoot(root string) error {
@@ -144,10 +224,39 @@ func validateRoot(root string) error {
 	return fmt.Errorf("SSI rootfs %s is not bootstrapped: missing bin or usr/bin", root)
 }
 
-func mountVirtualFS(root, base, name string, strict bool, gpu nvidiaRuntimeConfig) error {
+func ensureSSIRootDir(root, name string) error {
+	path := filepath.Join(root, name)
+	if info, err := os.Stat(path); err == nil {
+		if info.IsDir() {
+			return nil
+		}
+		return fmt.Errorf("create /%s in SSI root: %s exists and is not a directory", name, path)
+	} else if !os.IsNotExist(err) {
+		if errors.Is(err, syscall.ENOTCONN) {
+			_ = unix.Unmount(path, unix.MNT_DETACH)
+			if err := os.MkdirAll(path, 0755); err == nil {
+				return nil
+			}
+		}
+		return fmt.Errorf("stat /%s in SSI root: %w", name, err)
+	}
+	if err := os.MkdirAll(path, 0755); err != nil {
+		info, statErr := os.Stat(path)
+		if statErr == nil && info.IsDir() {
+			return nil
+		}
+		if os.IsExist(err) && statErr == nil {
+			return fmt.Errorf("create /%s in SSI root: %s exists and is not a directory", name, path)
+		}
+		return fmt.Errorf("create /%s in SSI root: %w", name, err)
+	}
+	return nil
+}
+
+func mountVirtualFS(root, base, name string, strict bool, gpu nvidiaRuntimeConfig, tty ttyRuntimeConfig) error {
 	target := filepath.Join(root, name)
 	if name == "dev" {
-		return mountPrivateDev(target, gpu)
+		return mountPrivateDev(target, gpu, tty)
 	}
 	source := filepath.Join(base, name)
 	if mounted, _ := ssi.IsMountPoint(source); mounted {
@@ -169,7 +278,7 @@ func mountVirtualFS(root, base, name string, strict bool, gpu nvidiaRuntimeConfi
 	}
 }
 
-func mountPrivateDev(target string, gpu nvidiaRuntimeConfig) error {
+func mountPrivateDev(target string, gpu nvidiaRuntimeConfig, tty ttyRuntimeConfig) error {
 	if err := unix.Mount("tmpfs", target, "tmpfs", unix.MS_NOSUID|unix.MS_STRICTATIME, "mode=755,size=65536k"); err != nil {
 		return fmt.Errorf("mount private /dev: %w", err)
 	}
@@ -197,8 +306,14 @@ func mountPrivateDev(target string, gpu nvidiaRuntimeConfig) error {
 			return err
 		}
 	}
-	if err := unix.Mount("devpts", filepath.Join(target, "pts"), "devpts", unix.MS_NOSUID|unix.MS_NOEXEC, "newinstance,ptmxmode=0666,mode=0620"); err != nil {
-		return fmt.Errorf("mount /dev/pts: %w", err)
+	if tty.enabled() {
+		if err := projectTTYSlave(target, tty.slave); err != nil {
+			return err
+		}
+	} else {
+		if err := unix.Mount("devpts", filepath.Join(target, "pts"), "devpts", unix.MS_NOSUID|unix.MS_NOEXEC, "newinstance,ptmxmode=0666,mode=0620"); err != nil {
+			return fmt.Errorf("mount /dev/pts: %w", err)
+		}
 	}
 	links := map[string]string{
 		"ptmx":   "pts/ptmx",
@@ -220,6 +335,63 @@ func mountPrivateDev(target string, gpu nvidiaRuntimeConfig) error {
 		return fmt.Errorf("mount /dev/shm: %w", err)
 	}
 	return nil
+}
+
+func validateTTYSlave(path string) error {
+	if !filepath.IsAbs(path) {
+		return fmt.Errorf("PTY slave path %s must be absolute", path)
+	}
+	if !strings.HasPrefix(path, "/dev/pts/") {
+		return fmt.Errorf("PTY slave path %s must be under /dev/pts", path)
+	}
+	base := filepath.Base(path)
+	if base == "." || base == ".." || base == "ptmx" {
+		return fmt.Errorf("PTY slave path %s is not a terminal slave", path)
+	}
+	if _, err := strconv.ParseUint(base, 10, 32); err != nil {
+		return fmt.Errorf("PTY slave path %s is not a numeric /dev/pts entry", path)
+	}
+
+	var slaveStat unix.Stat_t
+	if err := unix.Stat(path, &slaveStat); err != nil {
+		return fmt.Errorf("stat PTY slave %s: %w", path, err)
+	}
+	if slaveStat.Mode&unix.S_IFMT != unix.S_IFCHR {
+		return fmt.Errorf("PTY slave %s is not a character device", path)
+	}
+
+	var stdinStat unix.Stat_t
+	if err := unix.Fstat(int(os.Stdin.Fd()), &stdinStat); err != nil {
+		return fmt.Errorf("stat stdin PTY: %w", err)
+	}
+	if stdinStat.Mode&unix.S_IFMT != unix.S_IFCHR {
+		return fmt.Errorf("stdin is not a character device for PTY exec")
+	}
+	if stdinStat.Rdev != slaveStat.Rdev {
+		return fmt.Errorf("PTY slave %s does not match stdin", path)
+	}
+	return nil
+}
+
+func projectTTYSlave(devTarget, slavePath string) error {
+	slaveName := filepath.Base(slavePath)
+	target := filepath.Join(devTarget, "pts", slaveName)
+	file, err := os.OpenFile(target, os.O_CREATE|os.O_EXCL|os.O_RDONLY, 0600)
+	if err != nil {
+		return fmt.Errorf("create /dev/pts/%s target: %w", slaveName, err)
+	}
+	if err := file.Close(); err != nil {
+		return fmt.Errorf("close /dev/pts/%s target: %w", slaveName, err)
+	}
+	if err := unix.Mount(slavePath, target, "", unix.MS_BIND, ""); err != nil {
+		return fmt.Errorf("bind PTY slave %s to /dev/pts/%s: %w", slavePath, slaveName, err)
+	}
+	return createDeviceNode(filepath.Join(devTarget, "pts", "ptmx"), deviceNode{
+		name:  "pts/ptmx",
+		mode:  0666,
+		major: 5,
+		minor: 2,
+	})
 }
 
 func createNVIDIADeviceNodes(devTarget string, gpu nvidiaRuntimeConfig) error {
@@ -332,6 +504,98 @@ func mountNVIDIAProjection(root, projection string) error {
 		if err := bindMount(source, target, true); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+func mountRuntimeSocket(root, source string) error {
+	var st unix.Stat_t
+	if err := unix.Lstat(source, &st); err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("stat runtime socket %s: %w", source, err)
+	}
+	if st.Mode&unix.S_IFMT != unix.S_IFSOCK {
+		return fmt.Errorf("runtime socket %s is not a socket", source)
+	}
+	target := filepath.Join(root, strings.TrimPrefix(source, string(filepath.Separator)))
+	if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
+		return fmt.Errorf("create runtime socket parent %s: %w", filepath.Dir(target), err)
+	}
+	file, err := createBindFileTarget(target)
+	if err != nil {
+		return fmt.Errorf("create runtime socket target %s: %w", target, err)
+	}
+	if err := file.Close(); err != nil {
+		return fmt.Errorf("close runtime socket target %s: %w", target, err)
+	}
+	if err := unix.Mount(source, target, "", unix.MS_BIND, ""); err != nil {
+		return fmt.Errorf("bind runtime socket %s to %s: %w", source, target, err)
+	}
+	return nil
+}
+
+func createBindFileTarget(target string) (*os.File, error) {
+	file, err := os.OpenFile(target, os.O_RDONLY|os.O_CREATE, 0600)
+	if err == nil {
+		return file, nil
+	}
+	if !errors.Is(err, syscall.ENXIO) && !errors.Is(err, syscall.ELOOP) {
+		return nil, err
+	}
+	if removeErr := os.Remove(target); removeErr != nil && !os.IsNotExist(removeErr) {
+		if errors.Is(removeErr, syscall.EBUSY) {
+			_ = unix.Unmount(target, unix.MNT_DETACH)
+			removeErr = os.Remove(target)
+		}
+		if removeErr != nil && !os.IsNotExist(removeErr) {
+			return nil, removeErr
+		}
+	}
+	return os.OpenFile(target, os.O_RDONLY|os.O_CREATE, 0600)
+}
+
+func mountHostFDDir(root string) (string, error) {
+	source := "/proc/self/fd"
+	if info, err := os.Stat(source); err != nil || !info.IsDir() {
+		return "", nil
+	}
+	inner := "/run/octopos/host-fd"
+	target := filepath.Join(root, strings.TrimPrefix(inner, string(filepath.Separator)))
+	if err := createBindDirTarget(target); err != nil {
+		return "", fmt.Errorf("create host fd target %s: %w", target, err)
+	}
+	if err := bindMount(source, target, false); err != nil {
+		return "", fmt.Errorf("mount host fd projection: %w", err)
+	}
+	return inner, nil
+}
+
+func createBindDirTarget(target string) error {
+	if info, err := os.Lstat(target); err == nil {
+		if info.IsDir() {
+			return nil
+		}
+		if err := os.Remove(target); err != nil {
+			if errors.Is(err, syscall.EBUSY) {
+				_ = unix.Unmount(target, unix.MNT_DETACH)
+				err = os.Remove(target)
+			}
+			if err != nil && !os.IsNotExist(err) {
+				return err
+			}
+		}
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	if err := os.MkdirAll(target, 0755); err != nil {
+		if os.IsExist(err) {
+			_ = unix.Unmount(target, unix.MNT_DETACH)
+			_ = os.RemoveAll(target)
+			return os.MkdirAll(target, 0755)
+		}
+		return err
 	}
 	return nil
 }

@@ -36,6 +36,9 @@ type provisionConfig struct {
 	RequireSSI    bool
 	ClusterFSMeta string
 	ClusterFSOpts string
+	ObjectProxy   bool
+	ObjectListen  string
+	ObjectTargets string
 }
 
 func (p *provisionConfig) sshCmd(cmd string) *exec.Cmd {
@@ -97,7 +100,7 @@ func (p *provisionConfig) runOutput(cmd *exec.Cmd) (string, error) {
 
 func (p *provisionConfig) installRemoteClusterFSService() error {
 	tmpSvc := "/tmp/octopos-clusterfs.service"
-	if err := os.WriteFile(tmpSvc, []byte(clusterFSUnitContent(p.ClusterRoot, p.ClusterFSMeta, p.ClusterFSOpts)), 0644); err != nil {
+	if err := os.WriteFile(tmpSvc, []byte(clusterFSUnitContent(p.ClusterRoot, p.ClusterFSMeta, p.ClusterFSOpts, p.ObjectProxy)), 0644); err != nil {
 		return fmt.Errorf("write clusterfs service file: %w", err)
 	}
 	defer os.Remove(tmpSvc)
@@ -106,6 +109,26 @@ func (p *provisionConfig) installRemoteClusterFSService() error {
 	}
 	if err := p.run("install clusterfs systemd unit",
 		p.sshCmd("sudo cp /tmp/octopos-clusterfs.service /etc/systemd/system/ && sudo systemctl daemon-reload")); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (p *provisionConfig) installRemoteObjectStoreProxy() error {
+	unit, err := objectStoreProxyUnitContent(p.ObjectListen, p.ObjectTargets)
+	if err != nil {
+		return err
+	}
+	tmpSvc := "/tmp/octopos-objectstore-proxy.service"
+	if err := os.WriteFile(tmpSvc, []byte(unit), 0644); err != nil {
+		return fmt.Errorf("write object-store proxy service: %w", err)
+	}
+	defer os.Remove(tmpSvc)
+	if err := p.run("scp object-store proxy unit", p.scpCmd(tmpSvc, "/tmp/octopos-objectstore-proxy.service")); err != nil {
+		return err
+	}
+	installCmd := "sudo install -m 0644 /tmp/octopos-objectstore-proxy.service /etc/systemd/system/octopos-objectstore-proxy.service && sudo systemctl daemon-reload && sudo systemctl enable octopos-objectstore-proxy && sudo systemctl restart octopos-objectstore-proxy"
+	if err := p.run("install object-store proxy service", p.sshCmd(installCmd)); err != nil {
 		return err
 	}
 	return nil
@@ -258,12 +281,24 @@ PersistentKeepalive = 25
 		{"octoposd", "./cmd/octoposd"},
 		{"octoposctl", "./cmd/octoposctl"},
 		{"octopos-exec", "./cmd/octopos-exec"},
+		{"octopos-remote-child", "./cmd/octopos-remote-child"},
+		{"octopos-child-supervisor", "./cmd/octopos-child-supervisor"},
+	}
+	if cfg.ObjectProxy {
+		buildTargets = append(buildTargets, struct{ bin, pkg string }{"octopos-objectstore-proxy", "./cmd/octopos-objectstore-proxy"})
 	}
 	for _, t := range buildTargets {
 		if err := cfg.run(fmt.Sprintf("go build %s", t.bin),
 			exec.Command("go", "build", "-o", filepath.Join(cfg.BinDir, t.bin), t.pkg)); err != nil {
 			return err
 		}
+	}
+	preloadBuildPath := remoteChildPreloadBuildPath(cfg.BinDir)
+	if err := ensureRemoteChildPreloadBuildDir(preloadBuildPath); err != nil {
+		return fmt.Errorf("prepare remote child preload build dir: %w", err)
+	}
+	if err := cfg.run("build remote child preload runtime", remoteChildPreloadBuildCmd(preloadBuildPath)); err != nil {
+		return err
 	}
 
 	// 4. Build eBPF programs (optional)
@@ -292,7 +327,10 @@ PersistentKeepalive = 25
 
 	// 6. Deploy binaries to node
 	fmt.Println("[5/7] Deploying binaries...")
-	binaries := []string{"octoposd", "octoposctl", "octopos-exec"}
+	binaries := []string{"octoposd", "octoposctl", "octopos-exec", "octopos-remote-child", "octopos-child-supervisor"}
+	if cfg.ObjectProxy {
+		binaries = append(binaries, "octopos-objectstore-proxy")
+	}
 	if cfg.FUSEEnabled {
 		binaries = append(binaries, "octopos-procfs", "octopos-devfs", "octopos-sysfs")
 	}
@@ -302,6 +340,9 @@ PersistentKeepalive = 25
 			return err
 		}
 	}
+	if err := cfg.run(fmt.Sprintf("scp %s", remoteChildPreloadName), cfg.scpCmd(preloadBuildPath, "/tmp/"+remoteChildPreloadName)); err != nil {
+		return err
+	}
 
 	deployCmd := "sudo install -m 0755"
 	for _, bin := range binaries {
@@ -310,6 +351,19 @@ PersistentKeepalive = 25
 	deployCmd += " /usr/local/bin/"
 	if err := cfg.run("install to /usr/local/bin", cfg.sshCmd(deployCmd)); err != nil {
 		return err
+	}
+	installPreloadCmd := fmt.Sprintf("sudo install -d %s && sudo install -m 0755 /tmp/%s %s",
+		shellQuote(remoteChildPreloadInstallDir),
+		remoteChildPreloadName,
+		shellQuote(remoteChildPreloadPath),
+	)
+	if err := cfg.run("install remote child preload runtime", cfg.sshCmd(installPreloadCmd)); err != nil {
+		return err
+	}
+	if cfg.RequireSSI && cfg.ObjectProxy {
+		if err := cfg.installRemoteObjectStoreProxy(); err != nil {
+			return err
+		}
 	}
 
 	// 7. Configure systemd service
@@ -329,6 +383,7 @@ Requires=octopos-clusterfs.service
 ExecStart=/usr/local/bin/octoposd --node-id %s --grpc-addr 0.0.0.0:%d --wg-interface wg-octopos --cluster-root %s --ssi-rootfs %s --require-ssi=%t%s
 Restart=always
 RestartSec=5
+KillMode=process
 User=root
 
 [Install]
@@ -389,6 +444,26 @@ WantedBy=multi-user.target
 	)
 	for _, cmd := range startCommands {
 		if err := cfg.run(cmd, cfg.sshCmd(cmd)); err != nil {
+			return err
+		}
+	}
+	if cfg.RequireSSI {
+		ssiBinDir := filepath.Join(cfg.SSIRootFS, "usr/local/bin")
+		installRemoteChild := fmt.Sprintf("sudo install -d %s && sudo install -m 0755 /tmp/octopos-remote-child %s && sudo install -m 0755 /tmp/octopos-child-supervisor %s",
+			shellQuote(ssiBinDir),
+			shellQuote(filepath.Join(ssiBinDir, "octopos-remote-child")),
+			shellQuote(filepath.Join(ssiBinDir, "octopos-child-supervisor")),
+		)
+		if err := cfg.run("install octopos-remote-child into SSI root", cfg.sshCmd(installRemoteChild)); err != nil {
+			return err
+		}
+		ssiLibDir := filepath.Join(cfg.SSIRootFS, "usr/local/lib/octopos")
+		installPreload := fmt.Sprintf("sudo install -d %s && sudo install -m 0755 /tmp/%s %s",
+			shellQuote(ssiLibDir),
+			remoteChildPreloadName,
+			shellQuote(filepath.Join(ssiLibDir, remoteChildPreloadName)),
+		)
+		if err := cfg.run("install remote child preload runtime into SSI root", cfg.sshCmd(installPreload)); err != nil {
 			return err
 		}
 	}
@@ -509,4 +584,8 @@ func autoAssignWGIP() (string, error) {
 		}
 	}
 	return "", fmt.Errorf("no available IPs in 10.0.0.0/24")
+}
+
+func shellQuote(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'"
 }

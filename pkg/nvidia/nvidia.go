@@ -20,8 +20,78 @@ import (
 const (
 	DefaultProjectionRoot     = "/run/octopos/nvidia"
 	DefaultDriverCapabilities = "compute,utility"
+	ProfileScriptRelPath      = "etc/profile.d/octopos-nvidia.sh"
 	defaultDevRoot            = "/dev"
 )
+
+const ProfileScript = `# OctopOS NVIDIA runtime environment.
+# This script is conditional so non-GPU exec sessions do not inherit NVIDIA paths.
+
+_octopos_nvidia_has_gpu=0
+for _octopos_nvidia_dev in /dev/nvidia[0-9]*; do
+    [ -e "$_octopos_nvidia_dev" ] || continue
+    _octopos_nvidia_has_gpu=1
+    break
+done
+
+if [ "$_octopos_nvidia_has_gpu" = "1" ] && [ -d /usr/local/nvidia ]; then
+    _octopos_nvidia_prepend_path() {
+        _octopos_nvidia_dir=$1
+        _octopos_nvidia_var=$2
+        [ -d "$_octopos_nvidia_dir" ] || return 0
+        eval "_octopos_nvidia_current=\${$_octopos_nvidia_var:-}"
+        case ":$_octopos_nvidia_current:" in
+            *:"$_octopos_nvidia_dir":*) return 0 ;;
+        esac
+        if [ -n "$_octopos_nvidia_current" ]; then
+            eval "$_octopos_nvidia_var=\$_octopos_nvidia_dir:\$_octopos_nvidia_current"
+        else
+            eval "$_octopos_nvidia_var=\$_octopos_nvidia_dir"
+        fi
+        export "$_octopos_nvidia_var"
+    }
+
+    _octopos_nvidia_prepend_path /usr/local/cuda/bin PATH
+    _octopos_nvidia_prepend_path /usr/local/nvidia/bin PATH
+    _octopos_nvidia_prepend_path /usr/local/cuda/lib64 LD_LIBRARY_PATH
+    _octopos_nvidia_prepend_path /usr/local/nvidia/lib64 LD_LIBRARY_PATH
+
+    if [ -z "${NVIDIA_DRIVER_CAPABILITIES:-}" ]; then
+        NVIDIA_DRIVER_CAPABILITIES=compute,utility
+        export NVIDIA_DRIVER_CAPABILITIES
+    fi
+
+    _octopos_nvidia_visible=
+    for _octopos_nvidia_dev in /dev/nvidia[0-9]*; do
+        [ -e "$_octopos_nvidia_dev" ] || continue
+        _octopos_nvidia_index=${_octopos_nvidia_dev#/dev/nvidia}
+        case "$_octopos_nvidia_index" in
+            ""|*[!0-9]*) continue ;;
+        esac
+        if [ -z "$_octopos_nvidia_visible" ]; then
+            _octopos_nvidia_visible=$_octopos_nvidia_index
+        else
+            _octopos_nvidia_visible=$_octopos_nvidia_visible,$_octopos_nvidia_index
+        fi
+    done
+
+    if [ -n "$_octopos_nvidia_visible" ]; then
+        if [ -z "${NVIDIA_VISIBLE_DEVICES:-}" ]; then
+            NVIDIA_VISIBLE_DEVICES=$_octopos_nvidia_visible
+            export NVIDIA_VISIBLE_DEVICES
+        fi
+        if [ -z "${CUDA_VISIBLE_DEVICES:-}" ]; then
+            CUDA_VISIBLE_DEVICES=$_octopos_nvidia_visible
+            export CUDA_VISIBLE_DEVICES
+        fi
+    fi
+
+    unset _octopos_nvidia_visible _octopos_nvidia_index _octopos_nvidia_current _octopos_nvidia_dir _octopos_nvidia_var
+    unset -f _octopos_nvidia_prepend_path 2>/dev/null || true
+fi
+
+unset _octopos_nvidia_has_gpu _octopos_nvidia_dev
+`
 
 var driverLibraryPatterns = []string{
 	"libcuda.so*",
@@ -237,6 +307,43 @@ func EnsureProjection(root string) error {
 		if err := projectLibrary(lib, libDir); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+// EnsureProfile installs the profile.d hook used by login shells inside the SSI root.
+func EnsureProfile(root string) error {
+	if root == "" {
+		return fmt.Errorf("empty SSI root")
+	}
+	root = filepath.Clean(root)
+	dir := filepath.Join(root, "etc", "profile.d")
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return fmt.Errorf("create NVIDIA profile directory %s: %w", dir, err)
+	}
+	path := filepath.Join(root, ProfileScriptRelPath)
+	if existing, err := os.ReadFile(path); err == nil && string(existing) == ProfileScript {
+		return nil
+	}
+	tmp, err := os.CreateTemp(dir, ".octopos-nvidia-*.tmp")
+	if err != nil {
+		return fmt.Errorf("create temporary NVIDIA profile script: %w", err)
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+	if _, err := tmp.WriteString(ProfileScript); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("write temporary NVIDIA profile script: %w", err)
+	}
+	if err := tmp.Chmod(0644); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("chmod temporary NVIDIA profile script: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("close temporary NVIDIA profile script: %w", err)
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		return fmt.Errorf("install NVIDIA profile script %s: %w", path, err)
 	}
 	return nil
 }

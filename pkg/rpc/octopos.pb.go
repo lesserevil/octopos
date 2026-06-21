@@ -2608,6 +2608,8 @@ type ProcessInfo struct {
 	RssBytes      uint64                 `protobuf:"varint,14,opt,name=rss_bytes,json=rssBytes,proto3" json:"rss_bytes,omitempty"`
 	State         string                 `protobuf:"bytes,15,opt,name=state,proto3" json:"state,omitempty"`
 	VfioGroups    []string               `protobuf:"bytes,16,rep,name=vfio_groups,json=vfioGroups,proto3" json:"vfio_groups,omitempty"`
+	ProcessKind   string                 `protobuf:"bytes,17,opt,name=process_kind,json=processKind,proto3" json:"process_kind,omitempty"`
+	RemoteChild   *RemoteChildInfo       `protobuf:"bytes,18,opt,name=remote_child,json=remoteChild,proto3" json:"remote_child,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2754,6 +2756,140 @@ func (x *ProcessInfo) GetVfioGroups() []string {
 	return nil
 }
 
+func (x *ProcessInfo) GetProcessKind() string {
+	if x != nil {
+		return x.ProcessKind
+	}
+	return ""
+}
+
+func (x *ProcessInfo) GetRemoteChild() *RemoteChildInfo {
+	if x != nil {
+		return x.RemoteChild
+	}
+	return nil
+}
+
+type ListRemoteChildrenRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	SessionId     string                 `protobuf:"bytes,1,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
+	ParentJobId   string                 `protobuf:"bytes,2,opt,name=parent_job_id,json=parentJobId,proto3" json:"parent_job_id,omitempty"`
+	RemoteJobId   string                 `protobuf:"bytes,3,opt,name=remote_job_id,json=remoteJobId,proto3" json:"remote_job_id,omitempty"`
+	RemoteNodeId  string                 `protobuf:"bytes,4,opt,name=remote_node_id,json=remoteNodeId,proto3" json:"remote_node_id,omitempty"`
+	ActiveOnly    bool                   `protobuf:"varint,5,opt,name=active_only,json=activeOnly,proto3" json:"active_only,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListRemoteChildrenRequest) Reset() {
+	*x = ListRemoteChildrenRequest{}
+	mi := &file_pkg_rpc_octopos_proto_msgTypes[39]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListRemoteChildrenRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListRemoteChildrenRequest) ProtoMessage() {}
+
+func (x *ListRemoteChildrenRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_pkg_rpc_octopos_proto_msgTypes[39]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListRemoteChildrenRequest.ProtoReflect.Descriptor instead.
+func (*ListRemoteChildrenRequest) Descriptor() ([]byte, []int) {
+	return file_pkg_rpc_octopos_proto_rawDescGZIP(), []int{39}
+}
+
+func (x *ListRemoteChildrenRequest) GetSessionId() string {
+	if x != nil {
+		return x.SessionId
+	}
+	return ""
+}
+
+func (x *ListRemoteChildrenRequest) GetParentJobId() string {
+	if x != nil {
+		return x.ParentJobId
+	}
+	return ""
+}
+
+func (x *ListRemoteChildrenRequest) GetRemoteJobId() string {
+	if x != nil {
+		return x.RemoteJobId
+	}
+	return ""
+}
+
+func (x *ListRemoteChildrenRequest) GetRemoteNodeId() string {
+	if x != nil {
+		return x.RemoteNodeId
+	}
+	return ""
+}
+
+func (x *ListRemoteChildrenRequest) GetActiveOnly() bool {
+	if x != nil {
+		return x.ActiveOnly
+	}
+	return false
+}
+
+type ListRemoteChildrenResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Children      []*RemoteChildRecord   `protobuf:"bytes,1,rep,name=children,proto3" json:"children,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListRemoteChildrenResponse) Reset() {
+	*x = ListRemoteChildrenResponse{}
+	mi := &file_pkg_rpc_octopos_proto_msgTypes[40]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListRemoteChildrenResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListRemoteChildrenResponse) ProtoMessage() {}
+
+func (x *ListRemoteChildrenResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_pkg_rpc_octopos_proto_msgTypes[40]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListRemoteChildrenResponse.ProtoReflect.Descriptor instead.
+func (*ListRemoteChildrenResponse) Descriptor() ([]byte, []int) {
+	return file_pkg_rpc_octopos_proto_rawDescGZIP(), []int{40}
+}
+
+func (x *ListRemoteChildrenResponse) GetChildren() []*RemoteChildRecord {
+	if x != nil {
+		return x.Children
+	}
+	return nil
+}
+
 type SessionInfo struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	SessionId     string                 `protobuf:"bytes,1,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
@@ -2769,7 +2905,7 @@ type SessionInfo struct {
 
 func (x *SessionInfo) Reset() {
 	*x = SessionInfo{}
-	mi := &file_pkg_rpc_octopos_proto_msgTypes[39]
+	mi := &file_pkg_rpc_octopos_proto_msgTypes[41]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2781,7 +2917,7 @@ func (x *SessionInfo) String() string {
 func (*SessionInfo) ProtoMessage() {}
 
 func (x *SessionInfo) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_rpc_octopos_proto_msgTypes[39]
+	mi := &file_pkg_rpc_octopos_proto_msgTypes[41]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2794,7 +2930,7 @@ func (x *SessionInfo) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SessionInfo.ProtoReflect.Descriptor instead.
 func (*SessionInfo) Descriptor() ([]byte, []int) {
-	return file_pkg_rpc_octopos_proto_rawDescGZIP(), []int{39}
+	return file_pkg_rpc_octopos_proto_rawDescGZIP(), []int{41}
 }
 
 func (x *SessionInfo) GetSessionId() string {
@@ -2858,13 +2994,14 @@ type JobInfo struct {
 	FinishedAt    int64                  `protobuf:"varint,8,opt,name=finished_at,json=finishedAt,proto3" json:"finished_at,omitempty"`
 	ExitCodes     []int32                `protobuf:"varint,9,rep,packed,name=exit_codes,json=exitCodes,proto3" json:"exit_codes,omitempty"`
 	PrimaryNode   string                 `protobuf:"bytes,10,opt,name=primary_node,json=primaryNode,proto3" json:"primary_node,omitempty"`
+	RemoteChild   *RemoteChildInfo       `protobuf:"bytes,11,opt,name=remote_child,json=remoteChild,proto3" json:"remote_child,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *JobInfo) Reset() {
 	*x = JobInfo{}
-	mi := &file_pkg_rpc_octopos_proto_msgTypes[40]
+	mi := &file_pkg_rpc_octopos_proto_msgTypes[42]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2876,7 +3013,7 @@ func (x *JobInfo) String() string {
 func (*JobInfo) ProtoMessage() {}
 
 func (x *JobInfo) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_rpc_octopos_proto_msgTypes[40]
+	mi := &file_pkg_rpc_octopos_proto_msgTypes[42]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2889,7 +3026,7 @@ func (x *JobInfo) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use JobInfo.ProtoReflect.Descriptor instead.
 func (*JobInfo) Descriptor() ([]byte, []int) {
-	return file_pkg_rpc_octopos_proto_rawDescGZIP(), []int{40}
+	return file_pkg_rpc_octopos_proto_rawDescGZIP(), []int{42}
 }
 
 func (x *JobInfo) GetJobId() string {
@@ -2962,6 +3099,333 @@ func (x *JobInfo) GetPrimaryNode() string {
 	return ""
 }
 
+func (x *JobInfo) GetRemoteChild() *RemoteChildInfo {
+	if x != nil {
+		return x.RemoteChild
+	}
+	return nil
+}
+
+type RemoteChildInfo struct {
+	state           protoimpl.MessageState `protogen:"open.v1"`
+	ParentJobId     string                 `protobuf:"bytes,1,opt,name=parent_job_id,json=parentJobId,proto3" json:"parent_job_id,omitempty"`
+	ParentPid       int32                  `protobuf:"varint,2,opt,name=parent_pid,json=parentPid,proto3" json:"parent_pid,omitempty"`
+	ShadowPid       int32                  `protobuf:"varint,3,opt,name=shadow_pid,json=shadowPid,proto3" json:"shadow_pid,omitempty"`
+	RemoteJobId     string                 `protobuf:"bytes,4,opt,name=remote_job_id,json=remoteJobId,proto3" json:"remote_job_id,omitempty"`
+	RemoteNodeId    string                 `protobuf:"bytes,5,opt,name=remote_node_id,json=remoteNodeId,proto3" json:"remote_node_id,omitempty"`
+	RemoteGlobalPid uint64                 `protobuf:"varint,6,opt,name=remote_global_pid,json=remoteGlobalPid,proto3" json:"remote_global_pid,omitempty"`
+	Command         []string               `protobuf:"bytes,7,rep,name=command,proto3" json:"command,omitempty"`
+	PlacementReason string                 `protobuf:"bytes,8,opt,name=placement_reason,json=placementReason,proto3" json:"placement_reason,omitempty"`
+	FallbackReason  string                 `protobuf:"bytes,9,opt,name=fallback_reason,json=fallbackReason,proto3" json:"fallback_reason,omitempty"`
+	State           string                 `protobuf:"bytes,10,opt,name=state,proto3" json:"state,omitempty"`
+	FailureReason   string                 `protobuf:"bytes,11,opt,name=failure_reason,json=failureReason,proto3" json:"failure_reason,omitempty"`
+	StartedAt       int64                  `protobuf:"varint,12,opt,name=started_at,json=startedAt,proto3" json:"started_at,omitempty"`
+	FinishedAt      int64                  `protobuf:"varint,13,opt,name=finished_at,json=finishedAt,proto3" json:"finished_at,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
+}
+
+func (x *RemoteChildInfo) Reset() {
+	*x = RemoteChildInfo{}
+	mi := &file_pkg_rpc_octopos_proto_msgTypes[43]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RemoteChildInfo) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RemoteChildInfo) ProtoMessage() {}
+
+func (x *RemoteChildInfo) ProtoReflect() protoreflect.Message {
+	mi := &file_pkg_rpc_octopos_proto_msgTypes[43]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RemoteChildInfo.ProtoReflect.Descriptor instead.
+func (*RemoteChildInfo) Descriptor() ([]byte, []int) {
+	return file_pkg_rpc_octopos_proto_rawDescGZIP(), []int{43}
+}
+
+func (x *RemoteChildInfo) GetParentJobId() string {
+	if x != nil {
+		return x.ParentJobId
+	}
+	return ""
+}
+
+func (x *RemoteChildInfo) GetParentPid() int32 {
+	if x != nil {
+		return x.ParentPid
+	}
+	return 0
+}
+
+func (x *RemoteChildInfo) GetShadowPid() int32 {
+	if x != nil {
+		return x.ShadowPid
+	}
+	return 0
+}
+
+func (x *RemoteChildInfo) GetRemoteJobId() string {
+	if x != nil {
+		return x.RemoteJobId
+	}
+	return ""
+}
+
+func (x *RemoteChildInfo) GetRemoteNodeId() string {
+	if x != nil {
+		return x.RemoteNodeId
+	}
+	return ""
+}
+
+func (x *RemoteChildInfo) GetRemoteGlobalPid() uint64 {
+	if x != nil {
+		return x.RemoteGlobalPid
+	}
+	return 0
+}
+
+func (x *RemoteChildInfo) GetCommand() []string {
+	if x != nil {
+		return x.Command
+	}
+	return nil
+}
+
+func (x *RemoteChildInfo) GetPlacementReason() string {
+	if x != nil {
+		return x.PlacementReason
+	}
+	return ""
+}
+
+func (x *RemoteChildInfo) GetFallbackReason() string {
+	if x != nil {
+		return x.FallbackReason
+	}
+	return ""
+}
+
+func (x *RemoteChildInfo) GetState() string {
+	if x != nil {
+		return x.State
+	}
+	return ""
+}
+
+func (x *RemoteChildInfo) GetFailureReason() string {
+	if x != nil {
+		return x.FailureReason
+	}
+	return ""
+}
+
+func (x *RemoteChildInfo) GetStartedAt() int64 {
+	if x != nil {
+		return x.StartedAt
+	}
+	return 0
+}
+
+func (x *RemoteChildInfo) GetFinishedAt() int64 {
+	if x != nil {
+		return x.FinishedAt
+	}
+	return 0
+}
+
+type RemoteChildRecord struct {
+	state           protoimpl.MessageState `protogen:"open.v1"`
+	SessionId       string                 `protobuf:"bytes,1,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
+	ParentJobId     string                 `protobuf:"bytes,2,opt,name=parent_job_id,json=parentJobId,proto3" json:"parent_job_id,omitempty"`
+	ParentPid       int32                  `protobuf:"varint,3,opt,name=parent_pid,json=parentPid,proto3" json:"parent_pid,omitempty"`
+	ShadowPid       int32                  `protobuf:"varint,4,opt,name=shadow_pid,json=shadowPid,proto3" json:"shadow_pid,omitempty"`
+	RemoteJobId     string                 `protobuf:"bytes,5,opt,name=remote_job_id,json=remoteJobId,proto3" json:"remote_job_id,omitempty"`
+	RemoteNodeId    string                 `protobuf:"bytes,6,opt,name=remote_node_id,json=remoteNodeId,proto3" json:"remote_node_id,omitempty"`
+	RemoteGlobalPid uint64                 `protobuf:"varint,7,opt,name=remote_global_pid,json=remoteGlobalPid,proto3" json:"remote_global_pid,omitempty"`
+	Command         []string               `protobuf:"bytes,8,rep,name=command,proto3" json:"command,omitempty"`
+	State           string                 `protobuf:"bytes,9,opt,name=state,proto3" json:"state,omitempty"`
+	StartedAt       int64                  `protobuf:"varint,10,opt,name=started_at,json=startedAt,proto3" json:"started_at,omitempty"`
+	FinishedAt      int64                  `protobuf:"varint,11,opt,name=finished_at,json=finishedAt,proto3" json:"finished_at,omitempty"`
+	ExitCode        int32                  `protobuf:"varint,12,opt,name=exit_code,json=exitCode,proto3" json:"exit_code,omitempty"`
+	Signal          int32                  `protobuf:"varint,13,opt,name=signal,proto3" json:"signal,omitempty"`
+	PlacementReason string                 `protobuf:"bytes,14,opt,name=placement_reason,json=placementReason,proto3" json:"placement_reason,omitempty"`
+	FallbackReason  string                 `protobuf:"bytes,15,opt,name=fallback_reason,json=fallbackReason,proto3" json:"fallback_reason,omitempty"`
+	FailureReason   string                 `protobuf:"bytes,16,opt,name=failure_reason,json=failureReason,proto3" json:"failure_reason,omitempty"`
+	CreatedAt       int64                  `protobuf:"varint,17,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
+	UpdatedAt       int64                  `protobuf:"varint,18,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
+}
+
+func (x *RemoteChildRecord) Reset() {
+	*x = RemoteChildRecord{}
+	mi := &file_pkg_rpc_octopos_proto_msgTypes[44]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RemoteChildRecord) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RemoteChildRecord) ProtoMessage() {}
+
+func (x *RemoteChildRecord) ProtoReflect() protoreflect.Message {
+	mi := &file_pkg_rpc_octopos_proto_msgTypes[44]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RemoteChildRecord.ProtoReflect.Descriptor instead.
+func (*RemoteChildRecord) Descriptor() ([]byte, []int) {
+	return file_pkg_rpc_octopos_proto_rawDescGZIP(), []int{44}
+}
+
+func (x *RemoteChildRecord) GetSessionId() string {
+	if x != nil {
+		return x.SessionId
+	}
+	return ""
+}
+
+func (x *RemoteChildRecord) GetParentJobId() string {
+	if x != nil {
+		return x.ParentJobId
+	}
+	return ""
+}
+
+func (x *RemoteChildRecord) GetParentPid() int32 {
+	if x != nil {
+		return x.ParentPid
+	}
+	return 0
+}
+
+func (x *RemoteChildRecord) GetShadowPid() int32 {
+	if x != nil {
+		return x.ShadowPid
+	}
+	return 0
+}
+
+func (x *RemoteChildRecord) GetRemoteJobId() string {
+	if x != nil {
+		return x.RemoteJobId
+	}
+	return ""
+}
+
+func (x *RemoteChildRecord) GetRemoteNodeId() string {
+	if x != nil {
+		return x.RemoteNodeId
+	}
+	return ""
+}
+
+func (x *RemoteChildRecord) GetRemoteGlobalPid() uint64 {
+	if x != nil {
+		return x.RemoteGlobalPid
+	}
+	return 0
+}
+
+func (x *RemoteChildRecord) GetCommand() []string {
+	if x != nil {
+		return x.Command
+	}
+	return nil
+}
+
+func (x *RemoteChildRecord) GetState() string {
+	if x != nil {
+		return x.State
+	}
+	return ""
+}
+
+func (x *RemoteChildRecord) GetStartedAt() int64 {
+	if x != nil {
+		return x.StartedAt
+	}
+	return 0
+}
+
+func (x *RemoteChildRecord) GetFinishedAt() int64 {
+	if x != nil {
+		return x.FinishedAt
+	}
+	return 0
+}
+
+func (x *RemoteChildRecord) GetExitCode() int32 {
+	if x != nil {
+		return x.ExitCode
+	}
+	return 0
+}
+
+func (x *RemoteChildRecord) GetSignal() int32 {
+	if x != nil {
+		return x.Signal
+	}
+	return 0
+}
+
+func (x *RemoteChildRecord) GetPlacementReason() string {
+	if x != nil {
+		return x.PlacementReason
+	}
+	return ""
+}
+
+func (x *RemoteChildRecord) GetFallbackReason() string {
+	if x != nil {
+		return x.FallbackReason
+	}
+	return ""
+}
+
+func (x *RemoteChildRecord) GetFailureReason() string {
+	if x != nil {
+		return x.FailureReason
+	}
+	return ""
+}
+
+func (x *RemoteChildRecord) GetCreatedAt() int64 {
+	if x != nil {
+		return x.CreatedAt
+	}
+	return 0
+}
+
+func (x *RemoteChildRecord) GetUpdatedAt() int64 {
+	if x != nil {
+		return x.UpdatedAt
+	}
+	return 0
+}
+
 type CommandSpec struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Argv          []string               `protobuf:"bytes,1,rep,name=argv,proto3" json:"argv,omitempty"`
@@ -2974,7 +3438,7 @@ type CommandSpec struct {
 
 func (x *CommandSpec) Reset() {
 	*x = CommandSpec{}
-	mi := &file_pkg_rpc_octopos_proto_msgTypes[41]
+	mi := &file_pkg_rpc_octopos_proto_msgTypes[45]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2986,7 +3450,7 @@ func (x *CommandSpec) String() string {
 func (*CommandSpec) ProtoMessage() {}
 
 func (x *CommandSpec) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_rpc_octopos_proto_msgTypes[41]
+	mi := &file_pkg_rpc_octopos_proto_msgTypes[45]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2999,7 +3463,7 @@ func (x *CommandSpec) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CommandSpec.ProtoReflect.Descriptor instead.
 func (*CommandSpec) Descriptor() ([]byte, []int) {
-	return file_pkg_rpc_octopos_proto_rawDescGZIP(), []int{41}
+	return file_pkg_rpc_octopos_proto_rawDescGZIP(), []int{45}
 }
 
 func (x *CommandSpec) GetArgv() []string {
@@ -3236,7 +3700,7 @@ const file_pkg_rpc_octopos_proto_rawDesc = "" +
 	"\tvendor_id\x18\x01 \x01(\tR\bvendorId\x12\x1b\n" +
 	"\tdevice_id\x18\x02 \x01(\tR\bdeviceId\x12\x14\n" +
 	"\x05class\x18\x03 \x01(\tR\x05class\x12\x14\n" +
-	"\x05count\x18\x04 \x01(\x05R\x05count\"\xa4\x03\n" +
+	"\x05count\x18\x04 \x01(\x05R\x05count\"\x88\x04\n" +
 	"\vProcessInfo\x12\x1d\n" +
 	"\n" +
 	"global_pid\x18\x01 \x01(\x04R\tglobalPid\x12\x17\n" +
@@ -3259,7 +3723,19 @@ const file_pkg_rpc_octopos_proto_rawDesc = "" +
 	"\trss_bytes\x18\x0e \x01(\x04R\brssBytes\x12\x14\n" +
 	"\x05state\x18\x0f \x01(\tR\x05state\x12\x1f\n" +
 	"\vvfio_groups\x18\x10 \x03(\tR\n" +
-	"vfioGroups\"\x89\x02\n" +
+	"vfioGroups\x12!\n" +
+	"\fprocess_kind\x18\x11 \x01(\tR\vprocessKind\x12?\n" +
+	"\fremote_child\x18\x12 \x01(\v2\x1c.octopos.rpc.RemoteChildInfoR\vremoteChild\"\xc9\x01\n" +
+	"\x19ListRemoteChildrenRequest\x12\x1d\n" +
+	"\n" +
+	"session_id\x18\x01 \x01(\tR\tsessionId\x12\"\n" +
+	"\rparent_job_id\x18\x02 \x01(\tR\vparentJobId\x12\"\n" +
+	"\rremote_job_id\x18\x03 \x01(\tR\vremoteJobId\x12$\n" +
+	"\x0eremote_node_id\x18\x04 \x01(\tR\fremoteNodeId\x12\x1f\n" +
+	"\vactive_only\x18\x05 \x01(\bR\n" +
+	"activeOnly\"X\n" +
+	"\x1aListRemoteChildrenResponse\x12:\n" +
+	"\bchildren\x18\x01 \x03(\v2\x1e.octopos.rpc.RemoteChildRecordR\bchildren\"\x89\x02\n" +
 	"\vSessionInfo\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\x01 \x01(\tR\tsessionId\x12\x12\n" +
@@ -3272,7 +3748,7 @@ const file_pkg_rpc_octopos_proto_rawDesc = "" +
 	"\x03cwd\x18\a \x01(\tR\x03cwd\x1a6\n" +
 	"\bEnvEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xc0\x03\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\x81\x04\n" +
 	"\aJobInfo\x12\x15\n" +
 	"\x06job_id\x18\x01 \x01(\tR\x05jobId\x12\x1d\n" +
 	"\n" +
@@ -3289,10 +3765,57 @@ const file_pkg_rpc_octopos_proto_rawDesc = "" +
 	"\n" +
 	"exit_codes\x18\t \x03(\x05R\texitCodes\x12!\n" +
 	"\fprimary_node\x18\n" +
-	" \x01(\tR\vprimaryNode\x1a:\n" +
+	" \x01(\tR\vprimaryNode\x12?\n" +
+	"\fremote_child\x18\v \x01(\v2\x1c.octopos.rpc.RemoteChildInfoR\vremoteChild\x1a:\n" +
 	"\fPipeMapEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\x05R\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\x05R\x05value:\x028\x01\"\x8d\x01\n" +
+	"\x05value\x18\x02 \x01(\x05R\x05value:\x028\x01\"\xd4\x03\n" +
+	"\x0fRemoteChildInfo\x12\"\n" +
+	"\rparent_job_id\x18\x01 \x01(\tR\vparentJobId\x12\x1d\n" +
+	"\n" +
+	"parent_pid\x18\x02 \x01(\x05R\tparentPid\x12\x1d\n" +
+	"\n" +
+	"shadow_pid\x18\x03 \x01(\x05R\tshadowPid\x12\"\n" +
+	"\rremote_job_id\x18\x04 \x01(\tR\vremoteJobId\x12$\n" +
+	"\x0eremote_node_id\x18\x05 \x01(\tR\fremoteNodeId\x12*\n" +
+	"\x11remote_global_pid\x18\x06 \x01(\x04R\x0fremoteGlobalPid\x12\x18\n" +
+	"\acommand\x18\a \x03(\tR\acommand\x12)\n" +
+	"\x10placement_reason\x18\b \x01(\tR\x0fplacementReason\x12'\n" +
+	"\x0ffallback_reason\x18\t \x01(\tR\x0efallbackReason\x12\x14\n" +
+	"\x05state\x18\n" +
+	" \x01(\tR\x05state\x12%\n" +
+	"\x0efailure_reason\x18\v \x01(\tR\rfailureReason\x12\x1d\n" +
+	"\n" +
+	"started_at\x18\f \x01(\x03R\tstartedAt\x12\x1f\n" +
+	"\vfinished_at\x18\r \x01(\x03R\n" +
+	"finishedAt\"\xe8\x04\n" +
+	"\x11RemoteChildRecord\x12\x1d\n" +
+	"\n" +
+	"session_id\x18\x01 \x01(\tR\tsessionId\x12\"\n" +
+	"\rparent_job_id\x18\x02 \x01(\tR\vparentJobId\x12\x1d\n" +
+	"\n" +
+	"parent_pid\x18\x03 \x01(\x05R\tparentPid\x12\x1d\n" +
+	"\n" +
+	"shadow_pid\x18\x04 \x01(\x05R\tshadowPid\x12\"\n" +
+	"\rremote_job_id\x18\x05 \x01(\tR\vremoteJobId\x12$\n" +
+	"\x0eremote_node_id\x18\x06 \x01(\tR\fremoteNodeId\x12*\n" +
+	"\x11remote_global_pid\x18\a \x01(\x04R\x0fremoteGlobalPid\x12\x18\n" +
+	"\acommand\x18\b \x03(\tR\acommand\x12\x14\n" +
+	"\x05state\x18\t \x01(\tR\x05state\x12\x1d\n" +
+	"\n" +
+	"started_at\x18\n" +
+	" \x01(\x03R\tstartedAt\x12\x1f\n" +
+	"\vfinished_at\x18\v \x01(\x03R\n" +
+	"finishedAt\x12\x1b\n" +
+	"\texit_code\x18\f \x01(\x05R\bexitCode\x12\x16\n" +
+	"\x06signal\x18\r \x01(\x05R\x06signal\x12)\n" +
+	"\x10placement_reason\x18\x0e \x01(\tR\x0fplacementReason\x12'\n" +
+	"\x0ffallback_reason\x18\x0f \x01(\tR\x0efallbackReason\x12%\n" +
+	"\x0efailure_reason\x18\x10 \x01(\tR\rfailureReason\x12\x1d\n" +
+	"\n" +
+	"created_at\x18\x11 \x01(\x03R\tcreatedAt\x12\x1d\n" +
+	"\n" +
+	"updated_at\x18\x12 \x01(\x03R\tupdatedAt\"\x8d\x01\n" +
 	"\vCommandSpec\x12\x12\n" +
 	"\x04argv\x18\x01 \x03(\tR\x04argv\x12\x10\n" +
 	"\x03env\x18\x02 \x03(\tR\x03env\x127\n" +
@@ -3310,8 +3833,7 @@ const file_pkg_rpc_octopos_proto_rawDesc = "" +
 	"\x12JOB_STATUS_RUNNING\x10\x01\x12\x16\n" +
 	"\x12JOB_STATUS_STOPPED\x10\x02\x12\x18\n" +
 	"\x14JOB_STATUS_COMPLETED\x10\x03\x12\x15\n" +
-	"\x11JOB_STATUS_FAILED\x10\x042\xa7\n" +
-	"\n" +
+	"\x11JOB_STATUS_FAILED\x10\x042\xb9\f\n" +
 	"\aCluster\x12S\n" +
 	"\fRegisterNode\x12 .octopos.rpc.RegisterNodeRequest\x1a!.octopos.rpc.RegisterNodeResponse\x12J\n" +
 	"\tHeartbeat\x12\x1d.octopos.rpc.HeartbeatRequest\x1a\x1e.octopos.rpc.HeartbeatResponse\x12\\\n" +
@@ -3322,7 +3844,8 @@ const file_pkg_rpc_octopos_proto_rawDesc = "" +
 	"\fGetJobStatus\x12 .octopos.rpc.GetJobStatusRequest\x1a!.octopos.rpc.GetJobStatusResponse\x12V\n" +
 	"\rListProcesses\x12!.octopos.rpc.ListProcessesRequest\x1a\".octopos.rpc.ListProcessesResponse\x12M\n" +
 	"\n" +
-	"GetProcess\x12\x1e.octopos.rpc.GetProcessRequest\x1a\x1f.octopos.rpc.GetProcessResponse\x12S\n" +
+	"GetProcess\x12\x1e.octopos.rpc.GetProcessRequest\x1a\x1f.octopos.rpc.GetProcessResponse\x12e\n" +
+	"\x12ListRemoteChildren\x12&.octopos.rpc.ListRemoteChildrenRequest\x1a'.octopos.rpc.ListRemoteChildrenResponse\x12S\n" +
 	"\fAllocateVFIO\x12 .octopos.rpc.AllocateVFIORequest\x1a!.octopos.rpc.AllocateVFIOResponse\x12P\n" +
 	"\vReleaseVFIO\x12\x1f.octopos.rpc.ReleaseVFIORequest\x1a .octopos.rpc.ReleaseVFIOResponse\x12Y\n" +
 	"\x0eGetVFIODevices\x12\".octopos.rpc.GetVFIODevicesRequest\x1a#.octopos.rpc.GetVFIODevicesResponse\x12V\n" +
@@ -3330,7 +3853,9 @@ const file_pkg_rpc_octopos_proto_rawDesc = "" +
 	"\x0eDestroySession\x12\".octopos.rpc.DestroySessionRequest\x1a#.octopos.rpc.DestroySessionResponse\x12S\n" +
 	"\fListSessions\x12 .octopos.rpc.ListSessionsRequest\x1a!.octopos.rpc.ListSessionsResponse\x12Q\n" +
 	"\n" +
-	"ExecStream\x12\x1e.octopos.rpc.ExecStreamRequest\x1a\x1f.octopos.rpc.ExecStreamResponse(\x010\x01B$Z\"github.com/octopos/octopos/pkg/rpcb\x06proto3"
+	"ExecStream\x12\x1e.octopos.rpc.ExecStreamRequest\x1a\x1f.octopos.rpc.ExecStreamResponse(\x010\x01\x12O\n" +
+	"\x12RemoteChildExecute\x12\x1b.octopos.rpc.ExecuteRequest\x1a\x1c.octopos.rpc.ExecuteResponse\x12X\n" +
+	"\x11RemoteChildStream\x12\x1e.octopos.rpc.ExecStreamRequest\x1a\x1f.octopos.rpc.ExecStreamResponse(\x010\x01B$Z\"github.com/octopos/octopos/pkg/rpcb\x06proto3"
 
 var (
 	file_pkg_rpc_octopos_proto_rawDescOnce sync.Once
@@ -3345,77 +3870,81 @@ func file_pkg_rpc_octopos_proto_rawDescGZIP() []byte {
 }
 
 var file_pkg_rpc_octopos_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
-var file_pkg_rpc_octopos_proto_msgTypes = make([]protoimpl.MessageInfo, 49)
+var file_pkg_rpc_octopos_proto_msgTypes = make([]protoimpl.MessageInfo, 53)
 var file_pkg_rpc_octopos_proto_goTypes = []any{
-	(NodeState)(0),                  // 0: octopos.rpc.NodeState
-	(JobStatus)(0),                  // 1: octopos.rpc.JobStatus
-	(*RegisterNodeRequest)(nil),     // 2: octopos.rpc.RegisterNodeRequest
-	(*RegisterNodeResponse)(nil),    // 3: octopos.rpc.RegisterNodeResponse
-	(*HeartbeatRequest)(nil),        // 4: octopos.rpc.HeartbeatRequest
-	(*HeartbeatResponse)(nil),       // 5: octopos.rpc.HeartbeatResponse
-	(*GetClusterStateRequest)(nil),  // 6: octopos.rpc.GetClusterStateRequest
-	(*GetClusterStateResponse)(nil), // 7: octopos.rpc.GetClusterStateResponse
-	(*ExecuteRequest)(nil),          // 8: octopos.rpc.ExecuteRequest
-	(*ExecuteResponse)(nil),         // 9: octopos.rpc.ExecuteResponse
-	(*SignalRequest)(nil),           // 10: octopos.rpc.SignalRequest
-	(*SignalResponse)(nil),          // 11: octopos.rpc.SignalResponse
-	(*WaitRequest)(nil),             // 12: octopos.rpc.WaitRequest
-	(*WaitResponse)(nil),            // 13: octopos.rpc.WaitResponse
-	(*GetJobStatusRequest)(nil),     // 14: octopos.rpc.GetJobStatusRequest
-	(*GetJobStatusResponse)(nil),    // 15: octopos.rpc.GetJobStatusResponse
-	(*ListProcessesRequest)(nil),    // 16: octopos.rpc.ListProcessesRequest
-	(*ListProcessesResponse)(nil),   // 17: octopos.rpc.ListProcessesResponse
-	(*GetProcessRequest)(nil),       // 18: octopos.rpc.GetProcessRequest
-	(*GetProcessResponse)(nil),      // 19: octopos.rpc.GetProcessResponse
-	(*AllocateVFIORequest)(nil),     // 20: octopos.rpc.AllocateVFIORequest
-	(*AllocateVFIOResponse)(nil),    // 21: octopos.rpc.AllocateVFIOResponse
-	(*ReleaseVFIORequest)(nil),      // 22: octopos.rpc.ReleaseVFIORequest
-	(*ReleaseVFIOResponse)(nil),     // 23: octopos.rpc.ReleaseVFIOResponse
-	(*GetVFIODevicesRequest)(nil),   // 24: octopos.rpc.GetVFIODevicesRequest
-	(*GetVFIODevicesResponse)(nil),  // 25: octopos.rpc.GetVFIODevicesResponse
-	(*CreateSessionRequest)(nil),    // 26: octopos.rpc.CreateSessionRequest
-	(*CreateSessionResponse)(nil),   // 27: octopos.rpc.CreateSessionResponse
-	(*DestroySessionRequest)(nil),   // 28: octopos.rpc.DestroySessionRequest
-	(*DestroySessionResponse)(nil),  // 29: octopos.rpc.DestroySessionResponse
-	(*ListSessionsRequest)(nil),     // 30: octopos.rpc.ListSessionsRequest
-	(*ListSessionsResponse)(nil),    // 31: octopos.rpc.ListSessionsResponse
-	(*ExecStreamRequest)(nil),       // 32: octopos.rpc.ExecStreamRequest
-	(*ExecStreamResponse)(nil),      // 33: octopos.rpc.ExecStreamResponse
-	(*NodeResources)(nil),           // 34: octopos.rpc.NodeResources
-	(*PCIDevice)(nil),               // 35: octopos.rpc.PCIDevice
-	(*NodeInfo)(nil),                // 36: octopos.rpc.NodeInfo
-	(*VFIOGroup)(nil),               // 37: octopos.rpc.VFIOGroup
-	(*Requirements)(nil),            // 38: octopos.rpc.Requirements
-	(*VFIORequirement)(nil),         // 39: octopos.rpc.VFIORequirement
-	(*ProcessInfo)(nil),             // 40: octopos.rpc.ProcessInfo
-	(*SessionInfo)(nil),             // 41: octopos.rpc.SessionInfo
-	(*JobInfo)(nil),                 // 42: octopos.rpc.JobInfo
-	(*CommandSpec)(nil),             // 43: octopos.rpc.CommandSpec
-	nil,                             // 44: octopos.rpc.RegisterNodeRequest.LabelsEntry
-	nil,                             // 45: octopos.rpc.ExecuteRequest.PipeMapEntry
-	nil,                             // 46: octopos.rpc.CreateSessionRequest.EnvEntry
-	nil,                             // 47: octopos.rpc.NodeInfo.LabelsEntry
-	nil,                             // 48: octopos.rpc.Requirements.NodeAffinityEntry
-	nil,                             // 49: octopos.rpc.SessionInfo.EnvEntry
-	nil,                             // 50: octopos.rpc.JobInfo.PipeMapEntry
+	(NodeState)(0),                     // 0: octopos.rpc.NodeState
+	(JobStatus)(0),                     // 1: octopos.rpc.JobStatus
+	(*RegisterNodeRequest)(nil),        // 2: octopos.rpc.RegisterNodeRequest
+	(*RegisterNodeResponse)(nil),       // 3: octopos.rpc.RegisterNodeResponse
+	(*HeartbeatRequest)(nil),           // 4: octopos.rpc.HeartbeatRequest
+	(*HeartbeatResponse)(nil),          // 5: octopos.rpc.HeartbeatResponse
+	(*GetClusterStateRequest)(nil),     // 6: octopos.rpc.GetClusterStateRequest
+	(*GetClusterStateResponse)(nil),    // 7: octopos.rpc.GetClusterStateResponse
+	(*ExecuteRequest)(nil),             // 8: octopos.rpc.ExecuteRequest
+	(*ExecuteResponse)(nil),            // 9: octopos.rpc.ExecuteResponse
+	(*SignalRequest)(nil),              // 10: octopos.rpc.SignalRequest
+	(*SignalResponse)(nil),             // 11: octopos.rpc.SignalResponse
+	(*WaitRequest)(nil),                // 12: octopos.rpc.WaitRequest
+	(*WaitResponse)(nil),               // 13: octopos.rpc.WaitResponse
+	(*GetJobStatusRequest)(nil),        // 14: octopos.rpc.GetJobStatusRequest
+	(*GetJobStatusResponse)(nil),       // 15: octopos.rpc.GetJobStatusResponse
+	(*ListProcessesRequest)(nil),       // 16: octopos.rpc.ListProcessesRequest
+	(*ListProcessesResponse)(nil),      // 17: octopos.rpc.ListProcessesResponse
+	(*GetProcessRequest)(nil),          // 18: octopos.rpc.GetProcessRequest
+	(*GetProcessResponse)(nil),         // 19: octopos.rpc.GetProcessResponse
+	(*AllocateVFIORequest)(nil),        // 20: octopos.rpc.AllocateVFIORequest
+	(*AllocateVFIOResponse)(nil),       // 21: octopos.rpc.AllocateVFIOResponse
+	(*ReleaseVFIORequest)(nil),         // 22: octopos.rpc.ReleaseVFIORequest
+	(*ReleaseVFIOResponse)(nil),        // 23: octopos.rpc.ReleaseVFIOResponse
+	(*GetVFIODevicesRequest)(nil),      // 24: octopos.rpc.GetVFIODevicesRequest
+	(*GetVFIODevicesResponse)(nil),     // 25: octopos.rpc.GetVFIODevicesResponse
+	(*CreateSessionRequest)(nil),       // 26: octopos.rpc.CreateSessionRequest
+	(*CreateSessionResponse)(nil),      // 27: octopos.rpc.CreateSessionResponse
+	(*DestroySessionRequest)(nil),      // 28: octopos.rpc.DestroySessionRequest
+	(*DestroySessionResponse)(nil),     // 29: octopos.rpc.DestroySessionResponse
+	(*ListSessionsRequest)(nil),        // 30: octopos.rpc.ListSessionsRequest
+	(*ListSessionsResponse)(nil),       // 31: octopos.rpc.ListSessionsResponse
+	(*ExecStreamRequest)(nil),          // 32: octopos.rpc.ExecStreamRequest
+	(*ExecStreamResponse)(nil),         // 33: octopos.rpc.ExecStreamResponse
+	(*NodeResources)(nil),              // 34: octopos.rpc.NodeResources
+	(*PCIDevice)(nil),                  // 35: octopos.rpc.PCIDevice
+	(*NodeInfo)(nil),                   // 36: octopos.rpc.NodeInfo
+	(*VFIOGroup)(nil),                  // 37: octopos.rpc.VFIOGroup
+	(*Requirements)(nil),               // 38: octopos.rpc.Requirements
+	(*VFIORequirement)(nil),            // 39: octopos.rpc.VFIORequirement
+	(*ProcessInfo)(nil),                // 40: octopos.rpc.ProcessInfo
+	(*ListRemoteChildrenRequest)(nil),  // 41: octopos.rpc.ListRemoteChildrenRequest
+	(*ListRemoteChildrenResponse)(nil), // 42: octopos.rpc.ListRemoteChildrenResponse
+	(*SessionInfo)(nil),                // 43: octopos.rpc.SessionInfo
+	(*JobInfo)(nil),                    // 44: octopos.rpc.JobInfo
+	(*RemoteChildInfo)(nil),            // 45: octopos.rpc.RemoteChildInfo
+	(*RemoteChildRecord)(nil),          // 46: octopos.rpc.RemoteChildRecord
+	(*CommandSpec)(nil),                // 47: octopos.rpc.CommandSpec
+	nil,                                // 48: octopos.rpc.RegisterNodeRequest.LabelsEntry
+	nil,                                // 49: octopos.rpc.ExecuteRequest.PipeMapEntry
+	nil,                                // 50: octopos.rpc.CreateSessionRequest.EnvEntry
+	nil,                                // 51: octopos.rpc.NodeInfo.LabelsEntry
+	nil,                                // 52: octopos.rpc.Requirements.NodeAffinityEntry
+	nil,                                // 53: octopos.rpc.SessionInfo.EnvEntry
+	nil,                                // 54: octopos.rpc.JobInfo.PipeMapEntry
 }
 var file_pkg_rpc_octopos_proto_depIdxs = []int32{
 	34, // 0: octopos.rpc.RegisterNodeRequest.resources:type_name -> octopos.rpc.NodeResources
-	44, // 1: octopos.rpc.RegisterNodeRequest.labels:type_name -> octopos.rpc.RegisterNodeRequest.LabelsEntry
+	48, // 1: octopos.rpc.RegisterNodeRequest.labels:type_name -> octopos.rpc.RegisterNodeRequest.LabelsEntry
 	36, // 2: octopos.rpc.RegisterNodeResponse.peers:type_name -> octopos.rpc.NodeInfo
 	34, // 3: octopos.rpc.HeartbeatRequest.allocated:type_name -> octopos.rpc.NodeResources
 	36, // 4: octopos.rpc.GetClusterStateResponse.nodes:type_name -> octopos.rpc.NodeInfo
-	41, // 5: octopos.rpc.GetClusterStateResponse.sessions:type_name -> octopos.rpc.SessionInfo
-	42, // 6: octopos.rpc.GetClusterStateResponse.jobs:type_name -> octopos.rpc.JobInfo
+	43, // 5: octopos.rpc.GetClusterStateResponse.sessions:type_name -> octopos.rpc.SessionInfo
+	44, // 6: octopos.rpc.GetClusterStateResponse.jobs:type_name -> octopos.rpc.JobInfo
 	38, // 7: octopos.rpc.ExecuteRequest.resources:type_name -> octopos.rpc.Requirements
-	45, // 8: octopos.rpc.ExecuteRequest.pipe_map:type_name -> octopos.rpc.ExecuteRequest.PipeMapEntry
-	42, // 9: octopos.rpc.GetJobStatusResponse.job:type_name -> octopos.rpc.JobInfo
+	49, // 8: octopos.rpc.ExecuteRequest.pipe_map:type_name -> octopos.rpc.ExecuteRequest.PipeMapEntry
+	44, // 9: octopos.rpc.GetJobStatusResponse.job:type_name -> octopos.rpc.JobInfo
 	40, // 10: octopos.rpc.ListProcessesResponse.processes:type_name -> octopos.rpc.ProcessInfo
 	40, // 11: octopos.rpc.GetProcessResponse.process:type_name -> octopos.rpc.ProcessInfo
 	39, // 12: octopos.rpc.AllocateVFIORequest.device:type_name -> octopos.rpc.VFIORequirement
 	37, // 13: octopos.rpc.GetVFIODevicesResponse.groups:type_name -> octopos.rpc.VFIOGroup
-	46, // 14: octopos.rpc.CreateSessionRequest.env:type_name -> octopos.rpc.CreateSessionRequest.EnvEntry
-	41, // 15: octopos.rpc.ListSessionsResponse.sessions:type_name -> octopos.rpc.SessionInfo
+	50, // 14: octopos.rpc.CreateSessionRequest.env:type_name -> octopos.rpc.CreateSessionRequest.EnvEntry
+	43, // 15: octopos.rpc.ListSessionsResponse.sessions:type_name -> octopos.rpc.SessionInfo
 	8,  // 16: octopos.rpc.ExecStreamRequest.exec:type_name -> octopos.rpc.ExecuteRequest
 	10, // 17: octopos.rpc.ExecStreamRequest.signal:type_name -> octopos.rpc.SignalRequest
 	9,  // 18: octopos.rpc.ExecStreamResponse.exec:type_name -> octopos.rpc.ExecuteResponse
@@ -3423,53 +3952,62 @@ var file_pkg_rpc_octopos_proto_depIdxs = []int32{
 	0,  // 20: octopos.rpc.NodeInfo.state:type_name -> octopos.rpc.NodeState
 	34, // 21: octopos.rpc.NodeInfo.capacity:type_name -> octopos.rpc.NodeResources
 	34, // 22: octopos.rpc.NodeInfo.allocated:type_name -> octopos.rpc.NodeResources
-	47, // 23: octopos.rpc.NodeInfo.labels:type_name -> octopos.rpc.NodeInfo.LabelsEntry
+	51, // 23: octopos.rpc.NodeInfo.labels:type_name -> octopos.rpc.NodeInfo.LabelsEntry
 	37, // 24: octopos.rpc.NodeInfo.vfio_groups:type_name -> octopos.rpc.VFIOGroup
 	35, // 25: octopos.rpc.VFIOGroup.devices:type_name -> octopos.rpc.PCIDevice
 	39, // 26: octopos.rpc.Requirements.vfio_devs:type_name -> octopos.rpc.VFIORequirement
-	48, // 27: octopos.rpc.Requirements.node_affinity:type_name -> octopos.rpc.Requirements.NodeAffinityEntry
-	49, // 28: octopos.rpc.SessionInfo.env:type_name -> octopos.rpc.SessionInfo.EnvEntry
-	43, // 29: octopos.rpc.JobInfo.commands:type_name -> octopos.rpc.CommandSpec
-	50, // 30: octopos.rpc.JobInfo.pipe_map:type_name -> octopos.rpc.JobInfo.PipeMapEntry
-	1,  // 31: octopos.rpc.JobInfo.status:type_name -> octopos.rpc.JobStatus
-	38, // 32: octopos.rpc.CommandSpec.resources:type_name -> octopos.rpc.Requirements
-	2,  // 33: octopos.rpc.Cluster.RegisterNode:input_type -> octopos.rpc.RegisterNodeRequest
-	4,  // 34: octopos.rpc.Cluster.Heartbeat:input_type -> octopos.rpc.HeartbeatRequest
-	6,  // 35: octopos.rpc.Cluster.GetClusterState:input_type -> octopos.rpc.GetClusterStateRequest
-	8,  // 36: octopos.rpc.Cluster.Execute:input_type -> octopos.rpc.ExecuteRequest
-	10, // 37: octopos.rpc.Cluster.Signal:input_type -> octopos.rpc.SignalRequest
-	12, // 38: octopos.rpc.Cluster.Wait:input_type -> octopos.rpc.WaitRequest
-	14, // 39: octopos.rpc.Cluster.GetJobStatus:input_type -> octopos.rpc.GetJobStatusRequest
-	16, // 40: octopos.rpc.Cluster.ListProcesses:input_type -> octopos.rpc.ListProcessesRequest
-	18, // 41: octopos.rpc.Cluster.GetProcess:input_type -> octopos.rpc.GetProcessRequest
-	20, // 42: octopos.rpc.Cluster.AllocateVFIO:input_type -> octopos.rpc.AllocateVFIORequest
-	22, // 43: octopos.rpc.Cluster.ReleaseVFIO:input_type -> octopos.rpc.ReleaseVFIORequest
-	24, // 44: octopos.rpc.Cluster.GetVFIODevices:input_type -> octopos.rpc.GetVFIODevicesRequest
-	26, // 45: octopos.rpc.Cluster.CreateSession:input_type -> octopos.rpc.CreateSessionRequest
-	28, // 46: octopos.rpc.Cluster.DestroySession:input_type -> octopos.rpc.DestroySessionRequest
-	30, // 47: octopos.rpc.Cluster.ListSessions:input_type -> octopos.rpc.ListSessionsRequest
-	32, // 48: octopos.rpc.Cluster.ExecStream:input_type -> octopos.rpc.ExecStreamRequest
-	3,  // 49: octopos.rpc.Cluster.RegisterNode:output_type -> octopos.rpc.RegisterNodeResponse
-	5,  // 50: octopos.rpc.Cluster.Heartbeat:output_type -> octopos.rpc.HeartbeatResponse
-	7,  // 51: octopos.rpc.Cluster.GetClusterState:output_type -> octopos.rpc.GetClusterStateResponse
-	9,  // 52: octopos.rpc.Cluster.Execute:output_type -> octopos.rpc.ExecuteResponse
-	11, // 53: octopos.rpc.Cluster.Signal:output_type -> octopos.rpc.SignalResponse
-	13, // 54: octopos.rpc.Cluster.Wait:output_type -> octopos.rpc.WaitResponse
-	15, // 55: octopos.rpc.Cluster.GetJobStatus:output_type -> octopos.rpc.GetJobStatusResponse
-	17, // 56: octopos.rpc.Cluster.ListProcesses:output_type -> octopos.rpc.ListProcessesResponse
-	19, // 57: octopos.rpc.Cluster.GetProcess:output_type -> octopos.rpc.GetProcessResponse
-	21, // 58: octopos.rpc.Cluster.AllocateVFIO:output_type -> octopos.rpc.AllocateVFIOResponse
-	23, // 59: octopos.rpc.Cluster.ReleaseVFIO:output_type -> octopos.rpc.ReleaseVFIOResponse
-	25, // 60: octopos.rpc.Cluster.GetVFIODevices:output_type -> octopos.rpc.GetVFIODevicesResponse
-	27, // 61: octopos.rpc.Cluster.CreateSession:output_type -> octopos.rpc.CreateSessionResponse
-	29, // 62: octopos.rpc.Cluster.DestroySession:output_type -> octopos.rpc.DestroySessionResponse
-	31, // 63: octopos.rpc.Cluster.ListSessions:output_type -> octopos.rpc.ListSessionsResponse
-	33, // 64: octopos.rpc.Cluster.ExecStream:output_type -> octopos.rpc.ExecStreamResponse
-	49, // [49:65] is the sub-list for method output_type
-	33, // [33:49] is the sub-list for method input_type
-	33, // [33:33] is the sub-list for extension type_name
-	33, // [33:33] is the sub-list for extension extendee
-	0,  // [0:33] is the sub-list for field type_name
+	52, // 27: octopos.rpc.Requirements.node_affinity:type_name -> octopos.rpc.Requirements.NodeAffinityEntry
+	45, // 28: octopos.rpc.ProcessInfo.remote_child:type_name -> octopos.rpc.RemoteChildInfo
+	46, // 29: octopos.rpc.ListRemoteChildrenResponse.children:type_name -> octopos.rpc.RemoteChildRecord
+	53, // 30: octopos.rpc.SessionInfo.env:type_name -> octopos.rpc.SessionInfo.EnvEntry
+	47, // 31: octopos.rpc.JobInfo.commands:type_name -> octopos.rpc.CommandSpec
+	54, // 32: octopos.rpc.JobInfo.pipe_map:type_name -> octopos.rpc.JobInfo.PipeMapEntry
+	1,  // 33: octopos.rpc.JobInfo.status:type_name -> octopos.rpc.JobStatus
+	45, // 34: octopos.rpc.JobInfo.remote_child:type_name -> octopos.rpc.RemoteChildInfo
+	38, // 35: octopos.rpc.CommandSpec.resources:type_name -> octopos.rpc.Requirements
+	2,  // 36: octopos.rpc.Cluster.RegisterNode:input_type -> octopos.rpc.RegisterNodeRequest
+	4,  // 37: octopos.rpc.Cluster.Heartbeat:input_type -> octopos.rpc.HeartbeatRequest
+	6,  // 38: octopos.rpc.Cluster.GetClusterState:input_type -> octopos.rpc.GetClusterStateRequest
+	8,  // 39: octopos.rpc.Cluster.Execute:input_type -> octopos.rpc.ExecuteRequest
+	10, // 40: octopos.rpc.Cluster.Signal:input_type -> octopos.rpc.SignalRequest
+	12, // 41: octopos.rpc.Cluster.Wait:input_type -> octopos.rpc.WaitRequest
+	14, // 42: octopos.rpc.Cluster.GetJobStatus:input_type -> octopos.rpc.GetJobStatusRequest
+	16, // 43: octopos.rpc.Cluster.ListProcesses:input_type -> octopos.rpc.ListProcessesRequest
+	18, // 44: octopos.rpc.Cluster.GetProcess:input_type -> octopos.rpc.GetProcessRequest
+	41, // 45: octopos.rpc.Cluster.ListRemoteChildren:input_type -> octopos.rpc.ListRemoteChildrenRequest
+	20, // 46: octopos.rpc.Cluster.AllocateVFIO:input_type -> octopos.rpc.AllocateVFIORequest
+	22, // 47: octopos.rpc.Cluster.ReleaseVFIO:input_type -> octopos.rpc.ReleaseVFIORequest
+	24, // 48: octopos.rpc.Cluster.GetVFIODevices:input_type -> octopos.rpc.GetVFIODevicesRequest
+	26, // 49: octopos.rpc.Cluster.CreateSession:input_type -> octopos.rpc.CreateSessionRequest
+	28, // 50: octopos.rpc.Cluster.DestroySession:input_type -> octopos.rpc.DestroySessionRequest
+	30, // 51: octopos.rpc.Cluster.ListSessions:input_type -> octopos.rpc.ListSessionsRequest
+	32, // 52: octopos.rpc.Cluster.ExecStream:input_type -> octopos.rpc.ExecStreamRequest
+	8,  // 53: octopos.rpc.Cluster.RemoteChildExecute:input_type -> octopos.rpc.ExecuteRequest
+	32, // 54: octopos.rpc.Cluster.RemoteChildStream:input_type -> octopos.rpc.ExecStreamRequest
+	3,  // 55: octopos.rpc.Cluster.RegisterNode:output_type -> octopos.rpc.RegisterNodeResponse
+	5,  // 56: octopos.rpc.Cluster.Heartbeat:output_type -> octopos.rpc.HeartbeatResponse
+	7,  // 57: octopos.rpc.Cluster.GetClusterState:output_type -> octopos.rpc.GetClusterStateResponse
+	9,  // 58: octopos.rpc.Cluster.Execute:output_type -> octopos.rpc.ExecuteResponse
+	11, // 59: octopos.rpc.Cluster.Signal:output_type -> octopos.rpc.SignalResponse
+	13, // 60: octopos.rpc.Cluster.Wait:output_type -> octopos.rpc.WaitResponse
+	15, // 61: octopos.rpc.Cluster.GetJobStatus:output_type -> octopos.rpc.GetJobStatusResponse
+	17, // 62: octopos.rpc.Cluster.ListProcesses:output_type -> octopos.rpc.ListProcessesResponse
+	19, // 63: octopos.rpc.Cluster.GetProcess:output_type -> octopos.rpc.GetProcessResponse
+	42, // 64: octopos.rpc.Cluster.ListRemoteChildren:output_type -> octopos.rpc.ListRemoteChildrenResponse
+	21, // 65: octopos.rpc.Cluster.AllocateVFIO:output_type -> octopos.rpc.AllocateVFIOResponse
+	23, // 66: octopos.rpc.Cluster.ReleaseVFIO:output_type -> octopos.rpc.ReleaseVFIOResponse
+	25, // 67: octopos.rpc.Cluster.GetVFIODevices:output_type -> octopos.rpc.GetVFIODevicesResponse
+	27, // 68: octopos.rpc.Cluster.CreateSession:output_type -> octopos.rpc.CreateSessionResponse
+	29, // 69: octopos.rpc.Cluster.DestroySession:output_type -> octopos.rpc.DestroySessionResponse
+	31, // 70: octopos.rpc.Cluster.ListSessions:output_type -> octopos.rpc.ListSessionsResponse
+	33, // 71: octopos.rpc.Cluster.ExecStream:output_type -> octopos.rpc.ExecStreamResponse
+	9,  // 72: octopos.rpc.Cluster.RemoteChildExecute:output_type -> octopos.rpc.ExecuteResponse
+	33, // 73: octopos.rpc.Cluster.RemoteChildStream:output_type -> octopos.rpc.ExecStreamResponse
+	55, // [55:74] is the sub-list for method output_type
+	36, // [36:55] is the sub-list for method input_type
+	36, // [36:36] is the sub-list for extension type_name
+	36, // [36:36] is the sub-list for extension extendee
+	0,  // [0:36] is the sub-list for field type_name
 }
 
 func init() { file_pkg_rpc_octopos_proto_init() }
@@ -3496,7 +4034,7 @@ func file_pkg_rpc_octopos_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_pkg_rpc_octopos_proto_rawDesc), len(file_pkg_rpc_octopos_proto_rawDesc)),
 			NumEnums:      2,
-			NumMessages:   49,
+			NumMessages:   53,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

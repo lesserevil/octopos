@@ -117,6 +117,48 @@ func TestScheduler(t *testing.T) {
 	}
 }
 
+func TestSchedulerPreferNotNodeIDIsSoft(t *testing.T) {
+	s := NewScheduler(&BinPackPolicy{})
+	s.AddNode(&cluster.NodeInfo{
+		ID:        "node-1",
+		State:     cluster.NodeStateActive,
+		Resources: cluster.ResourceSpec{CPU: 8000, Memory: 32 * 1024 * 1024 * 1024},
+		Allocated: cluster.ResourceSpec{CPU: 6000, Memory: 24 * 1024 * 1024 * 1024},
+	})
+	s.AddNode(&cluster.NodeInfo{
+		ID:        "node-2",
+		State:     cluster.NodeStateActive,
+		Resources: cluster.ResourceSpec{CPU: 8000, Memory: 32 * 1024 * 1024 * 1024},
+	})
+
+	req := cluster.Requirements{
+		CPU:          1000,
+		Memory:       1 * 1024 * 1024 * 1024,
+		NodeAffinity: map[string]string{affinityPreferNotNodeID: "node-1"},
+	}
+	node, err := s.Schedule(req)
+	if err != nil {
+		t.Fatalf("Schedule failed: %v", err)
+	}
+	if node.ID != "node-2" {
+		t.Fatalf("selected node = %s, want node-2", node.ID)
+	}
+
+	oneNode := NewScheduler(&BinPackPolicy{})
+	oneNode.AddNode(&cluster.NodeInfo{
+		ID:        "node-1",
+		State:     cluster.NodeStateActive,
+		Resources: cluster.ResourceSpec{CPU: 8000, Memory: 32 * 1024 * 1024 * 1024},
+	})
+	node, err = oneNode.Schedule(req)
+	if err != nil {
+		t.Fatalf("one-node Schedule failed: %v", err)
+	}
+	if node.ID != "node-1" {
+		t.Fatalf("one-node selected node = %s, want node-1", node.ID)
+	}
+}
+
 func TestSchedulerReturnsGPUAllocation(t *testing.T) {
 	s := NewScheduler(&BinPackPolicy{})
 	node := &cluster.NodeInfo{

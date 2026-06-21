@@ -5,19 +5,16 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log"
 	"os"
-	"os/signal"
 	"strings"
-	"sync"
-	"syscall"
 	"time"
 
 	"github.com/spf13/cobra"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 
+	"github.com/octopos/octopos/pkg/execclient"
 	octopospb "github.com/octopos/octopos/pkg/rpc"
 	"github.com/octopos/octopos/pkg/ssi"
 )
@@ -27,16 +24,6 @@ var (
 	client   octopospb.ClusterClient
 	conn     *grpc.ClientConn
 )
-
-type commandExitError struct {
-	code int
-}
-
-const execStreamResizeSignal = -1
-
-func (e *commandExitError) Error() string {
-	return fmt.Sprintf("exit status %d", e.code)
-}
 
 var rootCmd = &cobra.Command{
 	Use:           "octoposctl",
@@ -171,6 +158,9 @@ Example:
 		requireSSI, _ := cmd.Flags().GetBool("require-ssi")
 		clusterFSMeta, _ := cmd.Flags().GetString("clusterfs-meta")
 		clusterFSOpts, _ := cmd.Flags().GetString("clusterfs-options")
+		objectProxy, _ := cmd.Flags().GetBool("objectstore-proxy")
+		objectListen, _ := cmd.Flags().GetString("objectstore-proxy-listen")
+		objectTargets, _ := cmd.Flags().GetString("objectstore-proxy-targets")
 
 		cfg := &provisionConfig{
 			NodeID:        args[0],
@@ -191,6 +181,9 @@ Example:
 			RequireSSI:    requireSSI,
 			ClusterFSMeta: clusterFSMeta,
 			ClusterFSOpts: clusterFSOpts,
+			ObjectProxy:   objectProxy,
+			ObjectListen:  objectListen,
+			ObjectTargets: objectTargets,
 		}
 		return provisionNode(cfg)
 	},
@@ -281,6 +274,46 @@ var jobStatusCmd = &cobra.Command{
 	},
 }
 
+var jobChildrenCmd = &cobra.Command{
+	Use:   "children [parent-job-id]",
+	Short: "List remote child processes",
+	Args:  cobra.MaximumNArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		session, _ := cmd.Flags().GetString("session")
+		node, _ := cmd.Flags().GetString("node")
+		activeOnly, _ := cmd.Flags().GetBool("active")
+		req := &octopospb.ListRemoteChildrenRequest{
+			SessionId:    session,
+			RemoteNodeId: node,
+			ActiveOnly:   activeOnly,
+		}
+		if len(args) > 0 {
+			req.ParentJobId = args[0]
+		}
+		resp, err := client.ListRemoteChildren(ctx, req)
+		if err != nil {
+			return fmt.Errorf("ListRemoteChildren failed: %w", err)
+		}
+
+		fmt.Printf("%-20s %-20s %-15s %-10s %-10s %-12s %s\n", "REMOTE JOB", "PARENT JOB", "REMOTE NODE", "SHADOW", "PID", "STATE", "COMMAND")
+		for _, child := range resp.Children {
+			fmt.Printf("%-20s %-20s %-15s %-10d %-10d %-12s %s\n",
+				child.RemoteJobId,
+				child.ParentJobId,
+				child.RemoteNodeId,
+				child.ShadowPid,
+				child.RemoteGlobalPid,
+				child.State,
+				strings.Join(child.Command, " "),
+			)
+		}
+		return nil
+	},
+}
+
 var execCmd = &cobra.Command{
 	Use:   "exec [flags] -- command [args...]",
 	Short: "Execute a command on the cluster",
@@ -305,6 +338,10 @@ var execCmd = &cobra.Command{
 		cwd, _ := cmd.Flags().GetString("cwd")
 		background, _ := cmd.Flags().GetBool("background")
 		tty, _ := cmd.Flags().GetBool("tty")
+		remoteChildren, _ := cmd.Flags().GetString("remote-children")
+		if remoteChildren != "off" && remoteChildren != "safe" && remoteChildren != "aggressive" {
+			return fmt.Errorf("--remote-children must be off, safe, or aggressive")
+		}
 
 		req := &octopospb.ExecuteRequest{
 			SessionId: sessionID,
@@ -321,12 +358,23 @@ var execCmd = &cobra.Command{
 				Gpus:          int32(gpus),
 			},
 		}
+		if remoteChildren != "off" {
+			req.Env = append(req.Env,
+				"OCTOPOS_REMOTE_CHILDREN="+remoteChildren,
+				"LD_PRELOAD="+remoteChildPreloadPath,
+			)
+		}
 		if node != "" {
 			req.Resources.NodeAffinity = map[string]string{"node_id": node}
 		}
 
 		if !background {
-			return runExecForeground(context.Background(), req)
+			return execclient.RunForeground(context.Background(), client, req, execclient.Options{
+				TTY:            req.Tty,
+				RawTerminal:    req.Tty,
+				TerminalFD:     os.Stdin.Fd(),
+				ForwardSignals: true,
+			})
 		}
 
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -354,159 +402,11 @@ var execCmd = &cobra.Command{
 			}
 			fmt.Printf("Job completed with exit code: %d\n", waitResp.ExitCode)
 			if waitResp.ExitCode != 0 {
-				return &commandExitError{code: int(waitResp.ExitCode)}
+				return &execclient.ExitError{Code: int(waitResp.ExitCode)}
 			}
 		}
 		return nil
 	},
-}
-
-func runExecForeground(ctx context.Context, req *octopospb.ExecuteRequest) error {
-	if req.Tty {
-		if !isTerminal(os.Stdin.Fd()) {
-			return fmt.Errorf("--tty requires stdin to be a terminal")
-		}
-		state, err := makeTerminalRaw(os.Stdin.Fd())
-		if err != nil {
-			return fmt.Errorf("enable raw terminal mode: %w", err)
-		}
-		defer restoreTerminal(os.Stdin.Fd(), state)
-		req.Env = appendTTYEnv(req.Env, os.Stdin.Fd())
-	}
-
-	stream, err := client.ExecStream(ctx)
-	if err != nil {
-		return fmt.Errorf("ExecStream failed: %w", err)
-	}
-
-	var sendMu sync.Mutex
-	send := func(req *octopospb.ExecStreamRequest) error {
-		sendMu.Lock()
-		defer sendMu.Unlock()
-		return stream.Send(req)
-	}
-
-	if err := send(&octopospb.ExecStreamRequest{
-		Payload: &octopospb.ExecStreamRequest_Exec{Exec: req},
-	}); err != nil {
-		return fmt.Errorf("send exec request: %w", err)
-	}
-
-	if req.Tty {
-		stopResize := forwardTerminalResize(os.Stdin.Fd(), send)
-		defer stopResize()
-		_ = sendTerminalResize(os.Stdin.Fd(), send)
-	}
-
-	go func() {
-		buf := make([]byte, 32*1024)
-		for {
-			n, readErr := os.Stdin.Read(buf)
-			if n > 0 {
-				data := make([]byte, n)
-				copy(data, buf[:n])
-				err := send(&octopospb.ExecStreamRequest{
-					Payload: &octopospb.ExecStreamRequest_StdinData{StdinData: data},
-				})
-				if err != nil {
-					return
-				}
-			}
-			if readErr != nil {
-				_ = send(&octopospb.ExecStreamRequest{
-					Payload: &octopospb.ExecStreamRequest_CloseStdin{CloseStdin: true},
-				})
-				sendMu.Lock()
-				_ = stream.CloseSend()
-				sendMu.Unlock()
-				return
-			}
-		}
-	}()
-
-	for {
-		resp, err := stream.Recv()
-		if errors.Is(err, io.EOF) {
-			return nil
-		}
-		if err != nil {
-			return fmt.Errorf("receive exec stream: %w", err)
-		}
-
-		switch payload := resp.Payload.(type) {
-		case *octopospb.ExecStreamResponse_Exec:
-			if payload.Exec.Error != "" {
-				return fmt.Errorf("Execute failed: %s", payload.Exec.Error)
-			}
-		case *octopospb.ExecStreamResponse_StdoutData:
-			if _, err := os.Stdout.Write(payload.StdoutData); err != nil {
-				return err
-			}
-		case *octopospb.ExecStreamResponse_StderrData:
-			if _, err := os.Stderr.Write(payload.StderrData); err != nil {
-				return err
-			}
-		case *octopospb.ExecStreamResponse_Error:
-			return fmt.Errorf("Execute failed: %s", payload.Error)
-		case *octopospb.ExecStreamResponse_ExitCode:
-			if payload.ExitCode != 0 {
-				return &commandExitError{code: int(payload.ExitCode)}
-			}
-			return nil
-		}
-	}
-}
-
-func appendTTYEnv(env []string, fd uintptr) []string {
-	if term := os.Getenv("TERM"); term != "" {
-		env = append(env, "TERM="+term)
-	}
-	if size, err := getTerminalSize(fd); err == nil {
-		env = append(env,
-			fmt.Sprintf("OCTOPOS_TTY_ROWS=%d", size.rows),
-			fmt.Sprintf("OCTOPOS_TTY_COLS=%d", size.cols),
-		)
-	}
-	return env
-}
-
-func forwardTerminalResize(fd uintptr, send func(*octopospb.ExecStreamRequest) error) func() {
-	ch := make(chan os.Signal, 1)
-	signal.Notify(ch, syscall.SIGWINCH)
-	done := make(chan struct{})
-	go func() {
-		for {
-			select {
-			case <-done:
-				return
-			case <-ch:
-				_ = sendTerminalResize(fd, send)
-			}
-		}
-	}()
-	return func() {
-		signal.Stop(ch)
-		close(done)
-	}
-}
-
-func sendTerminalResize(fd uintptr, send func(*octopospb.ExecStreamRequest) error) error {
-	size, err := getTerminalSize(fd)
-	if err != nil || size.rows == 0 || size.cols == 0 {
-		return err
-	}
-	return send(&octopospb.ExecStreamRequest{
-		Payload: &octopospb.ExecStreamRequest_Signal{
-			Signal: &octopospb.SignalRequest{
-				GlobalPid: encodeTerminalSize(size),
-				Signal:    execStreamResizeSignal,
-			},
-		},
-	})
-}
-
-func encodeTerminalSize(size terminalSize) uint64 {
-	return uint64(size.rows)<<32 | uint64(size.cols)
 }
 
 var sessionCmd = &cobra.Command{
@@ -606,10 +506,18 @@ var psCmd = &cobra.Command{
 			return fmt.Errorf("ListProcesses failed: %w", err)
 		}
 
-		fmt.Printf("%-20s %-15s %-8s %-10s %-10s %s\n", "GLOBAL PID", "NODE", "LOCAL PID", "SESSION", "JOB", "COMMAND")
+		fmt.Printf("%-20s %-15s %-8s %-14s %-10s %-10s %-24s %s\n", "GLOBAL PID", "NODE", "LOCAL PID", "KIND", "SESSION", "JOB", "REMOTE", "COMMAND")
 		for _, p := range resp.Processes {
-			fmt.Printf("%-20d %-15s %-8d %-10s %-10s %s\n",
-				p.GlobalPid, p.NodeId, p.LocalPid, p.SessionId, p.JobId, p.Cmdline)
+			kind := p.ProcessKind
+			if kind == "" {
+				kind = "process"
+			}
+			remote := "-"
+			if child := p.RemoteChild; child != nil {
+				remote = fmt.Sprintf("%d->%s/%d", child.ShadowPid, child.RemoteNodeId, child.RemoteGlobalPid)
+			}
+			fmt.Printf("%-20d %-15s %-8d %-14s %-10s %-10s %-24s %s\n",
+				p.GlobalPid, p.NodeId, p.LocalPid, kind, p.SessionId, p.JobId, remote, p.Cmdline)
 		}
 		return nil
 	},
@@ -726,6 +634,9 @@ Example:
 		requireSSI, _ := cmd.Flags().GetBool("require-ssi")
 		clusterFSMeta, _ := cmd.Flags().GetString("clusterfs-meta")
 		clusterFSOpts, _ := cmd.Flags().GetString("clusterfs-options")
+		objectProxy, _ := cmd.Flags().GetBool("objectstore-proxy")
+		objectListen, _ := cmd.Flags().GetString("objectstore-proxy-listen")
+		objectTargets, _ := cmd.Flags().GetString("objectstore-proxy-targets")
 
 		cfg := &bootstrapConfig{
 			NodeID:        nodeID,
@@ -741,6 +652,9 @@ Example:
 			RequireSSI:    requireSSI,
 			ClusterFSMeta: clusterFSMeta,
 			ClusterFSOpts: clusterFSOpts,
+			ObjectProxy:   objectProxy,
+			ObjectListen:  objectListen,
+			ObjectTargets: objectTargets,
 		}
 		return bootstrapCluster(cfg)
 	},
@@ -764,6 +678,9 @@ func main() {
 	nodeAddCmd.Flags().Bool("require-ssi", true, "Require cluster filesystem and SSI rootfs before serving jobs")
 	nodeAddCmd.Flags().String("clusterfs-meta", "", "JuiceFS metadata URL for octopos-clusterfs.service (for example tikv://10.0.0.1:2379/octopos)")
 	nodeAddCmd.Flags().String("clusterfs-options", defaultClusterFSOptions, "JuiceFS mount options for octopos-clusterfs.service")
+	nodeAddCmd.Flags().Bool("objectstore-proxy", true, "Install node-local HA proxy for MinIO/JuiceFS object storage")
+	nodeAddCmd.Flags().String("objectstore-proxy-listen", defaultObjectStoreProxyListen, "Node-local object-store proxy listen address")
+	nodeAddCmd.Flags().String("objectstore-proxy-targets", defaultObjectStoreProxyTargets, "Comma-separated MinIO backend addresses for the object-store proxy")
 	nodeAddCmd.Flags().Int64("cpu", 0, "Override CPU capacity in millicores (0 = auto-detect)")
 	nodeAddCmd.Flags().Int64("mem", 0, "Override memory capacity in bytes (0 = auto-detect)")
 	nodeAddCmd.Flags().Int32("gpus", 0, "Override GPU count")
@@ -779,6 +696,9 @@ func main() {
 	clusterBootstrapCmd.Flags().Bool("require-ssi", true, "Require cluster filesystem and SSI rootfs before serving jobs")
 	clusterBootstrapCmd.Flags().String("clusterfs-meta", "", "JuiceFS metadata URL for octopos-clusterfs.service (for example tikv://10.0.0.1:2379/octopos)")
 	clusterBootstrapCmd.Flags().String("clusterfs-options", defaultClusterFSOptions, "JuiceFS mount options for octopos-clusterfs.service")
+	clusterBootstrapCmd.Flags().Bool("objectstore-proxy", true, "Install node-local HA proxy for MinIO/JuiceFS object storage")
+	clusterBootstrapCmd.Flags().String("objectstore-proxy-listen", defaultObjectStoreProxyListen, "Node-local object-store proxy listen address")
+	clusterBootstrapCmd.Flags().String("objectstore-proxy-targets", defaultObjectStoreProxyTargets, "Comma-separated MinIO backend addresses for the object-store proxy")
 
 	nodeListCmd.Flags().StringP("output", "o", "", "Output format (json|wide)")
 
@@ -793,23 +713,27 @@ func main() {
 	execCmd.Flags().BoolP("tty", "t", false, "Allocate a pseudo-TTY")
 	execCmd.Flags().Bool("background", false, "Submit the command as a background job")
 	execCmd.Flags().Bool("wait", false, "With --background, wait for the detached job to finish")
+	execCmd.Flags().String("remote-children", "off", "Remote eligible child execs with the LD_PRELOAD prototype: off, safe, or aggressive")
 
 	psCmd.Flags().String("node", "", "Filter by node")
 	psCmd.Flags().String("session", "", "Filter by session")
 	psCmd.Flags().String("job", "", "Filter by job")
+	jobChildrenCmd.Flags().String("session", "", "Filter by session")
+	jobChildrenCmd.Flags().String("node", "", "Filter by remote node")
+	jobChildrenCmd.Flags().Bool("active", false, "Show only active remote children")
 
 	// Build command tree
 	nodeCmd.AddCommand(nodeListCmd, nodeAddCmd, nodeDrainCmd, nodeRemoveCmd)
-	jobCmd.AddCommand(jobListCmd, jobStatusCmd)
+	jobCmd.AddCommand(jobListCmd, jobStatusCmd, jobChildrenCmd)
 	sessionCmd.AddCommand(sessionListCmd, sessionCreateCmd, sessionDeleteCmd)
 	clusterCmd.AddCommand(clusterStatusCmd, clusterDoctorCmd, clusterBootstrapCmd)
 
 	rootCmd.AddCommand(nodeCmd, jobCmd, execCmd, sessionCmd, psCmd, clusterCmd)
 
 	if err := rootCmd.Execute(); err != nil {
-		var exitErr *commandExitError
+		var exitErr *execclient.ExitError
 		if errors.As(err, &exitErr) {
-			os.Exit(exitErr.code)
+			os.Exit(exitErr.Code)
 		}
 		log.Fatal(err)
 	}
