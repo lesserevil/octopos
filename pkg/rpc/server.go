@@ -2,7 +2,10 @@ package rpc
 
 import (
 	"context"
+	"encoding/json"
 	"log"
+	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -35,6 +38,7 @@ type ClusterServerImpl struct {
 	remoteChildLeaseTimeout     time.Duration
 	remoteChildTokenTTL         time.Duration
 	remoteChildren              *remotechild.Store
+	vfioAllocationStorePath     string
 	pipes                       *pipeCoordinator
 	localPIDCounter             uint64
 	mu                          sync.RWMutex
@@ -64,6 +68,7 @@ type ServerOptions struct {
 	RemoteChildStorePath        string
 	RemoteChildLeaseTimeout     time.Duration
 	RemoteChildTokenTTL         time.Duration
+	VFIOAllocationStorePath     string
 }
 
 // NewClusterServerImpl creates a new cluster gRPC server implementation
@@ -122,6 +127,7 @@ func NewClusterServerImplWithOptions(nodeID cluster.NodeID, sched *scheduler.Sch
 		remoteChildLeaseTimeout:     remoteChildLeaseTimeout,
 		remoteChildTokenTTL:         remoteChildTokenTTL,
 		remoteChildren:              remoteChildren,
+		vfioAllocationStorePath:     opts.VFIOAllocationStorePath,
 		pipes:                       newPipeCoordinator(),
 		localPIDCounter:             0,
 	}
@@ -130,6 +136,7 @@ func NewClusterServerImplWithOptions(nodeID cluster.NodeID, sched *scheduler.Sch
 			server.cluster.nodes[node.ID] = node
 		}
 	}
+	server.recoverVFIOAllocations()
 	return server
 }
 
@@ -165,6 +172,7 @@ func (s *ClusterServerImpl) RegisterNode(ctx context.Context, req *RegisterNodeR
 		s.cluster.nodes[nodeID] = node
 	}
 	s.scheduler.AddNode(node)
+	s.reconcileVFIOAllocationsForNodeLocked(nodeID)
 
 	// Build peer list
 	peers := make([]*NodeInfo, 0, len(s.cluster.nodes))
@@ -511,12 +519,18 @@ func (s *ClusterServerImpl) AllocateVFIO(ctx context.Context, req *AllocateVFIOR
 		s.scheduler.Release(node.ID, allocated)
 		return &AllocateVFIOResponse{Success: false, Error: "VFIO group was already allocated"}, nil
 	}
-	s.cluster.vfioAllocations[key] = vfioAllocation{
+	allocation := vfioAllocation{
 		NodeID:    node.ID,
 		SessionID: cluster.SessionID(req.SessionId),
 		JobID:     cluster.JobID(req.JobId),
 		GroupID:   groupID,
 		CreatedAt: time.Now(),
+	}
+	s.cluster.vfioAllocations[key] = allocation
+	if err := s.saveVFIOAllocationsLocked(); err != nil {
+		delete(s.cluster.vfioAllocations, key)
+		s.scheduler.Release(node.ID, allocated)
+		return &AllocateVFIOResponse{Success: false, Error: "persist VFIO allocation: " + err.Error()}, nil
 	}
 	return &AllocateVFIOResponse{
 		Success:     true,
@@ -548,13 +562,17 @@ func (s *ClusterServerImpl) ReleaseVFIO(ctx context.Context, req *ReleaseVFIOReq
 			foundForeign = true
 			continue
 		}
+		delete(s.cluster.vfioAllocations, key)
+		if err := s.saveVFIOAllocationsLocked(); err != nil {
+			s.cluster.vfioAllocations[key] = alloc
+			return &ReleaseVFIOResponse{Success: false, Error: "persist VFIO release: " + err.Error()}, nil
+		}
 		if s.scheduler != nil {
 			s.scheduler.Release(alloc.NodeID, cluster.Requirements{
 				JobID:      alloc.JobID,
 				VFIOGroups: []int{groupID},
 			})
 		}
-		delete(s.cluster.vfioAllocations, key)
 		return &ReleaseVFIOResponse{Success: true}, nil
 	}
 	if foundForeign {
@@ -781,6 +799,167 @@ func vfioGroupsWithClaims(primary, fallback []cluster.VFIOGroup) []cluster.VFIOG
 	return fallback
 }
 
+type vfioAllocationState struct {
+	Allocations []vfioAllocation `json:"allocations"`
+}
+
+func loadVFIOAllocationState(path string) ([]vfioAllocation, error) {
+	if path == "" {
+		return nil, nil
+	}
+	data, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if len(strings.TrimSpace(string(data))) == 0 {
+		return nil, nil
+	}
+
+	var state vfioAllocationState
+	if err := json.Unmarshal(data, &state); err == nil {
+		return state.Allocations, nil
+	}
+
+	var legacy []vfioAllocation
+	if err := json.Unmarshal(data, &legacy); err != nil {
+		return nil, err
+	}
+	return legacy, nil
+}
+
+func (s *ClusterServerImpl) recoverVFIOAllocations() {
+	if s.vfioAllocationStorePath == "" {
+		return
+	}
+	allocations, err := loadVFIOAllocationState(s.vfioAllocationStorePath)
+	if err != nil {
+		log.Printf("VFIO allocation persistence disabled: load %s: %v", s.vfioAllocationStorePath, err)
+		s.vfioAllocationStorePath = ""
+		return
+	}
+	var dropped int
+	for _, alloc := range allocations {
+		if alloc.NodeID == "" || alloc.SessionID == "" || alloc.JobID == "" || alloc.GroupID <= 0 {
+			dropped++
+			continue
+		}
+		key := vfioAllocationKey(alloc.NodeID, alloc.GroupID)
+		if _, exists := s.cluster.vfioAllocations[key]; exists {
+			dropped++
+			continue
+		}
+		if alloc.CreatedAt.IsZero() {
+			alloc.CreatedAt = time.Now()
+		}
+		s.cluster.vfioAllocations[key] = alloc
+		if _, ok := s.cluster.nodes[alloc.NodeID]; ok {
+			if !s.reserveRecoveredVFIOAllocationLocked(alloc) {
+				delete(s.cluster.vfioAllocations, key)
+				dropped++
+			}
+		}
+	}
+	if len(s.cluster.vfioAllocations) > 0 {
+		log.Printf("Loaded %d VFIO allocation records for daemon restart recovery", len(s.cluster.vfioAllocations))
+	}
+	if dropped > 0 {
+		if err := s.saveVFIOAllocationsLocked(); err != nil {
+			log.Printf("compact VFIO allocation state %s after dropping %d stale records: %v", s.vfioAllocationStorePath, dropped, err)
+		}
+	}
+}
+
+func (s *ClusterServerImpl) reconcileVFIOAllocationsForNodeLocked(nodeID cluster.NodeID) {
+	var changed bool
+	for key, alloc := range s.cluster.vfioAllocations {
+		if alloc.NodeID != nodeID {
+			continue
+		}
+		if !s.reserveRecoveredVFIOAllocationLocked(alloc) {
+			delete(s.cluster.vfioAllocations, key)
+			changed = true
+		}
+	}
+	if changed {
+		if err := s.saveVFIOAllocationsLocked(); err != nil {
+			log.Printf("compact VFIO allocation state %s after node %s reconciliation: %v", s.vfioAllocationStorePath, nodeID, err)
+		}
+	}
+}
+
+func (s *ClusterServerImpl) reserveRecoveredVFIOAllocationLocked(alloc vfioAllocation) bool {
+	if s.scheduler == nil {
+		return false
+	}
+	node, ok := s.scheduler.GetNode(alloc.NodeID)
+	if !ok {
+		return false
+	}
+	req := cluster.Requirements{
+		JobID:      alloc.JobID,
+		VFIOGroups: []int{alloc.GroupID},
+	}
+	if node.VFIOAllocations != nil {
+		if owner, ok := node.VFIOAllocations[alloc.GroupID]; ok {
+			if owner != alloc.JobID {
+				return false
+			}
+			node.Release(req)
+		}
+	}
+	allocated, ok := node.ReserveWithAllocation(req)
+	if !ok {
+		return false
+	}
+	if len(allocated.VFIOGroups) != 1 || allocated.VFIOGroups[0] != alloc.GroupID {
+		node.Release(allocated)
+		return false
+	}
+	return true
+}
+
+func (s *ClusterServerImpl) saveVFIOAllocationsLocked() error {
+	if s.vfioAllocationStorePath == "" {
+		return nil
+	}
+	records := make([]vfioAllocation, 0, len(s.cluster.vfioAllocations))
+	for _, alloc := range s.cluster.vfioAllocations {
+		records = append(records, alloc)
+	}
+	sort.Slice(records, func(i, j int) bool {
+		if records[i].NodeID == records[j].NodeID {
+			return records[i].GroupID < records[j].GroupID
+		}
+		return records[i].NodeID < records[j].NodeID
+	})
+	data, err := json.MarshalIndent(vfioAllocationState{Allocations: records}, "", "  ")
+	if err != nil {
+		return err
+	}
+	data = append(data, '\n')
+	if err := os.MkdirAll(filepath.Dir(s.vfioAllocationStorePath), 0o755); err != nil {
+		return err
+	}
+	tmp := s.vfioAllocationStorePath + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, s.vfioAllocationStorePath); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	return nil
+}
+
+func (s *ClusterServerImpl) saveVFIOAllocationsForCleanupLocked(reason string) {
+	if err := s.saveVFIOAllocationsLocked(); err != nil {
+		log.Printf("persist VFIO allocation cleanup after %s: %v", reason, err)
+	}
+}
+
 func vfioAllocationKey(nodeID cluster.NodeID, groupID int) string {
 	return string(nodeID) + ":" + strconv.Itoa(groupID)
 }
@@ -801,6 +980,7 @@ func (s *ClusterServerImpl) vfioGroupExistsLocked(groupID int) bool {
 }
 
 func (s *ClusterServerImpl) releaseVFIOAllocationsForJobLocked(jobID cluster.JobID) {
+	var changed bool
 	for key, alloc := range s.cluster.vfioAllocations {
 		if alloc.JobID != jobID {
 			continue
@@ -812,10 +992,15 @@ func (s *ClusterServerImpl) releaseVFIOAllocationsForJobLocked(jobID cluster.Job
 			})
 		}
 		delete(s.cluster.vfioAllocations, key)
+		changed = true
+	}
+	if changed {
+		s.saveVFIOAllocationsForCleanupLocked("job " + string(jobID))
 	}
 }
 
 func (s *ClusterServerImpl) releaseVFIOAllocationsForSessionLocked(sessionID cluster.SessionID) {
+	var changed bool
 	for key, alloc := range s.cluster.vfioAllocations {
 		if alloc.SessionID != sessionID {
 			continue
@@ -827,6 +1012,10 @@ func (s *ClusterServerImpl) releaseVFIOAllocationsForSessionLocked(sessionID clu
 			})
 		}
 		delete(s.cluster.vfioAllocations, key)
+		changed = true
+	}
+	if changed {
+		s.saveVFIOAllocationsForCleanupLocked("session " + string(sessionID))
 	}
 }
 

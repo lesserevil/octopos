@@ -52,6 +52,7 @@ var (
 	childState    = flag.String("remote-child-state", "/var/lib/octopos/remote-children.json", "Persistent remote-child lifecycle state file")
 	childLease    = flag.Duration("remote-child-lease-timeout", 2*time.Minute, "How long to keep polling an unobservable remote child before failing its parent-side lease")
 	childTokenTTL = flag.Duration("remote-child-token-ttl", 24*time.Hour, "How long a parent exec's remote-child token remains valid")
+	vfioState     = flag.String("vfio-allocation-state", "/var/lib/octopos/vfio-allocations.json", "Persistent VFIO allocation state file")
 )
 
 type Config struct {
@@ -68,6 +69,7 @@ type Config struct {
 	ChildState         string                     `yaml:"remote_child_state"`
 	ChildLease         time.Duration              `yaml:"remote_child_lease_timeout"`
 	ChildTokenTTL      time.Duration              `yaml:"remote_child_token_ttl"`
+	VFIOState          string                     `yaml:"vfio_allocation_state"`
 	Peers              string                     `yaml:"peers"`
 	VFIOEnabled        bool                       `yaml:"vfio_enabled"`
 	VFIOAllowedGroups  []int                      `yaml:"vfio_allowed_groups"`
@@ -114,6 +116,7 @@ func main() {
 		ChildState:    *childState,
 		ChildLease:    *childLease,
 		ChildTokenTTL: *childTokenTTL,
+		VFIOState:     *vfioState,
 		Peers:         *peers,
 		VFIOEnabled:   true,
 		ExecDefaults:  clusterconfig.DefaultExecDefaults(),
@@ -213,6 +216,8 @@ func applyExplicitConfigFlags(cfg *Config) {
 			cfg.ChildLease = *childLease
 		case "remote-child-token-ttl":
 			cfg.ChildTokenTTL = *childTokenTTL
+		case "vfio-allocation-state":
+			cfg.VFIOState = *vfioState
 		}
 	})
 }
@@ -415,6 +420,7 @@ func (s *Server) startGRPC() error {
 		RemoteChildStorePath:    s.config.ChildState,
 		RemoteChildLeaseTimeout: s.config.ChildLease,
 		RemoteChildTokenTTL:     s.config.ChildTokenTTL,
+		VFIOAllocationStorePath: s.config.VFIOState,
 	})
 	go s.pruneRemoteChildRecords()
 	go s.recoverRemoteChildRecords()

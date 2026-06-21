@@ -26,6 +26,7 @@ func buildClusterConfig(nodeID, grpcAddr, wgInterface, clusterRoot, ssiRootFS st
 		ChildState:    "/var/lib/octopos/remote-children.json",
 		ChildLease:    "2m",
 		ChildTokenTTL: "24h",
+		VFIOState:     "/var/lib/octopos/vfio-allocations.json",
 		Peers:         peers,
 		VFIOEnabled:   true,
 		ExecDefaults:  execDefaults.WithDefaults(),

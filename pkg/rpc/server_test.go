@@ -313,6 +313,90 @@ func TestDestroySessionReleasesVFIOAllocations(t *testing.T) {
 	}
 }
 
+func TestVFIOAllocationsPersistAndRecover(t *testing.T) {
+	statePath := filepath.Join(t.TempDir(), "vfio-allocations.json")
+
+	sched := scheduler.NewScheduler(&scheduler.BinPackPolicy{})
+	node := testVFIONode()
+	sched.AddNode(node)
+	server := NewClusterServerImplWithOptions("test-node", sched, tracker.NewTracker(), nil, ServerOptions{
+		VFIOAllocationStorePath: statePath,
+	})
+	alloc, err := server.AllocateVFIO(context.Background(), &AllocateVFIORequest{
+		SessionId: "sess-1",
+		JobId:     "job-1",
+		Device:    &VFIORequirement{VendorId: "8086", Count: 1},
+	})
+	if err != nil {
+		t.Fatalf("AllocateVFIO: %v", err)
+	}
+	if !alloc.Success {
+		t.Fatalf("AllocateVFIO failed: %s", alloc.Error)
+	}
+	if _, err := os.Stat(statePath); err != nil {
+		t.Fatalf("stat VFIO state: %v", err)
+	}
+
+	recoveredSched := scheduler.NewScheduler(&scheduler.BinPackPolicy{})
+	recoveredNode := testVFIONode()
+	recoveredSched.AddNode(recoveredNode)
+	recovered := NewClusterServerImplWithOptions("test-node", recoveredSched, tracker.NewTracker(), nil, ServerOptions{
+		VFIOAllocationStorePath: statePath,
+	})
+	if recoveredNode.VFIOAllocations[7] != "job-1" {
+		t.Fatalf("recovered VFIO allocations = %+v, want job-1", recoveredNode.VFIOAllocations)
+	}
+	list, err := recovered.GetVFIODevices(context.Background(), &GetVFIODevicesRequest{NodeId: "node-1"})
+	if err != nil {
+		t.Fatalf("GetVFIODevices: %v", err)
+	}
+	if len(list.Groups) != 1 || list.Groups[0].ClaimedBy != "job-1" {
+		t.Fatalf("recovered VFIO groups = %+v, want claimed by job-1", list.Groups)
+	}
+}
+
+func TestVFIOReleaseUpdatesPersistentState(t *testing.T) {
+	statePath := filepath.Join(t.TempDir(), "vfio-allocations.json")
+
+	sched := scheduler.NewScheduler(&scheduler.BinPackPolicy{})
+	node := testVFIONode()
+	sched.AddNode(node)
+	server := NewClusterServerImplWithOptions("test-node", sched, tracker.NewTracker(), nil, ServerOptions{
+		VFIOAllocationStorePath: statePath,
+	})
+	alloc, err := server.AllocateVFIO(context.Background(), &AllocateVFIORequest{
+		SessionId: "sess-1",
+		JobId:     "job-1",
+		Device:    &VFIORequirement{VendorId: "8086", Count: 1},
+	})
+	if err != nil {
+		t.Fatalf("AllocateVFIO: %v", err)
+	}
+	if !alloc.Success {
+		t.Fatalf("AllocateVFIO failed: %s", alloc.Error)
+	}
+	release, err := server.ReleaseVFIO(context.Background(), &ReleaseVFIORequest{
+		SessionId: "sess-1",
+		GroupId:   7,
+	})
+	if err != nil {
+		t.Fatalf("ReleaseVFIO: %v", err)
+	}
+	if !release.Success {
+		t.Fatalf("ReleaseVFIO failed: %s", release.Error)
+	}
+
+	recoveredSched := scheduler.NewScheduler(&scheduler.BinPackPolicy{})
+	recoveredNode := testVFIONode()
+	recoveredSched.AddNode(recoveredNode)
+	NewClusterServerImplWithOptions("test-node", recoveredSched, tracker.NewTracker(), nil, ServerOptions{
+		VFIOAllocationStorePath: statePath,
+	})
+	if len(recoveredNode.VFIOAllocations) != 0 {
+		t.Fatalf("recovered VFIO allocations = %+v, want empty", recoveredNode.VFIOAllocations)
+	}
+}
+
 func testVFIONode() *cluster.NodeInfo {
 	return &cluster.NodeInfo{
 		ID:    "node-1",

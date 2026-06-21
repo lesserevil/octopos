@@ -28,6 +28,7 @@ type File struct {
 	ChildState         string       `yaml:"remote_child_state,omitempty"`
 	ChildLease         string       `yaml:"remote_child_lease_timeout,omitempty"`
 	ChildTokenTTL      string       `yaml:"remote_child_token_ttl,omitempty"`
+	VFIOState          string       `yaml:"vfio_allocation_state,omitempty"`
 	Peers              string       `yaml:"peers,omitempty"`
 	VFIOEnabled        bool         `yaml:"vfio_enabled"`
 	VFIOAllowedGroups  []int        `yaml:"vfio_allowed_groups,omitempty"`
