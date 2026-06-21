@@ -34,6 +34,7 @@ type ClusterServerImpl struct {
 	remoteChildLeaseTimeout     time.Duration
 	remoteChildTokenTTL         time.Duration
 	remoteChildren              *remotechild.Store
+	pipes                       *pipeCoordinator
 	localPIDCounter             uint64
 	mu                          sync.RWMutex
 }
@@ -110,6 +111,7 @@ func NewClusterServerImplWithOptions(nodeID cluster.NodeID, sched *scheduler.Sch
 		remoteChildLeaseTimeout:     remoteChildLeaseTimeout,
 		remoteChildTokenTTL:         remoteChildTokenTTL,
 		remoteChildren:              remoteChildren,
+		pipes:                       newPipeCoordinator(),
 		localPIDCounter:             0,
 	}
 	if sched != nil {

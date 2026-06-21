@@ -187,9 +187,46 @@ func TestBuildRequestAddsParentNodeSoftAntiAffinity(t *testing.T) {
 
 func TestBuildRequestIncludesFDPlan(t *testing.T) {
 	cfg := config{SessionID: "session-a", JobID: "job-child", CWD: "/", CPU: 1, MemoryGB: 1}
-	req := buildRequestWithFDPlan(cfg, []string{"hostname"}, []string{"OCTOPOS_JOB_ID=job-parent"}, 123, 45, `[{"fd":9,"path":"/tmp/file","flags":2}]`)
+	req := buildRequestWithFDPlan(cfg, []string{"hostname"}, []string{"OCTOPOS_JOB_ID=job-parent"}, 123, 45, `[{"fd":9,"path":"/tmp/file","flags":2}]`, remotechild.EnvPipeFD(1)+"=12345")
 
 	assertEnv(t, req.Env, remotechild.EnvFDPlan+`=[{"fd":9,"path":"/tmp/file","flags":2}]`)
+	assertEnv(t, req.Env, remotechild.EnvPipeFD(1)+"=12345")
+}
+
+func TestRemotePipeEnvFromCurrentProcess(t *testing.T) {
+	readEnd, writeEnd, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer readEnd.Close()
+	defer writeEnd.Close()
+	if _, err := unix.FcntlInt(writeEnd.Fd(), unix.F_SETFD, 0); err != nil {
+		t.Fatalf("clear close-on-exec: %v", err)
+	}
+
+	savedStdout, err := unix.Dup(1)
+	if err != nil {
+		t.Fatalf("dup stdout: %v", err)
+	}
+	defer unix.Close(savedStdout)
+	if err := unix.Dup2(int(writeEnd.Fd()), 1); err != nil {
+		t.Fatalf("replace stdout: %v", err)
+	}
+	defer unix.Dup2(savedStdout, 1)
+
+	env, err := remotePipeEnvFromCurrentProcess()
+	if err != nil {
+		t.Fatalf("remotePipeEnvFromCurrentProcess: %v", err)
+	}
+	found := false
+	for _, entry := range env {
+		if strings.HasPrefix(entry, remotechild.EnvPipeFD(1)+"=") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("pipe env missing stdout pipe id: %#v", env)
+	}
 }
 
 func TestApplyLocalPolicyRejectsUnsupportedFD(t *testing.T) {

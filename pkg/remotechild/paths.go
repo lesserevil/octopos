@@ -1,5 +1,7 @@
 package remotechild
 
+import "strconv"
+
 const DefaultSocketPath = "/run/octopos/childd.sock"
 
 const (
@@ -14,6 +16,7 @@ const (
 	EnvForceLocal      = "OCTOPOS_REMOTE_CHILD_FORCE_LOCAL"
 	EnvHostFDDir       = "OCTOPOS_HOST_FD_DIR"
 	EnvMode            = "OCTOPOS_REMOTE_CHILDREN"
+	EnvPipeFDPrefix    = "OCTOPOS_REMOTE_CHILD_PIPE_FD_"
 	EnvPolicyAllow     = "OCTOPOS_REMOTE_CHILD_ALLOW"
 	EnvPolicyDeny      = "OCTOPOS_REMOTE_CHILD_DENY"
 	EnvPreloadActive   = "OCTOPOS_REMOTE_CHILD_PRELOAD_ACTIVE"
@@ -25,3 +28,7 @@ const (
 	EnvParentPID       = "OCTOPOS_PARENT_PID"
 	EnvShadowPID       = "OCTOPOS_SHADOW_PID"
 )
+
+func EnvPipeFD(fd int) string {
+	return EnvPipeFDPrefix + strconv.Itoa(fd)
+}

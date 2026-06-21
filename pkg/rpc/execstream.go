@@ -174,25 +174,66 @@ func (s *ClusterServerImpl) executeLocalStream(stream execStreamServer, req *Exe
 		s.failJob(jobID, node.ID, reqs, err.Error())
 		return sendStreamError(stream, err.Error())
 	}
-	stdinPipe, err := cmd.StdinPipe()
-	if err != nil {
-		s.failJob(jobID, node.ID, reqs, fmt.Sprintf("stdin pipe: %v", err))
-		return sendStreamError(stream, fmt.Sprintf("stdin pipe: %v", err))
+	pipeKeys := remoteChildPipeKeys(req)
+	var brokeredFiles []*os.File
+	var stdinPipe io.WriteCloser
+	var stdoutPipe io.ReadCloser
+	var stderrPipe io.ReadCloser
+	if key := pipeKeys[0]; key != "" {
+		file, err := s.pipes.attachLocal(key, 0)
+		if err != nil {
+			s.failJob(jobID, node.ID, reqs, fmt.Sprintf("stdin pipe graph: %v", err))
+			return sendStreamError(stream, fmt.Sprintf("stdin pipe graph: %v", err))
+		}
+		cmd.Stdin = file
+		brokeredFiles = append(brokeredFiles, file)
+	} else {
+		stdinPipe, err = cmd.StdinPipe()
+		if err != nil {
+			s.failJob(jobID, node.ID, reqs, fmt.Sprintf("stdin pipe: %v", err))
+			return sendStreamError(stream, fmt.Sprintf("stdin pipe: %v", err))
+		}
 	}
-	stdoutPipe, err := cmd.StdoutPipe()
-	if err != nil {
-		s.failJob(jobID, node.ID, reqs, fmt.Sprintf("stdout pipe: %v", err))
-		return sendStreamError(stream, fmt.Sprintf("stdout pipe: %v", err))
+	if key := pipeKeys[1]; key != "" {
+		file, err := s.pipes.attachLocal(key, 1)
+		if err != nil {
+			s.failJob(jobID, node.ID, reqs, fmt.Sprintf("stdout pipe graph: %v", err))
+			return sendStreamError(stream, fmt.Sprintf("stdout pipe graph: %v", err))
+		}
+		cmd.Stdout = file
+		brokeredFiles = append(brokeredFiles, file)
+	} else {
+		stdoutPipe, err = cmd.StdoutPipe()
+		if err != nil {
+			s.failJob(jobID, node.ID, reqs, fmt.Sprintf("stdout pipe: %v", err))
+			return sendStreamError(stream, fmt.Sprintf("stdout pipe: %v", err))
+		}
 	}
-	stderrPipe, err := cmd.StderrPipe()
-	if err != nil {
-		s.failJob(jobID, node.ID, reqs, fmt.Sprintf("stderr pipe: %v", err))
-		return sendStreamError(stream, fmt.Sprintf("stderr pipe: %v", err))
+	if key := pipeKeys[2]; key != "" {
+		file, err := s.pipes.attachLocal(key, 2)
+		if err != nil {
+			s.failJob(jobID, node.ID, reqs, fmt.Sprintf("stderr pipe graph: %v", err))
+			return sendStreamError(stream, fmt.Sprintf("stderr pipe graph: %v", err))
+		}
+		cmd.Stderr = file
+		brokeredFiles = append(brokeredFiles, file)
+	} else {
+		stderrPipe, err = cmd.StderrPipe()
+		if err != nil {
+			s.failJob(jobID, node.ID, reqs, fmt.Sprintf("stderr pipe: %v", err))
+			return sendStreamError(stream, fmt.Sprintf("stderr pipe: %v", err))
+		}
 	}
 
 	if err := cmd.Start(); err != nil {
+		for _, file := range brokeredFiles {
+			_ = file.Close()
+		}
 		s.failJob(jobID, node.ID, reqs, fmt.Sprintf("start: %v", err))
 		return sendStreamError(stream, fmt.Sprintf("start: %v", err))
+	}
+	for _, file := range brokeredFiles {
+		_ = file.Close()
 	}
 
 	globalPID := s.registerProcess(req, jobID, cmd.Process.Pid)
@@ -221,18 +262,25 @@ func (s *ClusterServerImpl) executeLocalStream(stream execStreamServer, req *Exe
 	var stdinCloseOnce sync.Once
 	closeStdin := func() {
 		stdinCloseOnce.Do(func() {
-			_ = stdinPipe.Close()
+			if stdinPipe != nil {
+				_ = stdinPipe.Close()
+			}
 		})
 	}
 
 	var wg sync.WaitGroup
-	wg.Add(2)
-	go copyStreamOutput(&wg, stdoutPipe, func(data []byte) error {
-		return send(&ExecStreamResponse{Payload: &ExecStreamResponse_StdoutData{StdoutData: data}})
-	})
-	go copyStreamOutput(&wg, stderrPipe, func(data []byte) error {
-		return send(&ExecStreamResponse{Payload: &ExecStreamResponse_StderrData{StderrData: data}})
-	})
+	if stdoutPipe != nil {
+		wg.Add(1)
+		go copyStreamOutput(&wg, stdoutPipe, func(data []byte) error {
+			return send(&ExecStreamResponse{Payload: &ExecStreamResponse_StdoutData{StdoutData: data}})
+		})
+	}
+	if stderrPipe != nil {
+		wg.Add(1)
+		go copyStreamOutput(&wg, stderrPipe, func(data []byte) error {
+			return send(&ExecStreamResponse{Payload: &ExecStreamResponse_StderrData{StderrData: data}})
+		})
+	}
 	go func() {
 		defer closeStdin()
 		for {
@@ -243,6 +291,9 @@ func (s *ClusterServerImpl) executeLocalStream(stream execStreamServer, req *Exe
 			switch payload := msg.Payload.(type) {
 			case *ExecStreamRequest_StdinData:
 				if len(payload.StdinData) == 0 {
+					continue
+				}
+				if stdinPipe == nil {
 					continue
 				}
 				if _, err := stdinPipe.Write(payload.StdinData); err != nil {
@@ -510,6 +561,10 @@ func (s *ClusterServerImpl) scheduleJob(req *ExecuteRequest) (*cluster.NodeInfo,
 	if req.Resources == nil {
 		req.Resources = &Requirements{}
 	}
+	pipeKeys := remoteChildPipeKeys(req)
+	if isRemoteChildRequest(req) && len(pipeKeys) > 0 {
+		s.applyPipePlacementAffinity(req, pipeKeys)
+	}
 	req.Resources.SessionId = req.SessionId
 	req.Resources.JobId = req.JobId
 
@@ -560,8 +615,25 @@ func (s *ClusterServerImpl) scheduleJob(req *ExecuteRequest) (*cluster.NodeInfo,
 		s.remoteChildren.Upsert(remoteChildRecordFromInfo(req, remoteInfo))
 		s.recordRemoteChildAudit(req, "spawn", "scheduled", "", remoteInfo)
 	}
+	s.pipes.recordPlacement(pipeKeys, node.ID)
 
 	return node, reqs, jobID, nil
+}
+
+func (s *ClusterServerImpl) applyPipePlacementAffinity(req *ExecuteRequest, pipeKeys map[int]string) {
+	if req.Resources == nil || req.Resources.NodeAffinity == nil {
+		if req.Resources == nil {
+			req.Resources = &Requirements{}
+		}
+		req.Resources.NodeAffinity = make(map[string]string)
+	}
+	if req.Resources.NodeAffinity["node_id"] != "" {
+		return
+	}
+	if nodeID := s.pipes.preferredNode(pipeKeys); nodeID != "" {
+		req.Resources.NodeAffinity["node_id"] = string(nodeID)
+		delete(req.Resources.NodeAffinity, "prefer_not_node_id")
+	}
 }
 
 func (s *ClusterServerImpl) registerProcess(req *ExecuteRequest, jobID cluster.JobID, localPID int) cluster.GlobalPID {

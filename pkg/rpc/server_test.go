@@ -755,6 +755,89 @@ func TestRemoteChildLifecycleStateTransitions(t *testing.T) {
 	}
 }
 
+func TestRemoteChildPipePlacementCoLocatesEndpoints(t *testing.T) {
+	server := NewClusterServerImpl(
+		cluster.NodeID("node-1"),
+		scheduler.NewScheduler(&scheduler.BinPackPolicy{}),
+		tracker.NewTracker(),
+		nil,
+	)
+	for _, nodeID := range []string{"node-1", "node-2"} {
+		if _, err := server.RegisterNode(context.Background(), &RegisterNodeRequest{
+			NodeId:  nodeID,
+			Address: "10.0.0." + nodeID[len(nodeID)-1:],
+			Resources: &NodeResources{
+				CpuMillicores: 4000,
+				MemoryBytes:   4 * 1024 * 1024 * 1024,
+			},
+		}); err != nil {
+			t.Fatalf("RegisterNode %s: %v", nodeID, err)
+		}
+	}
+	parentJob := &cluster.JobInfo{
+		ID:         "job-parent",
+		SessionID:  "session-1",
+		Status:     cluster.JobStatusRunning,
+		ChildToken: "parent-token",
+	}
+	server.cluster.jobs[parentJob.ID] = parentJob
+
+	first := &ExecuteRequest{
+		SessionId: "session-1",
+		JobId:     "job-producer",
+		Command:   []string{"producer"},
+		Env: []string{
+			remotechild.EnvRemoteChild + "=1",
+			remotechild.EnvParentJobID + "=job-parent",
+			remotechild.EnvChildToken + "=parent-token",
+			remotechild.EnvPipeFD(1) + "=pipe-123",
+		},
+		Resources: &Requirements{
+			CpuMillicores: 1000,
+			MemoryBytes:   1024 * 1024 * 1024,
+		},
+	}
+	firstNode, firstReqs, firstJobID, err := server.scheduleJob(first)
+	if err != nil {
+		t.Fatalf("schedule first endpoint: %v", err)
+	}
+	defer server.scheduler.Release(firstNode.ID, firstReqs)
+	defer delete(server.cluster.jobs, firstJobID)
+
+	second := &ExecuteRequest{
+		SessionId: "session-1",
+		JobId:     "job-consumer",
+		Command:   []string{"consumer"},
+		Env: []string{
+			remotechild.EnvRemoteChild + "=1",
+			remotechild.EnvParentJobID + "=job-parent",
+			remotechild.EnvChildToken + "=parent-token",
+			remotechild.EnvPipeFD(0) + "=pipe-123",
+		},
+		Resources: &Requirements{
+			CpuMillicores: 1000,
+			MemoryBytes:   1024 * 1024 * 1024,
+			NodeAffinity:  map[string]string{"prefer_not_node_id": string(firstNode.ID)},
+		},
+	}
+	secondNode, secondReqs, secondJobID, err := server.scheduleJob(second)
+	if err != nil {
+		t.Fatalf("schedule second endpoint: %v", err)
+	}
+	defer server.scheduler.Release(secondNode.ID, secondReqs)
+	defer delete(server.cluster.jobs, secondJobID)
+
+	if secondNode.ID != firstNode.ID {
+		t.Fatalf("second endpoint scheduled on %s, want %s", secondNode.ID, firstNode.ID)
+	}
+	if got := second.Resources.NodeAffinity["node_id"]; got != string(firstNode.ID) {
+		t.Fatalf("node affinity after pipe placement = %#v", second.Resources.NodeAffinity)
+	}
+	if _, ok := second.Resources.NodeAffinity["prefer_not_node_id"]; ok {
+		t.Fatalf("prefer_not_node_id was not removed: %#v", second.Resources.NodeAffinity)
+	}
+}
+
 func TestRemoteChildSignalStateTransitions(t *testing.T) {
 	server := NewClusterServerImpl(
 		cluster.NodeID("node-1"),

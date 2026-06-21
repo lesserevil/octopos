@@ -51,6 +51,11 @@ func main() {
 		fmt.Fprintf(os.Stderr, "octopos-remote-child: %v\n", err)
 		os.Exit(1)
 	}
+	pipeEnv, err := remotePipeEnvFromCurrentProcess()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "octopos-remote-child: %v\n", err)
+		os.Exit(1)
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -61,7 +66,7 @@ func main() {
 	}
 	defer conn.Close()
 
-	req := buildRequestWithFDPlan(cfg, command, os.Environ(), os.Getpid(), os.Getppid(), fdPlan)
+	req := buildRequestWithFDPlan(cfg, command, os.Environ(), os.Getpid(), os.Getppid(), fdPlan, pipeEnv...)
 	client := octopospb.NewClusterClient(conn)
 	err = execclient.RunForeground(context.Background(), client, req, execclient.Options{
 		TTY:            cfg.TTY,
@@ -128,6 +133,21 @@ func remoteFDPlanFromCurrentProcess() (string, error) {
 	}
 	plans = remotechild.PrepareFDPlans(plans, remotechild.FDPlanOptions{AllowReopen: true})
 	return remotechild.EncodeReopenFDs(remotechild.ReopenFDs(plans))
+}
+
+func remotePipeEnvFromCurrentProcess() ([]string, error) {
+	plans, err := remotechild.ClassifyInheritedFDs(os.Getpid())
+	if err != nil {
+		return nil, err
+	}
+	var out []string
+	for _, plan := range plans {
+		if plan.FD < 0 || plan.FD > 2 || plan.PipeID == "" {
+			continue
+		}
+		out = append(out, remotechild.EnvPipeFD(plan.FD)+"="+plan.PipeID)
+	}
+	return out, nil
 }
 
 var defaultDenyCommands = []string{
@@ -304,7 +324,7 @@ func buildRequest(cfg config, command []string, env []string, pid int, ppid int)
 	return buildRequestWithFDPlan(cfg, command, env, pid, ppid, "")
 }
 
-func buildRequestWithFDPlan(cfg config, command []string, env []string, pid int, ppid int, fdPlan string) *octopospb.ExecuteRequest {
+func buildRequestWithFDPlan(cfg config, command []string, env []string, pid int, ppid int, fdPlan string, extraEnv ...string) *octopospb.ExecuteRequest {
 	reason := "explicit"
 	if lookupEnv(env, remotechild.EnvPreloadActive) == "1" {
 		reason = "transparent"
@@ -321,6 +341,11 @@ func buildRequestWithFDPlan(cfg config, command []string, env []string, pid int,
 	}
 	if fdPlan != "" {
 		reqEnv = append(reqEnv, remotechild.EnvFDPlan+"="+fdPlan)
+	}
+	for _, entry := range extraEnv {
+		if entry != "" {
+			reqEnv = append(reqEnv, entry)
+		}
 	}
 
 	req := &octopospb.ExecuteRequest{
