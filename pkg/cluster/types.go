@@ -2,6 +2,7 @@ package cluster
 
 import (
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -67,6 +68,7 @@ type Requirements struct {
 	GPUMem       int64 // bytes per GPU
 	GPUDevices   []GPUDevice
 	VFIODevs     []VFIORequirement
+	VFIOGroups   []int
 	NodeAffinity map[string]string // key=value labels
 	SessionID    SessionID
 	JobID        JobID
@@ -213,15 +215,16 @@ type RemoteChildInfo struct {
 
 // NodeInfo describes a cluster node
 type NodeInfo struct {
-	ID             NodeID            `json:"id"`
-	Address        string            `json:"address"` // WireGuard IP
-	State          NodeState         `json:"state"`
-	Resources      ResourceSpec      `json:"resources"`
-	Allocated      ResourceSpec      `json:"allocated"`
-	VFIOGroups     []VFIOGroup       `json:"vfio_groups"`
-	Labels         map[string]string `json:"labels"`
-	LastHeartbeat  time.Time         `json:"last_heartbeat"`
-	GPUAllocations map[int]JobID     `json:"-"`
+	ID              NodeID            `json:"id"`
+	Address         string            `json:"address"` // WireGuard IP
+	State           NodeState         `json:"state"`
+	Resources       ResourceSpec      `json:"resources"`
+	Allocated       ResourceSpec      `json:"allocated"`
+	VFIOGroups      []VFIOGroup       `json:"vfio_groups"`
+	Labels          map[string]string `json:"labels"`
+	LastHeartbeat   time.Time         `json:"last_heartbeat"`
+	GPUAllocations  map[int]JobID     `json:"-"`
+	VFIOAllocations map[int]JobID     `json:"-"`
 }
 
 // CanReserve reports whether this node has enough available resources.
@@ -243,6 +246,9 @@ func (n *NodeInfo) CanReserve(req Requirements) bool {
 		return false
 	}
 	if req.GPUs > 0 && len(n.freeGPUDevices()) < req.GPUs {
+		return false
+	}
+	if !n.canReserveVFIO(req) {
 		return false
 	}
 
@@ -272,6 +278,20 @@ func (n *NodeInfo) ReserveWithAllocation(req Requirements) (Requirements, bool) 
 			n.GPUAllocations[dev.Index] = req.JobID
 		}
 	}
+	groups, ok := n.selectVFIOGroups(req)
+	if !ok {
+		return Requirements{}, false
+	}
+	if len(groups) > 0 {
+		allocated.VFIOGroups = groups
+		if n.VFIOAllocations == nil {
+			n.VFIOAllocations = make(map[int]JobID)
+		}
+		for _, groupID := range groups {
+			n.VFIOAllocations[groupID] = req.JobID
+			n.setVFIOGroupClaim(groupID, req.JobID)
+		}
+	}
 
 	// Reserve
 	n.Allocated.CPU += req.CPU
@@ -295,6 +315,7 @@ func (n *NodeInfo) Release(req Requirements) {
 		n.Allocated.GPUCount = 0
 	}
 	n.releaseGPUAllocations(req)
+	n.releaseVFIOAllocations(req)
 }
 
 func (n *NodeInfo) gpuCapacity() int {
@@ -355,6 +376,131 @@ func (n *NodeInfo) releaseGPUAllocations(req Requirements) {
 		released++
 		if released >= req.GPUs {
 			return
+		}
+	}
+}
+
+func (n *NodeInfo) canReserveVFIO(req Requirements) bool {
+	_, ok := n.selectVFIOGroups(req)
+	return ok
+}
+
+func (n *NodeInfo) selectVFIOGroups(req Requirements) ([]int, bool) {
+	if len(req.VFIOGroups) > 0 {
+		groups := append([]int(nil), req.VFIOGroups...)
+		for _, groupID := range groups {
+			group, ok := n.vfioGroup(groupID)
+			if !ok || n.vfioGroupClaimed(group) {
+				return nil, false
+			}
+		}
+		return groups, true
+	}
+	if len(req.VFIODevs) == 0 {
+		return nil, true
+	}
+
+	selected := make([]int, 0)
+	used := make(map[int]bool)
+	for _, need := range req.VFIODevs {
+		count := need.Count
+		if count <= 0 {
+			count = 1
+		}
+		for _, group := range n.vfioGroups() {
+			if used[group.GroupID] || n.vfioGroupClaimed(group) || !vfioGroupMatches(group, need) {
+				continue
+			}
+			selected = append(selected, group.GroupID)
+			used[group.GroupID] = true
+			count--
+			if count == 0 {
+				break
+			}
+		}
+		if count > 0 {
+			return nil, false
+		}
+	}
+	return selected, true
+}
+
+func (n *NodeInfo) vfioGroups() []VFIOGroup {
+	if len(n.VFIOGroups) > 0 {
+		return n.VFIOGroups
+	}
+	return n.Resources.VFIOGroups
+}
+
+func (n *NodeInfo) vfioGroup(groupID int) (VFIOGroup, bool) {
+	for _, group := range n.vfioGroups() {
+		if group.GroupID == groupID {
+			return group, true
+		}
+	}
+	return VFIOGroup{}, false
+}
+
+func (n *NodeInfo) vfioGroupClaimed(group VFIOGroup) bool {
+	if group.ClaimedBy != "" {
+		return true
+	}
+	owner, ok := n.VFIOAllocations[group.GroupID]
+	return ok && owner != ""
+}
+
+func vfioGroupMatches(group VFIOGroup, req VFIORequirement) bool {
+	for _, dev := range group.Devices {
+		if req.VendorID != "" && normalizePCISelector(req.VendorID) != normalizePCISelector(dev.VendorID) {
+			continue
+		}
+		if req.DeviceID != "" && normalizePCISelector(req.DeviceID) != normalizePCISelector(dev.DeviceID) {
+			continue
+		}
+		if req.Class != "" && !strings.HasPrefix(normalizePCISelector(dev.Class), normalizePCISelector(req.Class)) {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+func normalizePCISelector(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	return strings.TrimPrefix(value, "0x")
+}
+
+func (n *NodeInfo) setVFIOGroupClaim(groupID int, owner JobID) {
+	for i := range n.VFIOGroups {
+		if n.VFIOGroups[i].GroupID == groupID {
+			n.VFIOGroups[i].ClaimedBy = owner
+		}
+	}
+	for i := range n.Resources.VFIOGroups {
+		if n.Resources.VFIOGroups[i].GroupID == groupID {
+			n.Resources.VFIOGroups[i].ClaimedBy = owner
+		}
+	}
+}
+
+func (n *NodeInfo) releaseVFIOAllocations(req Requirements) {
+	if len(n.VFIOAllocations) == 0 {
+		return
+	}
+	if len(req.VFIOGroups) > 0 {
+		for _, groupID := range req.VFIOGroups {
+			delete(n.VFIOAllocations, groupID)
+			n.setVFIOGroupClaim(groupID, "")
+		}
+		return
+	}
+	if req.JobID == "" {
+		return
+	}
+	for groupID, owner := range n.VFIOAllocations {
+		if owner == req.JobID {
+			delete(n.VFIOAllocations, groupID)
+			n.setVFIOGroupClaim(groupID, "")
 		}
 	}
 }

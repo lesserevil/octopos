@@ -202,3 +202,103 @@ func TestNodeInfoReserveWithGPUAllocation(t *testing.T) {
 		t.Fatalf("GPU allocations = %+v, want empty", node.GPUAllocations)
 	}
 }
+
+func TestNodeInfoReserveWithVFIOAllocation(t *testing.T) {
+	node := &NodeInfo{
+		ID:    "node-1",
+		State: NodeStateActive,
+		Resources: ResourceSpec{
+			CPU:    8000,
+			Memory: 32_000_000_000,
+			VFIOGroups: []VFIOGroup{
+				{
+					GroupID: 7,
+					Devices: []PCIDevice{{
+						Address:   "0000:01:00.0",
+						VendorID:  "8086",
+						DeviceID:  "10fb",
+						Class:     "020000",
+						Driver:    "vfio-pci",
+						VFIOGroup: 7,
+					}},
+				},
+				{
+					GroupID: 8,
+					Devices: []PCIDevice{{
+						Address:   "0000:02:00.0",
+						VendorID:  "15b3",
+						DeviceID:  "1017",
+						Class:     "020000",
+						Driver:    "vfio-pci",
+						VFIOGroup: 8,
+					}},
+				},
+			},
+		},
+	}
+
+	req1 := Requirements{
+		CPU:    1000,
+		Memory: 1_000_000_000,
+		VFIODevs: []VFIORequirement{{
+			VendorID: "8086",
+			Class:    "0200",
+			Count:    1,
+		}},
+		JobID: "job-1",
+	}
+	alloc1, ok := node.ReserveWithAllocation(req1)
+	if !ok {
+		t.Fatal("first VFIO reserve failed")
+	}
+	if len(alloc1.VFIOGroups) != 1 || alloc1.VFIOGroups[0] != 7 {
+		t.Fatalf("VFIO allocation = %+v, want group 7", alloc1.VFIOGroups)
+	}
+	if node.VFIOAllocations[7] != "job-1" {
+		t.Fatalf("VFIO owner = %q, want job-1", node.VFIOAllocations[7])
+	}
+	if node.Resources.VFIOGroups[0].ClaimedBy != "job-1" {
+		t.Fatalf("group claim = %q, want job-1", node.Resources.VFIOGroups[0].ClaimedBy)
+	}
+
+	req2 := Requirements{
+		CPU:    1000,
+		Memory: 1_000_000_000,
+		VFIOGroups: []int{
+			7,
+		},
+		JobID: "job-2",
+	}
+	if _, ok := node.ReserveWithAllocation(req2); ok {
+		t.Fatal("explicit reserve of claimed group should fail")
+	}
+
+	req3 := Requirements{
+		CPU:    1000,
+		Memory: 1_000_000_000,
+		VFIOGroups: []int{
+			8,
+		},
+		JobID: "job-3",
+	}
+	alloc3, ok := node.ReserveWithAllocation(req3)
+	if !ok {
+		t.Fatal("explicit reserve of free group failed")
+	}
+	if len(alloc3.VFIOGroups) != 1 || alloc3.VFIOGroups[0] != 8 {
+		t.Fatalf("explicit VFIO allocation = %+v, want group 8", alloc3.VFIOGroups)
+	}
+
+	node.Release(alloc1)
+	if _, claimed := node.VFIOAllocations[7]; claimed {
+		t.Fatalf("group 7 still claimed: %+v", node.VFIOAllocations)
+	}
+	if node.Resources.VFIOGroups[0].ClaimedBy != "" {
+		t.Fatalf("group 7 claim = %q, want empty", node.Resources.VFIOGroups[0].ClaimedBy)
+	}
+
+	node.Release(alloc3)
+	if len(node.VFIOAllocations) != 0 {
+		t.Fatalf("VFIO allocations = %+v, want empty", node.VFIOAllocations)
+	}
+}

@@ -205,6 +205,60 @@ func TestSchedulerReturnsGPUAllocation(t *testing.T) {
 	}
 }
 
+func TestSchedulerReturnsVFIOAllocation(t *testing.T) {
+	s := NewScheduler(&BinPackPolicy{})
+	node := &cluster.NodeInfo{
+		ID:    "node-1",
+		State: cluster.NodeStateActive,
+		Resources: cluster.ResourceSpec{
+			CPU:    8000,
+			Memory: 32 * 1024 * 1024 * 1024,
+			VFIOGroups: []cluster.VFIOGroup{{
+				GroupID: 7,
+				Devices: []cluster.PCIDevice{{
+					Address:   "0000:01:00.0",
+					VendorID:  "8086",
+					DeviceID:  "10fb",
+					Class:     "020000",
+					Driver:    "vfio-pci",
+					VFIOGroup: 7,
+				}},
+			}},
+		},
+	}
+	s.AddNode(node)
+
+	req := cluster.Requirements{
+		CPU:    1000,
+		Memory: 1 * 1024 * 1024 * 1024,
+		VFIODevs: []cluster.VFIORequirement{{
+			VendorID: "8086",
+			DeviceID: "10fb",
+			Class:    "0200",
+			Count:    1,
+		}},
+		JobID: "job-1",
+	}
+	selected, allocated, err := s.ScheduleWithAllocation(req)
+	if err != nil {
+		t.Fatalf("ScheduleWithAllocation failed: %v", err)
+	}
+	if selected.ID != "node-1" {
+		t.Fatalf("selected node = %s, want node-1", selected.ID)
+	}
+	if len(allocated.VFIOGroups) != 1 || allocated.VFIOGroups[0] != 7 {
+		t.Fatalf("allocated VFIO groups = %+v, want group 7", allocated.VFIOGroups)
+	}
+	if node.VFIOAllocations[7] != "job-1" {
+		t.Fatalf("VFIO allocation owner = %q, want job-1", node.VFIOAllocations[7])
+	}
+
+	s.Release("node-1", allocated)
+	if len(node.VFIOAllocations) != 0 {
+		t.Fatalf("VFIO allocations = %+v, want empty", node.VFIOAllocations)
+	}
+}
+
 func TestBinPackPolicyExcludesSSIUnreadyNodes(t *testing.T) {
 	policy := &BinPackPolicy{}
 	nodes := []*cluster.NodeInfo{
