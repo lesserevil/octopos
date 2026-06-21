@@ -284,6 +284,7 @@ PersistentKeepalive = 25
 		{"octopos-remote-child", "./cmd/octopos-remote-child"},
 		{"octopos-child-supervisor", "./cmd/octopos-child-supervisor"},
 		{"octopos-lockcheck", "./cmd/octopos-lockcheck"},
+		{"octopos-unixsock-proxy", "./cmd/octopos-unixsock-proxy"},
 	}
 	if cfg.ObjectProxy {
 		buildTargets = append(buildTargets, struct{ bin, pkg string }{"octopos-objectstore-proxy", "./cmd/octopos-objectstore-proxy"})
@@ -328,7 +329,7 @@ PersistentKeepalive = 25
 
 	// 6. Deploy binaries to node
 	fmt.Println("[5/7] Deploying binaries...")
-	binaries := []string{"octoposd", "octoposctl", "octopos-exec", "octopos-remote-child", "octopos-child-supervisor", "octopos-lockcheck"}
+	binaries := []string{"octoposd", "octoposctl", "octopos-exec", "octopos-remote-child", "octopos-child-supervisor", "octopos-lockcheck", "octopos-unixsock-proxy"}
 	if cfg.ObjectProxy {
 		binaries = append(binaries, "octopos-objectstore-proxy")
 	}
@@ -450,11 +451,12 @@ WantedBy=multi-user.target
 	}
 	if cfg.RequireSSI {
 		ssiBinDir := filepath.Join(cfg.SSIRootFS, "usr/local/bin")
-		installRemoteChild := fmt.Sprintf("sudo install -d %s && sudo install -m 0755 /tmp/octopos-remote-child %s && sudo install -m 0755 /tmp/octopos-child-supervisor %s && sudo install -m 0755 /tmp/octopos-lockcheck %s",
+		installRemoteChild := fmt.Sprintf("sudo install -d %s && sudo install -m 0755 /tmp/octopos-remote-child %s && sudo install -m 0755 /tmp/octopos-child-supervisor %s && sudo install -m 0755 /tmp/octopos-lockcheck %s && sudo install -m 0755 /tmp/octopos-unixsock-proxy %s",
 			shellQuote(ssiBinDir),
 			shellQuote(filepath.Join(ssiBinDir, "octopos-remote-child")),
 			shellQuote(filepath.Join(ssiBinDir, "octopos-child-supervisor")),
 			shellQuote(filepath.Join(ssiBinDir, "octopos-lockcheck")),
+			shellQuote(filepath.Join(ssiBinDir, "octopos-unixsock-proxy")),
 		)
 		if err := cfg.run("install octopos-remote-child into SSI root", cfg.sshCmd(installRemoteChild)); err != nil {
 			return err

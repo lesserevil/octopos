@@ -14,6 +14,7 @@ host or git operations unless explicitly requested.
   - `./cmd/octopos-exec`
   - `./cmd/octopos-remote-child`
   - `./cmd/octopos-lockcheck`
+  - `./cmd/octopos-unixsock-proxy`
   - `./cmd/octopos-gw`
   - `./cmd/octopos-objectstore-proxy`
 - Generated protobuf files live under `pkg/rpc/` and should only be regenerated
