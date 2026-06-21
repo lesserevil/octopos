@@ -16,6 +16,7 @@ const (
 	EnvForceLocal      = "OCTOPOS_REMOTE_CHILD_FORCE_LOCAL"
 	EnvHostFDDir       = "OCTOPOS_HOST_FD_DIR"
 	EnvMode            = "OCTOPOS_REMOTE_CHILDREN"
+	EnvFIFOFDPrefix    = "OCTOPOS_REMOTE_CHILD_FIFO_FD_"
 	EnvPipeFDPrefix    = "OCTOPOS_REMOTE_CHILD_PIPE_FD_"
 	EnvPolicyAllow     = "OCTOPOS_REMOTE_CHILD_ALLOW"
 	EnvPolicyDeny      = "OCTOPOS_REMOTE_CHILD_DENY"
@@ -31,4 +32,8 @@ const (
 
 func EnvPipeFD(fd int) string {
 	return EnvPipeFDPrefix + strconv.Itoa(fd)
+}
+
+func EnvFIFOFD(fd int) string {
+	return EnvFIFOFDPrefix + strconv.Itoa(fd)
 }

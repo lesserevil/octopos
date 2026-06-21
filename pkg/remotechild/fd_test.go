@@ -149,6 +149,36 @@ func TestClassifyInheritedFDsReportsPipeKind(t *testing.T) {
 	}
 }
 
+func TestClassifyInheritedFDsReportsNamedFIFO(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "test.fifo")
+	if err := unix.Mkfifo(path, 0600); err != nil {
+		t.Fatalf("mkfifo: %v", err)
+	}
+	fd, err := unix.Open(path, unix.O_RDWR|unix.O_NONBLOCK, 0600)
+	if err != nil {
+		t.Fatalf("open fifo: %v", err)
+	}
+	defer unix.Close(fd)
+	if _, err := unix.FcntlInt(uintptr(fd), unix.F_SETFD, 0); err != nil {
+		t.Fatalf("clear close-on-exec: %v", err)
+	}
+
+	plans, err := ClassifyInheritedFDs(os.Getpid())
+	if err != nil {
+		t.Fatalf("ClassifyInheritedFDs: %v", err)
+	}
+	plan, ok := findPlan(plans, fd)
+	if !ok {
+		t.Fatalf("fd %d missing from plan: %#v", fd, plans)
+	}
+	if plan.Kind != FDKindPipe || plan.FIFOPath != path {
+		t.Fatalf("fifo plan = %#v", plan)
+	}
+	if plan.ReasonCode != FDReasonFIFO {
+		t.Fatalf("reason code = %q, want %q; plan=%#v", plan.ReasonCode, FDReasonFIFO, plan)
+	}
+}
+
 func TestClassifyInheritedFDsReportsDeviceNumbers(t *testing.T) {
 	file, err := os.Open("/dev/null")
 	if err != nil {

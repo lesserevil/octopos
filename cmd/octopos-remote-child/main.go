@@ -143,6 +143,9 @@ func remotePipeEnvFromCurrentProcess() ([]string, error) {
 	var out []string
 	for _, plan := range plans {
 		if plan.FD < 0 || plan.FD > 2 || plan.PipeID == "" {
+			if plan.FD >= 0 && plan.FD <= 2 && plan.FIFOPath != "" {
+				out = append(out, remotechild.EnvFIFOFD(plan.FD)+"="+plan.FIFOPath)
+			}
 			continue
 		}
 		out = append(out, remotechild.EnvPipeFD(plan.FD)+"="+plan.PipeID)

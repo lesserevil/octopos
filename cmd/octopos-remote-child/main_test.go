@@ -229,6 +229,40 @@ func TestRemotePipeEnvFromCurrentProcess(t *testing.T) {
 	}
 }
 
+func TestRemotePipeEnvFromCurrentProcessReportsFIFO(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "test.fifo")
+	if err := unix.Mkfifo(path, 0600); err != nil {
+		t.Fatalf("mkfifo: %v", err)
+	}
+	fd, err := unix.Open(path, unix.O_RDWR|unix.O_NONBLOCK, 0600)
+	if err != nil {
+		t.Fatalf("open fifo: %v", err)
+	}
+	defer unix.Close(fd)
+
+	savedStdout, err := unix.Dup(1)
+	if err != nil {
+		t.Fatalf("dup stdout: %v", err)
+	}
+	defer unix.Close(savedStdout)
+	if err := unix.Dup2(fd, 1); err != nil {
+		t.Fatalf("replace stdout: %v", err)
+	}
+	defer unix.Dup2(savedStdout, 1)
+
+	env, err := remotePipeEnvFromCurrentProcess()
+	if err != nil {
+		t.Fatalf("remotePipeEnvFromCurrentProcess: %v", err)
+	}
+	want := remotechild.EnvFIFOFD(1) + "=" + path
+	for _, entry := range env {
+		if entry == want {
+			return
+		}
+	}
+	t.Fatalf("fifo env missing %q in %#v", want, env)
+}
+
 func TestApplyLocalPolicyRejectsUnsupportedFD(t *testing.T) {
 	file := openNonCloseOnExecFile(t)
 	defer file.Close()

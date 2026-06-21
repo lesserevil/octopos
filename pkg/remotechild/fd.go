@@ -51,6 +51,7 @@ const (
 	FDReasonRegularNoPath           FDReasonCode = "fd.regular.no_reopen_path"
 	FDReasonDirectoryRequiresReopen FDReasonCode = "fd.directory.requires_reopen"
 	FDReasonPipe                    FDReasonCode = "ipc.pipe"
+	FDReasonFIFO                    FDReasonCode = "ipc.fifo"
 	FDReasonSocket                  FDReasonCode = "ipc.socket"
 	FDReasonUnixSocket              FDReasonCode = "ipc.unix_socket"
 	FDReasonUnixAbstractSocket      FDReasonCode = "ipc.unix_socket.abstract"
@@ -76,6 +77,7 @@ type FDPlan struct {
 	DeviceMajor   uint32
 	DeviceMinor   uint32
 	PipeID        string
+	FIFOPath      string
 	SocketID      string
 	SocketFamily  string
 	SocketAddress string
@@ -339,6 +341,10 @@ func enrichFDPlan(plan *FDPlan, fd int, target string, currentProcess bool) {
 			switch st.Mode & unix.S_IFMT {
 			case unix.S_IFREG:
 				plan.FileLockTypes = currentProcessLockTypes(st.Ino)
+			case unix.S_IFIFO:
+				if filepath.IsAbs(target) {
+					plan.FIFOPath = target
+				}
 			case unix.S_IFCHR, unix.S_IFBLK:
 				plan.DeviceMajor = uint32(unix.Major(uint64(st.Rdev)))
 				plan.DeviceMinor = uint32(unix.Minor(uint64(st.Rdev)))
@@ -500,6 +506,9 @@ func forceLocalReason(plan FDPlan) (string, FDReasonCode) {
 	case FDKindDirectory:
 		return "directory descriptor requires remote fd recreation, which is not enabled yet", FDReasonDirectoryRequiresReopen
 	case FDKindPipe:
+		if plan.FIFOPath != "" {
+			return "named FIFO requires coordinated FIFO broker semantics", FDReasonFIFO
+		}
 		return "anonymous pipe requires coordinated pipe proxying", FDReasonPipe
 	case FDKindSocket:
 		switch plan.SocketFamily {
@@ -569,6 +578,9 @@ func fdPlanDetailSuffix(plan FDPlan) string {
 	}
 	if plan.PipeID != "" {
 		parts = append(parts, "pipe="+plan.PipeID)
+	}
+	if plan.FIFOPath != "" {
+		parts = append(parts, "fifo="+plan.FIFOPath)
 	}
 	if plan.SocketID != "" {
 		parts = append(parts, "socket="+plan.SocketID)

@@ -11,11 +11,11 @@ import (
 func TestRemoteChildPipeIDsFromEnv(t *testing.T) {
 	got := remoteChildPipeIDsFromEnv([]string{
 		remotechild.EnvPipeFD(0) + "=pipe-a",
-		remotechild.EnvPipeFD(1) + "=pipe-b",
+		remotechild.EnvFIFOFD(1) + "=/cluster/tmp/fifo-b",
 		remotechild.EnvPipeFDPrefix + "bad=ignored",
 		remotechild.EnvPipeFDPrefix + "3=ignored",
 	})
-	if got[0] != "pipe-a" || got[1] != "pipe-b" {
+	if got[0] != "pipe:pipe-a" || got[1] != "fifo:/cluster/tmp/fifo-b" {
 		t.Fatalf("pipe ids = %#v", got)
 	}
 	if _, ok := got[3]; ok {

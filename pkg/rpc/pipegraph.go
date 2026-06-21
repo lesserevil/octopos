@@ -34,15 +34,26 @@ func remoteChildPipeIDsFromEnv(env []string) map[int]string {
 	out := make(map[int]string)
 	for _, entry := range env {
 		key, value, ok := strings.Cut(entry, "=")
-		if !ok || !strings.HasPrefix(key, remotechild.EnvPipeFDPrefix) || value == "" {
+		if !ok || value == "" {
 			continue
 		}
-		rawFD := strings.TrimPrefix(key, remotechild.EnvPipeFDPrefix)
+		var rawFD string
+		var namespace string
+		switch {
+		case strings.HasPrefix(key, remotechild.EnvPipeFDPrefix):
+			rawFD = strings.TrimPrefix(key, remotechild.EnvPipeFDPrefix)
+			namespace = "pipe"
+		case strings.HasPrefix(key, remotechild.EnvFIFOFDPrefix):
+			rawFD = strings.TrimPrefix(key, remotechild.EnvFIFOFDPrefix)
+			namespace = "fifo"
+		default:
+			continue
+		}
 		fd, err := strconv.Atoi(rawFD)
 		if err != nil || fd < 0 || fd > 2 {
 			continue
 		}
-		out[fd] = value
+		out[fd] = namespace + ":" + value
 	}
 	return out
 }
