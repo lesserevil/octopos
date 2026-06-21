@@ -2,6 +2,7 @@ package unixbroker
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"fmt"
 	"net"
@@ -69,6 +70,36 @@ func TestBrokerProxiesUnixStream(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("broker did not stop")
+	}
+}
+
+func TestProxyBridgesStdioToUnixStream(t *testing.T) {
+	dir := t.TempDir()
+	targetPath := filepath.Join(dir, "target.sock")
+
+	target, err := net.Listen("unix", targetPath)
+	if err != nil {
+		t.Fatalf("listen target: %v", err)
+	}
+	defer target.Close()
+	go func() {
+		conn, err := target.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		line, err := bufio.NewReader(conn).ReadString('\n')
+		if err == nil {
+			_, _ = fmt.Fprintf(conn, "echo:%s", line)
+		}
+	}()
+
+	var out bytes.Buffer
+	if err := Proxy(targetPath, bytes.NewBufferString("hello\n"), &out); err != nil {
+		t.Fatalf("Proxy: %v", err)
+	}
+	if out.String() != "echo:hello\n" {
+		t.Fatalf("proxy output = %q", out.String())
 	}
 }
 

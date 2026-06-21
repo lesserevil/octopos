@@ -16,6 +16,31 @@ type Broker struct {
 	TargetPath string
 }
 
+func Proxy(targetPath string, input io.Reader, output io.Writer) error {
+	if targetPath == "" {
+		return errors.New("missing target path")
+	}
+	target, err := net.Dial("unix", targetPath)
+	if err != nil {
+		return fmt.Errorf("dial unix %s: %w", targetPath, err)
+	}
+	defer target.Close()
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		_, _ = io.Copy(target, input)
+		closeWrite(target)
+	}()
+	go func() {
+		defer wg.Done()
+		_, _ = io.Copy(output, target)
+	}()
+	wg.Wait()
+	return nil
+}
+
 func (b Broker) Serve(ctx context.Context) error {
 	if b.ListenPath == "" {
 		return errors.New("missing listen path")

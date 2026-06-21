@@ -178,6 +178,14 @@ Inspect pipe proxy counters with:
 octoposctl --addr 10.0.0.1:50051 pipe stats
 ```
 
+For explicit pathname Unix stream socket bridging, `octopos-unixsock-proxy` can
+listen on one socket and forward to another, or bridge stdio to a target:
+
+```bash
+octopos-unixsock-proxy --listen /tmp/proxy.sock --target /cluster/run/app.sock
+octopos-unixsock-proxy --stdio --target /cluster/run/app.sock
+```
+
 Inherited locked regular files force local by default. After validating the
 active SSI filesystem lock behavior across nodes, opt in with:
 
