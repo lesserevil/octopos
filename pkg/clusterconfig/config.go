@@ -16,21 +16,26 @@ type ExecDefaults struct {
 }
 
 type File struct {
-	NodeID        string       `yaml:"node_id,omitempty"`
-	GRPCAddr      string       `yaml:"grpc_addr,omitempty"`
-	WGInterface   string       `yaml:"wg_interface,omitempty"`
-	JuiceFSMount  string       `yaml:"juicefs_mount,omitempty"`
-	SSIRootFS     string       `yaml:"ssi_rootfs,omitempty"`
-	SSIMountBase  string       `yaml:"ssi_mount_base,omitempty"`
-	SSIExecutor   string       `yaml:"ssi_executor,omitempty"`
-	RequireSSI    bool         `yaml:"require_ssi"`
-	ChildSocket   string       `yaml:"child_socket,omitempty"`
-	ChildState    string       `yaml:"remote_child_state,omitempty"`
-	ChildLease    string       `yaml:"remote_child_lease_timeout,omitempty"`
-	ChildTokenTTL string       `yaml:"remote_child_token_ttl,omitempty"`
-	Peers         string       `yaml:"peers,omitempty"`
-	VFIOEnabled   bool         `yaml:"vfio_enabled"`
-	ExecDefaults  ExecDefaults `yaml:"exec_defaults"`
+	NodeID             string       `yaml:"node_id,omitempty"`
+	GRPCAddr           string       `yaml:"grpc_addr,omitempty"`
+	WGInterface        string       `yaml:"wg_interface,omitempty"`
+	JuiceFSMount       string       `yaml:"juicefs_mount,omitempty"`
+	SSIRootFS          string       `yaml:"ssi_rootfs,omitempty"`
+	SSIMountBase       string       `yaml:"ssi_mount_base,omitempty"`
+	SSIExecutor        string       `yaml:"ssi_executor,omitempty"`
+	RequireSSI         bool         `yaml:"require_ssi"`
+	ChildSocket        string       `yaml:"child_socket,omitempty"`
+	ChildState         string       `yaml:"remote_child_state,omitempty"`
+	ChildLease         string       `yaml:"remote_child_lease_timeout,omitempty"`
+	ChildTokenTTL      string       `yaml:"remote_child_token_ttl,omitempty"`
+	Peers              string       `yaml:"peers,omitempty"`
+	VFIOEnabled        bool         `yaml:"vfio_enabled"`
+	VFIOAllowedGroups  []int        `yaml:"vfio_allowed_groups,omitempty"`
+	VFIODeniedGroups   []int        `yaml:"vfio_denied_groups,omitempty"`
+	VFIOAllowedClasses []string     `yaml:"vfio_allowed_classes,omitempty"`
+	VFIOAllowedVendors []string     `yaml:"vfio_allowed_vendors,omitempty"`
+	VFIODriverRebind   bool         `yaml:"vfio_driver_rebind"`
+	ExecDefaults       ExecDefaults `yaml:"exec_defaults"`
 }
 
 func DefaultExecDefaults() ExecDefaults {

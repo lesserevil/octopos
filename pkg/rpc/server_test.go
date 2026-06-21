@@ -127,6 +127,49 @@ func TestClusterServer(t *testing.T) {
 	}
 }
 
+func TestRegisterNodeCarriesVFIOGroupsFromPCIDevices(t *testing.T) {
+	server := NewClusterServerImpl("test-node", scheduler.NewScheduler(&scheduler.BinPackPolicy{}), tracker.NewTracker(), nil)
+
+	resp, err := server.RegisterNode(context.Background(), &RegisterNodeRequest{
+		NodeId:  "vfio-node",
+		Address: "10.0.0.2",
+		Resources: &NodeResources{
+			CpuMillicores: 4000,
+			MemoryBytes:   8_000_000_000,
+			PciDevices: []*PCIDevice{{
+				Address:    "0000:01:00.0",
+				VendorId:   "8086",
+				DeviceId:   "10fb",
+				Class:      "020000",
+				Driver:     "vfio-pci",
+				IommuGroup: 7,
+				VfioGroup:  7,
+			}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("RegisterNode: %v", err)
+	}
+	if !resp.Success {
+		t.Fatalf("RegisterNode failed: %s", resp.Error)
+	}
+
+	state, err := server.GetClusterState(context.Background(), &GetClusterStateRequest{})
+	if err != nil {
+		t.Fatalf("GetClusterState: %v", err)
+	}
+	if len(state.Nodes) != 1 {
+		t.Fatalf("nodes = %d, want 1", len(state.Nodes))
+	}
+	node := state.Nodes[0]
+	if len(node.Capacity.PciDevices) != 1 {
+		t.Fatalf("PCI devices = %+v, want one", node.Capacity.PciDevices)
+	}
+	if len(node.VfioGroups) != 1 || node.VfioGroups[0].GroupId != 7 {
+		t.Fatalf("VFIO groups = %+v, want group 7", node.VfioGroups)
+	}
+}
+
 func TestExecStreamStreamsStdio(t *testing.T) {
 	client, cleanup := newTestClusterClient(t)
 	defer cleanup()

@@ -25,6 +25,7 @@ import (
 	"github.com/octopos/octopos/pkg/scheduler"
 	"github.com/octopos/octopos/pkg/ssi"
 	"github.com/octopos/octopos/pkg/tracker"
+	"github.com/octopos/octopos/pkg/vfio"
 	"golang.org/x/sys/unix"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -54,22 +55,27 @@ var (
 )
 
 type Config struct {
-	NodeID        string                     `yaml:"node_id"`
-	GRPCAddr      string                     `yaml:"grpc_addr"`
-	WGInterface   string                     `yaml:"wg_interface"`
-	RedisAddrs    string                     `yaml:"redis_addrs"`
-	JuiceFSMount  string                     `yaml:"juicefs_mount"`
-	SSIRootFS     string                     `yaml:"ssi_rootfs"`
-	SSIMountBase  string                     `yaml:"ssi_mount_base"`
-	SSIExecutor   string                     `yaml:"ssi_executor"`
-	RequireSSI    bool                       `yaml:"require_ssi"`
-	ChildSocket   string                     `yaml:"child_socket"`
-	ChildState    string                     `yaml:"remote_child_state"`
-	ChildLease    time.Duration              `yaml:"remote_child_lease_timeout"`
-	ChildTokenTTL time.Duration              `yaml:"remote_child_token_ttl"`
-	Peers         string                     `yaml:"peers"`
-	VFIOEnabled   bool                       `yaml:"vfio_enabled"`
-	ExecDefaults  clusterconfig.ExecDefaults `yaml:"exec_defaults"`
+	NodeID             string                     `yaml:"node_id"`
+	GRPCAddr           string                     `yaml:"grpc_addr"`
+	WGInterface        string                     `yaml:"wg_interface"`
+	RedisAddrs         string                     `yaml:"redis_addrs"`
+	JuiceFSMount       string                     `yaml:"juicefs_mount"`
+	SSIRootFS          string                     `yaml:"ssi_rootfs"`
+	SSIMountBase       string                     `yaml:"ssi_mount_base"`
+	SSIExecutor        string                     `yaml:"ssi_executor"`
+	RequireSSI         bool                       `yaml:"require_ssi"`
+	ChildSocket        string                     `yaml:"child_socket"`
+	ChildState         string                     `yaml:"remote_child_state"`
+	ChildLease         time.Duration              `yaml:"remote_child_lease_timeout"`
+	ChildTokenTTL      time.Duration              `yaml:"remote_child_token_ttl"`
+	Peers              string                     `yaml:"peers"`
+	VFIOEnabled        bool                       `yaml:"vfio_enabled"`
+	VFIOAllowedGroups  []int                      `yaml:"vfio_allowed_groups"`
+	VFIODeniedGroups   []int                      `yaml:"vfio_denied_groups"`
+	VFIOAllowedClasses []string                   `yaml:"vfio_allowed_classes"`
+	VFIOAllowedVendors []string                   `yaml:"vfio_allowed_vendors"`
+	VFIODriverRebind   bool                       `yaml:"vfio_driver_rebind"`
+	ExecDefaults       clusterconfig.ExecDefaults `yaml:"exec_defaults"`
 }
 
 type Server struct {
@@ -214,6 +220,13 @@ func applyExplicitConfigFlags(cfg *Config) {
 func (s *Server) init() error {
 	// Detect resources
 	s.detector = resources.NewDetector("", "")
+	s.detector.SetVFIOPolicy(vfio.Policy{
+		Enabled:        s.config.VFIOEnabled,
+		AllowedGroups:  s.config.VFIOAllowedGroups,
+		DeniedGroups:   s.config.VFIODeniedGroups,
+		AllowedClasses: s.config.VFIOAllowedClasses,
+		AllowedVendors: s.config.VFIOAllowedVendors,
+	})
 	resSpec, err := s.detector.DetectAll()
 	if err != nil {
 		return fmt.Errorf("resource detection failed: %w", err)
@@ -250,12 +263,17 @@ func (s *Server) init() error {
 			labels["octopos.io/nvidia-driver-version"] = version
 		}
 	}
+	if len(resSpec.VFIOGroups) > 0 {
+		labels["octopos.io/vfio"] = "true"
+		labels["octopos.io/vfio-groups"] = fmt.Sprint(len(resSpec.VFIOGroups))
+	}
 	s.nodeInfo = &cluster.NodeInfo{
-		ID:        cluster.NodeID(s.config.NodeID),
-		Address:   wgIP,
-		State:     cluster.NodeStateActive,
-		Resources: *resSpec,
-		Labels:    labels,
+		ID:         cluster.NodeID(s.config.NodeID),
+		Address:    wgIP,
+		State:      cluster.NodeStateActive,
+		Resources:  *resSpec,
+		VFIOGroups: resSpec.VFIOGroups,
+		Labels:     labels,
 	}
 
 	// Initialize scheduler and tracker
@@ -324,6 +342,7 @@ func (s *Server) connectToPeers(peerList string) {
 			MemoryBytes:   s.nodeInfo.Resources.Memory,
 			GpuCount:      int32(s.nodeInfo.Resources.GPUCount),
 			NumaNodes:     int32(s.nodeInfo.Resources.NUMANodes),
+			PciDevices:    pciDevicesToProto(s.nodeInfo.Resources.PCIDevices),
 		}
 		s.clientPool.RegisterWithPeers(s.ctx, resources, s.nodeInfo.Labels, addresses)
 
@@ -333,6 +352,22 @@ func (s *Server) connectToPeers(peerList string) {
 		case <-ticker.C:
 		}
 	}
+}
+
+func pciDevicesToProto(devices []cluster.PCIDevice) []*rpc.PCIDevice {
+	out := make([]*rpc.PCIDevice, 0, len(devices))
+	for _, dev := range devices {
+		out = append(out, &rpc.PCIDevice{
+			Address:    dev.Address,
+			VendorId:   dev.VendorID,
+			DeviceId:   dev.DeviceID,
+			Class:      dev.Class,
+			Driver:     dev.Driver,
+			IommuGroup: int32(dev.IOMMUGroup),
+			VfioGroup:  int32(dev.VFIOGroup),
+		})
+	}
+	return out
 }
 
 func (s *Server) getWGIP() string {
@@ -729,7 +764,15 @@ func (s *Server) resourceUpdateLoop() {
 				delete(s.nodeInfo.Labels, "octopos.io/nvidia-gpus")
 				delete(s.nodeInfo.Labels, "octopos.io/nvidia-driver-version")
 			}
+			if len(resSpec.VFIOGroups) > 0 {
+				s.nodeInfo.Labels["octopos.io/vfio"] = "true"
+				s.nodeInfo.Labels["octopos.io/vfio-groups"] = fmt.Sprint(len(resSpec.VFIOGroups))
+			} else {
+				delete(s.nodeInfo.Labels, "octopos.io/vfio")
+				delete(s.nodeInfo.Labels, "octopos.io/vfio-groups")
+			}
 			s.nodeInfo.Resources = *resSpec
+			s.nodeInfo.VFIOGroups = resSpec.VFIOGroups
 		}
 	}
 }

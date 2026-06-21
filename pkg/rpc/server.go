@@ -132,17 +132,14 @@ func (s *ClusterServerImpl) PruneRemoteChildren(retention time.Duration) int {
 // RegisterNode registers a new node in the cluster
 func (s *ClusterServerImpl) RegisterNode(ctx context.Context, req *RegisterNodeRequest) (*RegisterNodeResponse, error) {
 	nodeID := cluster.NodeID(req.NodeId)
+	resources := s.resourceSpecFromProto(req.Resources)
 	node := &cluster.NodeInfo{
-		ID:      nodeID,
-		Address: req.Address,
-		State:   cluster.NodeStateActive,
-		Resources: cluster.ResourceSpec{
-			CPU:       req.Resources.CpuMillicores,
-			Memory:    req.Resources.MemoryBytes,
-			GPUCount:  int(req.Resources.GpuCount),
-			NUMANodes: int(req.Resources.NumaNodes),
-		},
-		Labels: req.Labels,
+		ID:         nodeID,
+		Address:    req.Address,
+		State:      cluster.NodeStateActive,
+		Resources:  resources,
+		VFIOGroups: resources.VFIOGroups,
+		Labels:     req.Labels,
 	}
 
 	s.mu.Lock()
@@ -150,6 +147,7 @@ func (s *ClusterServerImpl) RegisterNode(ctx context.Context, req *RegisterNodeR
 		existing.Address = node.Address
 		existing.State = node.State
 		existing.Resources = node.Resources
+		existing.VFIOGroups = node.VFIOGroups
 		existing.Labels = node.Labels
 		node = existing
 	} else {
@@ -509,6 +507,10 @@ func (s *ClusterServerImpl) ListSessions(ctx context.Context, req *ListSessionsR
 
 // Helper conversion functions
 func (s *ClusterServerImpl) nodeInfoToProto(n *cluster.NodeInfo) *NodeInfo {
+	vfioGroups := n.VFIOGroups
+	if len(vfioGroups) == 0 {
+		vfioGroups = n.Resources.VFIOGroups
+	}
 	return &NodeInfo{
 		NodeId:        string(n.ID),
 		Address:       n.Address,
@@ -518,6 +520,7 @@ func (s *ClusterServerImpl) nodeInfoToProto(n *cluster.NodeInfo) *NodeInfo {
 		Allocated:     s.resourceSpecToProto(n.Allocated),
 		Labels:        n.Labels,
 		LastHeartbeat: n.LastHeartbeat.Unix(),
+		VfioGroups:    s.vfioGroupsToProto(vfioGroups),
 	}
 }
 
@@ -527,7 +530,91 @@ func (s *ClusterServerImpl) resourceSpecToProto(rs cluster.ResourceSpec) *NodeRe
 		MemoryBytes:   rs.Memory,
 		GpuCount:      int32(rs.GPUCount),
 		NumaNodes:     int32(rs.NUMANodes),
+		PciDevices:    s.pciDevicesToProto(rs.PCIDevices),
 	}
+}
+
+func (s *ClusterServerImpl) resourceSpecFromProto(pb *NodeResources) cluster.ResourceSpec {
+	if pb == nil {
+		return cluster.ResourceSpec{}
+	}
+	pciDevices := s.pciDevicesFromProto(pb.PciDevices)
+	return cluster.ResourceSpec{
+		CPU:        pb.CpuMillicores,
+		Memory:     pb.MemoryBytes,
+		GPUCount:   int(pb.GpuCount),
+		NUMANodes:  int(pb.NumaNodes),
+		PCIDevices: pciDevices,
+		VFIOGroups: vfioGroupsFromPCIDevices(pciDevices),
+	}
+}
+
+func (s *ClusterServerImpl) pciDevicesToProto(devices []cluster.PCIDevice) []*PCIDevice {
+	out := make([]*PCIDevice, 0, len(devices))
+	for _, dev := range devices {
+		out = append(out, &PCIDevice{
+			Address:    dev.Address,
+			VendorId:   dev.VendorID,
+			DeviceId:   dev.DeviceID,
+			Class:      dev.Class,
+			Driver:     dev.Driver,
+			IommuGroup: int32(dev.IOMMUGroup),
+			VfioGroup:  int32(dev.VFIOGroup),
+		})
+	}
+	return out
+}
+
+func (s *ClusterServerImpl) pciDevicesFromProto(devices []*PCIDevice) []cluster.PCIDevice {
+	out := make([]cluster.PCIDevice, 0, len(devices))
+	for _, dev := range devices {
+		if dev == nil {
+			continue
+		}
+		out = append(out, cluster.PCIDevice{
+			Address:    dev.Address,
+			VendorID:   dev.VendorId,
+			DeviceID:   dev.DeviceId,
+			Class:      dev.Class,
+			Driver:     dev.Driver,
+			IOMMUGroup: int(dev.IommuGroup),
+			VFIOGroup:  int(dev.VfioGroup),
+		})
+	}
+	return out
+}
+
+func (s *ClusterServerImpl) vfioGroupsToProto(groups []cluster.VFIOGroup) []*VFIOGroup {
+	out := make([]*VFIOGroup, 0, len(groups))
+	for _, group := range groups {
+		out = append(out, &VFIOGroup{
+			GroupId:   int32(group.GroupID),
+			Devices:   s.pciDevicesToProto(group.Devices),
+			ClaimedBy: string(group.ClaimedBy),
+		})
+	}
+	return out
+}
+
+func vfioGroupsFromPCIDevices(devices []cluster.PCIDevice) []cluster.VFIOGroup {
+	byGroup := make(map[int][]cluster.PCIDevice)
+	for _, dev := range devices {
+		if dev.VFIOGroup <= 0 {
+			continue
+		}
+		byGroup[dev.VFIOGroup] = append(byGroup[dev.VFIOGroup], dev)
+	}
+	groups := make([]cluster.VFIOGroup, 0, len(byGroup))
+	for groupID, groupDevices := range byGroup {
+		groups = append(groups, cluster.VFIOGroup{
+			GroupID: groupID,
+			Devices: groupDevices,
+		})
+	}
+	sort.Slice(groups, func(i, j int) bool {
+		return groups[i].GroupID < groups[j].GroupID
+	})
+	return groups
 }
 
 func (s *ClusterServerImpl) sessionToProto(sess *cluster.Session) *SessionInfo {

@@ -9,13 +9,15 @@ import (
 
 	"github.com/octopos/octopos/pkg/cluster"
 	"github.com/octopos/octopos/pkg/nvidia"
+	"github.com/octopos/octopos/pkg/vfio"
 )
 
 // Detector gathers hardware resource information
 type Detector struct {
-	procPath string
-	sysPath  string
-	devPath  string
+	procPath   string
+	sysPath    string
+	devPath    string
+	vfioPolicy vfio.Policy
 }
 
 // NewDetector creates a new resource detector
@@ -39,6 +41,11 @@ func NewDetectorWithDev(procPath, sysPath, devPath string) *Detector {
 		sysPath:  sysPath,
 		devPath:  devPath,
 	}
+}
+
+// SetVFIOPolicy configures optional VFIO discovery.
+func (d *Detector) SetVFIOPolicy(policy vfio.Policy) {
+	d.vfioPolicy = policy
 }
 
 // DetectCPU returns CPU topology information
@@ -123,6 +130,13 @@ func (d *Detector) DetectAll() (*cluster.ResourceSpec, error) {
 	cpuSpec.GPUDevices = gpuDevices
 	cpuSpec.GPUCount = len(gpuDevices)
 
+	pciDevices, vfioGroups, err := d.detectVFIO()
+	if err != nil {
+		return nil, err
+	}
+	cpuSpec.PCIDevices = pciDevices
+	cpuSpec.VFIOGroups = vfioGroups
+
 	return cpuSpec, nil
 }
 
@@ -143,4 +157,8 @@ func (d *Detector) detectNUMANodes() (int, error) {
 
 func (d *Detector) detectGPUs() ([]cluster.GPUDevice, error) {
 	return nvidia.DiscoverDevices(d.devPath)
+}
+
+func (d *Detector) detectVFIO() ([]cluster.PCIDevice, []cluster.VFIOGroup, error) {
+	return vfio.Discover(d.sysPath, d.devPath, d.vfioPolicy)
 }

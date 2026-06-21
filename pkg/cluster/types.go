@@ -25,6 +25,7 @@ type ResourceSpec struct {
 	GPUDevices []GPUDevice
 	NUMANodes  int
 	PCIDevices []PCIDevice
+	VFIOGroups []VFIOGroup
 }
 
 // GPUDevice represents one NVIDIA GPU device visible on a node.
@@ -79,6 +80,13 @@ type VFIORequirement struct {
 	DeviceID string
 	Class    string
 	Count    int
+}
+
+// VFIOGroup describes an allocatable IOMMU group.
+type VFIOGroup struct {
+	GroupID   int
+	Devices   []PCIDevice
+	ClaimedBy JobID
 }
 
 // ProcessInfo describes a running process
@@ -210,6 +218,7 @@ type NodeInfo struct {
 	State          NodeState         `json:"state"`
 	Resources      ResourceSpec      `json:"resources"`
 	Allocated      ResourceSpec      `json:"allocated"`
+	VFIOGroups     []VFIOGroup       `json:"vfio_groups"`
 	Labels         map[string]string `json:"labels"`
 	LastHeartbeat  time.Time         `json:"last_heartbeat"`
 	GPUAllocations map[int]JobID     `json:"-"`
