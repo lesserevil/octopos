@@ -180,7 +180,7 @@ func (s *ClusterServerImpl) executeLocalStream(stream execStreamServer, req *Exe
 	var stdoutPipe io.ReadCloser
 	var stderrPipe io.ReadCloser
 	if key := pipeKeys[0]; key != "" {
-		file, err := s.pipes.attachLocal(key, 0)
+		file, err := s.attachPipeEndpoint(ctx, req, key, 0)
 		if err != nil {
 			s.failJob(jobID, node.ID, reqs, fmt.Sprintf("stdin pipe graph: %v", err))
 			return sendStreamError(stream, fmt.Sprintf("stdin pipe graph: %v", err))
@@ -195,7 +195,7 @@ func (s *ClusterServerImpl) executeLocalStream(stream execStreamServer, req *Exe
 		}
 	}
 	if key := pipeKeys[1]; key != "" {
-		file, err := s.pipes.attachLocal(key, 1)
+		file, err := s.attachPipeEndpoint(ctx, req, key, 1)
 		if err != nil {
 			s.failJob(jobID, node.ID, reqs, fmt.Sprintf("stdout pipe graph: %v", err))
 			return sendStreamError(stream, fmt.Sprintf("stdout pipe graph: %v", err))
@@ -210,7 +210,7 @@ func (s *ClusterServerImpl) executeLocalStream(stream execStreamServer, req *Exe
 		}
 	}
 	if key := pipeKeys[2]; key != "" {
-		file, err := s.pipes.attachLocal(key, 2)
+		file, err := s.attachPipeEndpoint(ctx, req, key, 2)
 		if err != nil {
 			s.failJob(jobID, node.ID, reqs, fmt.Sprintf("stderr pipe graph: %v", err))
 			return sendStreamError(stream, fmt.Sprintf("stderr pipe graph: %v", err))
@@ -1058,16 +1058,20 @@ func (s *ClusterServerImpl) applyScheduledEnv(req *ExecuteRequest, nodeID cluste
 		return
 	}
 	cfg := s.ssiConfig.WithDefaults()
-	req.Env = upsertEnv(req.Env,
+	values := []string{
 		"OCTOPOS_SSI=1",
 		"OCTOPOS_CLUSTER_ROOT=/",
-		"OCTOPOS_CLUSTER_HOSTNAME="+ssi.DefaultHostname,
-		"OCTOPOS_HOST_CLUSTER_ROOT="+cfg.ClusterRoot,
-		"OCTOPOS_NODE_ID="+string(nodeID),
-		"OCTOPOS_SESSION_ID="+req.SessionId,
-		"OCTOPOS_JOB_ID="+req.JobId,
-		remotechild.EnvChildToken+"="+childToken,
-	)
+		"OCTOPOS_CLUSTER_HOSTNAME=" + ssi.DefaultHostname,
+		"OCTOPOS_HOST_CLUSTER_ROOT=" + cfg.ClusterRoot,
+		"OCTOPOS_NODE_ID=" + string(nodeID),
+		"OCTOPOS_SESSION_ID=" + req.SessionId,
+		"OCTOPOS_JOB_ID=" + req.JobId,
+		remotechild.EnvChildToken + "=" + childToken,
+	}
+	if requestEnvValue(req.Env, remotechild.EnvPipeCoordinator) == "" {
+		values = append(values, remotechild.EnvPipeCoordinator+"="+string(s.nodeID))
+	}
+	req.Env = upsertEnv(req.Env, values...)
 }
 
 func (s *ClusterServerImpl) localExecDir(req *ExecuteRequest) (string, error) {

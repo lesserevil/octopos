@@ -1,8 +1,11 @@
 package rpc
 
 import (
+	"bytes"
+	"context"
 	"io"
 	"testing"
+	"time"
 
 	"github.com/octopos/octopos/pkg/cluster"
 	"github.com/octopos/octopos/pkg/remotechild"
@@ -62,5 +65,121 @@ func TestPipeCoordinatorLocalPipe(t *testing.T) {
 	}
 	if len(coordinator.local) != 0 {
 		t.Fatalf("local pipe registry not cleaned: %#v", coordinator.local)
+	}
+}
+
+func TestPipeStreamBridgesRemoteEndpoints(t *testing.T) {
+	client, cleanup := newTestClusterClient(t)
+	defer cleanup()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	reader, err := client.PipeStream(ctx)
+	if err != nil {
+		t.Fatalf("reader PipeStream: %v", err)
+	}
+	if err := reader.Send(&PipeFrame{Key: "pipe-stream-test", Fd: 0}); err != nil {
+		t.Fatalf("attach reader: %v", err)
+	}
+
+	readDone := make(chan struct {
+		data []byte
+		err  error
+	}, 1)
+	go func() {
+		var buf bytes.Buffer
+		for {
+			frame, err := reader.Recv()
+			if err != nil {
+				readDone <- struct {
+					data []byte
+					err  error
+				}{buf.Bytes(), err}
+				return
+			}
+			if frame.Error != "" {
+				readDone <- struct {
+					data []byte
+					err  error
+				}{buf.Bytes(), io.ErrUnexpectedEOF}
+				return
+			}
+			buf.Write(frame.Data)
+			if frame.Close {
+				readDone <- struct {
+					data []byte
+					err  error
+				}{buf.Bytes(), nil}
+				return
+			}
+		}
+	}()
+
+	writer, err := client.PipeStream(ctx)
+	if err != nil {
+		t.Fatalf("writer PipeStream: %v", err)
+	}
+	if err := writer.Send(&PipeFrame{Key: "pipe-stream-test", Fd: 1}); err != nil {
+		t.Fatalf("attach writer: %v", err)
+	}
+	if err := writer.Send(&PipeFrame{Data: []byte("hello over pipe")}); err != nil {
+		t.Fatalf("send pipe data: %v", err)
+	}
+	if err := writer.Send(&PipeFrame{Close: true}); err != nil {
+		t.Fatalf("send pipe close: %v", err)
+	}
+	if err := writer.CloseSend(); err != nil {
+		t.Fatalf("close writer: %v", err)
+	}
+
+	select {
+	case got := <-readDone:
+		if got.err != nil {
+			t.Fatalf("reader failed: %v", got.err)
+		}
+		if string(got.data) != "hello over pipe" {
+			t.Fatalf("pipe data = %q", got.data)
+		}
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+}
+
+func TestAttachRemotePipeEndpoint(t *testing.T) {
+	client, cleanup := newTestClusterClient(t)
+	defer cleanup()
+
+	pool := &ClusterClientPool{
+		peers: map[cluster.NodeID]*PeerClient{
+			"coordinator": {NodeID: "coordinator", Client: client},
+		},
+	}
+	worker := NewClusterServerImpl("worker", nil, nil, pool)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	reader, err := worker.attachRemotePipeEndpoint(ctx, "coordinator", "remote-endpoint-test", 0)
+	if err != nil {
+		t.Fatalf("attach remote reader: %v", err)
+	}
+	defer reader.Close()
+	writer, err := worker.attachRemotePipeEndpoint(ctx, "coordinator", "remote-endpoint-test", 1)
+	if err != nil {
+		t.Fatalf("attach remote writer: %v", err)
+	}
+	if _, err := writer.Write([]byte("remote endpoint data")); err != nil {
+		t.Fatalf("write remote endpoint: %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close writer: %v", err)
+	}
+	data, err := io.ReadAll(reader)
+	if err != nil {
+		t.Fatalf("read remote endpoint: %v", err)
+	}
+	if string(data) != "remote endpoint data" {
+		t.Fatalf("remote endpoint data = %q", data)
 	}
 }

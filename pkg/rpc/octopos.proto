@@ -39,6 +39,9 @@ service Cluster {
   // payloads as normal jobs, but require authenticated remote-child metadata.
   rpc RemoteChildExecute(ExecuteRequest) returns (ExecuteResponse);
   rpc RemoteChildStream(stream ExecStreamRequest) returns (stream ExecStreamResponse);
+
+  // Internal pipe graph transport for distributed child endpoints.
+  rpc PipeStream(stream PipeFrame) returns (stream PipeFrame);
 }
 
 // Node registration
@@ -228,6 +231,14 @@ message ExecStreamResponse {
     int32 exit_code = 4;
     string error = 5;
   }
+}
+
+message PipeFrame {
+  string key = 1;
+  int32 fd = 2;
+  bytes data = 3;
+  bool close = 4;
+  string error = 5;
 }
 
 // Data structures

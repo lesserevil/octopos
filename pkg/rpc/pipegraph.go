@@ -1,7 +1,9 @@
 package rpc
 
 import (
+	"context"
 	"fmt"
+	"io"
 	"os"
 	"strconv"
 	"strings"
@@ -10,6 +12,8 @@ import (
 
 	"github.com/octopos/octopos/pkg/cluster"
 	"github.com/octopos/octopos/pkg/remotechild"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 type pipeCoordinator struct {
@@ -73,6 +77,13 @@ func remoteChildPipeKeys(req *ExecuteRequest) map[int]string {
 
 func remoteChildPipeKey(sessionID string, parentJobID string, pipeID string) string {
 	return sessionID + "\x00" + parentJobID + "\x00" + pipeID
+}
+
+func remoteChildPipeCoordinatorNode(env []string) cluster.NodeID {
+	if nodeID := requestEnvValue(env, remotechild.EnvPipeCoordinator); nodeID != "" {
+		return cluster.NodeID(nodeID)
+	}
+	return ""
 }
 
 func (p *pipeCoordinator) preferredNode(keys map[int]string) cluster.NodeID {
@@ -158,4 +169,170 @@ func dupFile(file *os.File, name string) (*os.File, error) {
 		return nil, err
 	}
 	return os.NewFile(uintptr(fd), name), nil
+}
+
+func (s *ClusterServerImpl) attachPipeEndpoint(ctx context.Context, req *ExecuteRequest, key string, fd int) (*os.File, error) {
+	coordinatorNode := remoteChildPipeCoordinatorNode(req.Env)
+	if coordinatorNode == "" || coordinatorNode == s.nodeID {
+		return s.pipes.attachLocal(key, fd)
+	}
+	return s.attachRemotePipeEndpoint(ctx, coordinatorNode, key, fd)
+}
+
+func (s *ClusterServerImpl) attachRemotePipeEndpoint(ctx context.Context, coordinatorNode cluster.NodeID, key string, fd int) (*os.File, error) {
+	if s.clientPool == nil {
+		return nil, fmt.Errorf("no peer connections available for pipe coordinator %s", coordinatorNode)
+	}
+	client, ok := s.clientPool.GetPeer(coordinatorNode)
+	if !ok {
+		return nil, fmt.Errorf("no connection to pipe coordinator node %s", coordinatorNode)
+	}
+	stream, err := client.PipeStream(internalForwardContext(ctx))
+	if err != nil {
+		return nil, fmt.Errorf("connect pipe coordinator %s: %w", coordinatorNode, err)
+	}
+	if err := stream.Send(&PipeFrame{Key: key, Fd: int32(fd)}); err != nil {
+		_ = stream.CloseSend()
+		return nil, fmt.Errorf("attach remote pipe endpoint: %w", err)
+	}
+
+	switch fd {
+	case 0:
+		readEnd, writeEnd, err := os.Pipe()
+		if err != nil {
+			_ = stream.CloseSend()
+			return nil, err
+		}
+		go pipeStreamToWriter(stream, writeEnd)
+		return readEnd, nil
+	case 1, 2:
+		readEnd, writeEnd, err := os.Pipe()
+		if err != nil {
+			_ = stream.CloseSend()
+			return nil, err
+		}
+		go readerToPipeStream(readEnd, stream)
+		return writeEnd, nil
+	default:
+		_ = stream.CloseSend()
+		return nil, fmt.Errorf("unsupported pipe fd %d", fd)
+	}
+}
+
+func pipeStreamToWriter(stream Cluster_PipeStreamClient, writer *os.File) {
+	defer writer.Close()
+	defer stream.CloseSend()
+	for {
+		frame, err := stream.Recv()
+		if err != nil {
+			return
+		}
+		if frame.Error != "" {
+			return
+		}
+		if len(frame.Data) > 0 {
+			if _, err := writer.Write(frame.Data); err != nil {
+				_ = stream.Send(&PipeFrame{Error: err.Error(), Close: true})
+				return
+			}
+		}
+		if frame.Close {
+			return
+		}
+	}
+}
+
+func readerToPipeStream(reader *os.File, stream Cluster_PipeStreamClient) {
+	defer reader.Close()
+	defer stream.CloseSend()
+	buf := make([]byte, 32*1024)
+	for {
+		n, err := reader.Read(buf)
+		if n > 0 {
+			data := make([]byte, n)
+			copy(data, buf[:n])
+			if sendErr := stream.Send(&PipeFrame{Data: data}); sendErr != nil {
+				return
+			}
+		}
+		if err != nil {
+			_ = stream.Send(&PipeFrame{Close: true})
+			return
+		}
+	}
+}
+
+func (s *ClusterServerImpl) PipeStream(stream Cluster_PipeStreamServer) error {
+	first, err := stream.Recv()
+	if err != nil {
+		return err
+	}
+	if first.Key == "" {
+		return status.Error(codes.InvalidArgument, "pipe key is required")
+	}
+	fd := int(first.Fd)
+	if fd < 0 || fd > 2 {
+		return status.Errorf(codes.InvalidArgument, "unsupported pipe fd %d", fd)
+	}
+	file, err := s.pipes.attachLocal(first.Key, fd)
+	if err != nil {
+		_ = stream.Send(&PipeFrame{Error: err.Error(), Close: true})
+		return nil
+	}
+	defer file.Close()
+
+	switch fd {
+	case 0:
+		return pipeFileToStream(file, stream)
+	case 1, 2:
+		return pipeStreamToFile(stream, file)
+	default:
+		return status.Errorf(codes.InvalidArgument, "unsupported pipe fd %d", fd)
+	}
+}
+
+func pipeFileToStream(reader *os.File, stream Cluster_PipeStreamServer) error {
+	buf := make([]byte, 32*1024)
+	for {
+		n, err := reader.Read(buf)
+		if n > 0 {
+			data := make([]byte, n)
+			copy(data, buf[:n])
+			if sendErr := stream.Send(&PipeFrame{Data: data}); sendErr != nil {
+				return sendErr
+			}
+		}
+		if err != nil {
+			if err == io.EOF {
+				_ = stream.Send(&PipeFrame{Close: true})
+				return nil
+			}
+			_ = stream.Send(&PipeFrame{Error: err.Error(), Close: true})
+			return nil
+		}
+	}
+}
+
+func pipeStreamToFile(stream Cluster_PipeStreamServer, writer *os.File) error {
+	for {
+		frame, err := stream.Recv()
+		if err != nil {
+			if err == io.EOF {
+				return nil
+			}
+			return err
+		}
+		if frame.Error != "" {
+			return nil
+		}
+		if len(frame.Data) > 0 {
+			if _, err := writer.Write(frame.Data); err != nil {
+				_ = stream.Send(&PipeFrame{Error: err.Error(), Close: true})
+				return nil
+			}
+		}
+		if frame.Close {
+			return nil
+		}
+	}
 }

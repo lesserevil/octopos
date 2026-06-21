@@ -38,6 +38,7 @@ const (
 	Cluster_ExecStream_FullMethodName         = "/octopos.rpc.Cluster/ExecStream"
 	Cluster_RemoteChildExecute_FullMethodName = "/octopos.rpc.Cluster/RemoteChildExecute"
 	Cluster_RemoteChildStream_FullMethodName  = "/octopos.rpc.Cluster/RemoteChildStream"
+	Cluster_PipeStream_FullMethodName         = "/octopos.rpc.Cluster/PipeStream"
 )
 
 // ClusterClient is the client API for Cluster service.
@@ -73,6 +74,8 @@ type ClusterClient interface {
 	// payloads as normal jobs, but require authenticated remote-child metadata.
 	RemoteChildExecute(ctx context.Context, in *ExecuteRequest, opts ...grpc.CallOption) (*ExecuteResponse, error)
 	RemoteChildStream(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[ExecStreamRequest, ExecStreamResponse], error)
+	// Internal pipe graph transport for distributed child endpoints.
+	PipeStream(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[PipeFrame, PipeFrame], error)
 }
 
 type clusterClient struct {
@@ -279,6 +282,19 @@ func (c *clusterClient) RemoteChildStream(ctx context.Context, opts ...grpc.Call
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type Cluster_RemoteChildStreamClient = grpc.BidiStreamingClient[ExecStreamRequest, ExecStreamResponse]
 
+func (c *clusterClient) PipeStream(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[PipeFrame, PipeFrame], error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	stream, err := c.cc.NewStream(ctx, &Cluster_ServiceDesc.Streams[2], Cluster_PipeStream_FullMethodName, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	x := &grpc.GenericClientStream[PipeFrame, PipeFrame]{ClientStream: stream}
+	return x, nil
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type Cluster_PipeStreamClient = grpc.BidiStreamingClient[PipeFrame, PipeFrame]
+
 // ClusterServer is the server API for Cluster service.
 // All implementations must embed UnimplementedClusterServer
 // for forward compatibility.
@@ -312,6 +328,8 @@ type ClusterServer interface {
 	// payloads as normal jobs, but require authenticated remote-child metadata.
 	RemoteChildExecute(context.Context, *ExecuteRequest) (*ExecuteResponse, error)
 	RemoteChildStream(grpc.BidiStreamingServer[ExecStreamRequest, ExecStreamResponse]) error
+	// Internal pipe graph transport for distributed child endpoints.
+	PipeStream(grpc.BidiStreamingServer[PipeFrame, PipeFrame]) error
 	mustEmbedUnimplementedClusterServer()
 }
 
@@ -378,6 +396,9 @@ func (UnimplementedClusterServer) RemoteChildExecute(context.Context, *ExecuteRe
 }
 func (UnimplementedClusterServer) RemoteChildStream(grpc.BidiStreamingServer[ExecStreamRequest, ExecStreamResponse]) error {
 	return status.Error(codes.Unimplemented, "method RemoteChildStream not implemented")
+}
+func (UnimplementedClusterServer) PipeStream(grpc.BidiStreamingServer[PipeFrame, PipeFrame]) error {
+	return status.Error(codes.Unimplemented, "method PipeStream not implemented")
 }
 func (UnimplementedClusterServer) mustEmbedUnimplementedClusterServer() {}
 func (UnimplementedClusterServer) testEmbeddedByValue()                 {}
@@ -720,6 +741,13 @@ func _Cluster_RemoteChildStream_Handler(srv interface{}, stream grpc.ServerStrea
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type Cluster_RemoteChildStreamServer = grpc.BidiStreamingServer[ExecStreamRequest, ExecStreamResponse]
 
+func _Cluster_PipeStream_Handler(srv interface{}, stream grpc.ServerStream) error {
+	return srv.(ClusterServer).PipeStream(&grpc.GenericServerStream[PipeFrame, PipeFrame]{ServerStream: stream})
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type Cluster_PipeStreamServer = grpc.BidiStreamingServer[PipeFrame, PipeFrame]
+
 // Cluster_ServiceDesc is the grpc.ServiceDesc for Cluster service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -806,6 +834,12 @@ var Cluster_ServiceDesc = grpc.ServiceDesc{
 		{
 			StreamName:    "RemoteChildStream",
 			Handler:       _Cluster_RemoteChildStream_Handler,
+			ServerStreams: true,
+			ClientStreams: true,
+		},
+		{
+			StreamName:    "PipeStream",
+			Handler:       _Cluster_PipeStream_Handler,
 			ServerStreams: true,
 			ClientStreams: true,
 		},
