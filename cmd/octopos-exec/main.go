@@ -191,6 +191,9 @@ func enterSSI(root, base, workdir string, strictVFS bool, gpu nvidiaRuntimeConfi
 		return err
 	}
 	parentStdioPipeEnv := parentStdioPipeEnvFromCurrentProcess()
+	if err := closeInheritedNonStdioFDs(); err != nil {
+		return err
+	}
 
 	if err := syscall.Chroot(root); err != nil {
 		return fmt.Errorf("chroot %s: %w", root, err)
@@ -264,6 +267,32 @@ func applyFDReopenPlan(env []string) error {
 		}
 	}
 	return nil
+}
+
+func closeInheritedNonStdioFDs() error {
+	entries, err := os.ReadDir("/proc/self/fd")
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("read inherited fds: %w", err)
+	}
+	for _, fd := range fdNamesToClose(entries) {
+		_ = unix.Close(fd)
+	}
+	return nil
+}
+
+func fdNamesToClose(entries []os.DirEntry) []int {
+	fds := make([]int, 0, len(entries))
+	for _, entry := range entries {
+		fd, err := strconv.Atoi(entry.Name())
+		if err != nil || fd <= 2 {
+			continue
+		}
+		fds = append(fds, fd)
+	}
+	return fds
 }
 
 func validateRoot(root string) error {

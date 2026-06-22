@@ -210,6 +210,24 @@ func TestApplyFDReopenPlan(t *testing.T) {
 	}
 }
 
+func TestFDNamesToCloseSkipsStdioAndNonNumericEntries(t *testing.T) {
+	dir := t.TempDir()
+	for _, name := range []string{"0", "1", "2", "3", "21", "not-a-fd"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte{}, 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got := fdNamesToClose(entries)
+	if len(got) != 2 || got[0] != 21 || got[1] != 3 {
+		t.Fatalf("fdNamesToClose = %+v, want [21 3]", got)
+	}
+}
+
 func TestCreateBindFileTargetReplacesStaleSocket(t *testing.T) {
 	target := filepath.Join(t.TempDir(), "childd.sock")
 	listener, err := net.Listen("unix", target)
