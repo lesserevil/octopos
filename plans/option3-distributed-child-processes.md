@@ -99,8 +99,11 @@ Implemented and live-tested on `shedwards-octo1`, `shedwards-octo2`, and
   termination through the lifecycle path.
 - Worker-side lifecycle records persist the worker OS PID. After an abrupt
   worker-side daemon restart, the daemon can reattach tracker state for a
-  still-running local worker process; if that recovered process later exits, the
-  record becomes terminal with an explicit "exit status unavailable" diagnostic.
+  still-running local worker process. Strict-SSI remote-child workers write a
+  durable exit-status record before exiting, allowing recovery to preserve the
+  actual exit code after the original worker-side daemon is gone. Workers that
+  predate this support or die before writing the record still become terminal
+  with an explicit "exit status unavailable" diagnostic.
 - Bootstrap and node-add/provisioned `octoposd.service` units set
   `KillMode=process`, allowing exec workers to survive an octoposd process
   restart long enough for lifecycle recovery to reattach them.
@@ -207,9 +210,8 @@ Partially implemented:
     for children when a parent exits; persistent restart recovery with
     recovering state, direct worker-node reconciliation, stream-disconnect
     worker survival for remote-child streams, follow-up polling after recovery,
-    and orphan marking after lease expiry; procfs shadow/worker projection.
-  - Missing: exact exit-status recovery for a worker process that outlives its
-    original worker-side daemon.
+    exact strict-SSI worker exit-status recovery, and orphan marking after lease
+    expiry; procfs shadow/worker projection.
 - FD classification and fallback:
   - Done: conservative current-process FD scanner that treats stdio as proxyable,
     close-on-exec FDs as safe to close, detects common FD kinds, carries

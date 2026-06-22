@@ -5,10 +5,13 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/octopos/octopos/pkg/cluster"
 	"github.com/octopos/octopos/pkg/nvidia"
@@ -30,6 +33,7 @@ var (
 	vfioGroups         = flag.String("vfio-groups", "", "Allocated VFIO group IDs (internal)")
 	vfioDevRoot        = flag.String("vfio-dev-root", "/dev/vfio", "Host VFIO device root")
 	ttySlave           = flag.String("tty-slave", "", "Host PTY slave path (internal)")
+	exitStatusFile     = flag.String("exit-status-file", "", "Write worker exit status JSON before exiting (internal)")
 
 	mknod = unix.Mknod
 	chmod = os.Chmod
@@ -62,7 +66,11 @@ func main() {
 	}
 	ttyRuntime := ttyRuntimeConfig{slave: *ttySlave}
 
-	if err := enterSSI(*rootFS, *mountBase, *cwd, *requireVFS, nvidiaRuntime, vfioRuntime, ttyRuntime, argv); err != nil {
+	if err := enterSSI(*rootFS, *mountBase, *cwd, *requireVFS, nvidiaRuntime, vfioRuntime, ttyRuntime, *exitStatusFile, argv); err != nil {
+		var exitErr recordedExitError
+		if errors.As(err, &exitErr) {
+			os.Exit(exitErr.Code)
+		}
 		fatalf("%v", err)
 	}
 }
@@ -121,7 +129,15 @@ func parseVFIOGroups(spec string) ([]int, error) {
 	return groups, nil
 }
 
-func enterSSI(root, base, workdir string, strictVFS bool, gpu nvidiaRuntimeConfig, vfio vfioRuntimeConfig, tty ttyRuntimeConfig, argv []string) error {
+type recordedExitError struct {
+	Code int
+}
+
+func (e recordedExitError) Error() string {
+	return fmt.Sprintf("exit %d", e.Code)
+}
+
+func enterSSI(root, base, workdir string, strictVFS bool, gpu nvidiaRuntimeConfig, vfio vfioRuntimeConfig, tty ttyRuntimeConfig, exitFile string, argv []string) error {
 	root = filepath.Clean(root)
 	base = filepath.Clean(base)
 	gpu.projection = filepath.Clean(gpu.projection)
@@ -220,7 +236,86 @@ func enterSSI(root, base, workdir string, strictVFS bool, gpu nvidiaRuntimeConfi
 	if err != nil {
 		return err
 	}
+	if exitFile != "" {
+		return runAndRecordExit(path, argv, env, exitFile)
+	}
 	return syscall.Exec(path, argv, env)
+}
+
+func runAndRecordExit(path string, argv []string, env []string, exitFile string) error {
+	_ = os.Remove(exitFile)
+	cmd := exec.Command(path, argv[1:]...)
+	cmd.Env = env
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Start(); err != nil {
+		status := remotechild.WorkerExitStatus{
+			JobID:    envValue(env, "OCTOPOS_JOB_ID"),
+			ExitCode: -1,
+			Error:    err.Error(),
+			ExitedAt: time.Now(),
+		}
+		if writeErr := remotechild.WriteWorkerExitStatus(exitFile, status); writeErr != nil {
+			fmt.Fprintf(os.Stderr, "octopos-exec: write worker exit status: %v\n", writeErr)
+		}
+		return recordedExitError{Code: 1}
+	}
+	sigCh := make(chan os.Signal, 8)
+	done := make(chan struct{})
+	signal.Notify(sigCh, syscall.SIGHUP, syscall.SIGINT, syscall.SIGQUIT, syscall.SIGTERM)
+	defer signal.Stop(sigCh)
+	go func() {
+		for {
+			select {
+			case sig := <-sigCh:
+				_ = cmd.Process.Signal(sig)
+			case <-done:
+				return
+			}
+		}
+	}()
+	err := cmd.Wait()
+	close(done)
+	exitCode, signal := workerExitResult(err)
+	status := remotechild.WorkerExitStatus{
+		JobID:    envValue(env, "OCTOPOS_JOB_ID"),
+		ExitCode: exitCode,
+		Signal:   signal,
+		ExitedAt: time.Now(),
+	}
+	if cmd.ProcessState != nil {
+		status.PID = cmd.ProcessState.Pid()
+	}
+	if err != nil && signal == 0 && exitCode < 0 {
+		status.Error = err.Error()
+	}
+	if writeErr := remotechild.WriteWorkerExitStatus(exitFile, status); writeErr != nil {
+		fmt.Fprintf(os.Stderr, "octopos-exec: write worker exit status: %v\n", writeErr)
+	}
+	if signal > 0 {
+		return recordedExitError{Code: 128 + signal}
+	}
+	if exitCode < 0 {
+		return recordedExitError{Code: 1}
+	}
+	return recordedExitError{Code: exitCode}
+}
+
+func workerExitResult(err error) (int, int) {
+	if err == nil {
+		return 0, 0
+	}
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		if waitStatus, ok := exitErr.Sys().(syscall.WaitStatus); ok {
+			if waitStatus.Signaled() {
+				return -1, int(waitStatus.Signal())
+			}
+			return waitStatus.ExitStatus(), 0
+		}
+	}
+	return -1, 0
 }
 
 func applyFDReopenPlan(env []string) error {

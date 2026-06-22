@@ -1499,6 +1499,56 @@ func TestRecoverLocalRemoteChildRecordOrphansMissingPID(t *testing.T) {
 	}
 }
 
+func TestRecoverLocalRemoteChildRecordUsesExitStatusForMissingPID(t *testing.T) {
+	root := t.TempDir()
+	server := NewClusterServerImplWithOptions(
+		cluster.NodeID("node-1"),
+		scheduler.NewScheduler(&scheduler.BinPackPolicy{}),
+		tracker.NewTracker(),
+		nil,
+		ServerOptions{SSI: ssi.Config{
+			ClusterRoot:  root,
+			RootFS:       root,
+			RequireMount: false,
+			Required:     true,
+		}},
+	)
+	now := time.Unix(200, 0)
+	record := remotechild.ShadowRecord{
+		SessionID:       "sess-1",
+		ParentJobID:     "job-parent",
+		RemoteJobID:     "job-child",
+		RemoteNodeID:    "node-1",
+		RemoteGlobalPID: 42,
+		Command:         []string{"/bin/sh", "-c", "exit 7"},
+		State:           remotechild.StateRecovering,
+		UpdatedAt:       now,
+	}
+	server.remoteChildren.Upsert(record)
+	statusPath := filepath.Join(root, strings.TrimPrefix(remotechild.WorkerExitStatusPath(record.RemoteJobID), "/"))
+	if err := remotechild.WriteWorkerExitStatus(statusPath, remotechild.WorkerExitStatus{
+		JobID:    record.RemoteJobID,
+		PID:      99999999,
+		ExitCode: 7,
+		ExitedAt: now.Add(time.Second),
+	}); err != nil {
+		t.Fatalf("WriteWorkerExitStatus: %v", err)
+	}
+
+	outcome := server.recoverLocalRemoteChildRecord(record, now)
+	if outcome != remoteChildRecoveryCompleted {
+		t.Fatalf("outcome = %v, want completed", outcome)
+	}
+	recovered, _ := server.remoteChildren.Get("job-child")
+	if recovered.State != remotechild.StateCompleted || recovered.ExitCode != 7 || recovered.FailureReason != "" {
+		t.Fatalf("recovered local record = %#v", recovered)
+	}
+	job := server.cluster.jobs["job-child"]
+	if job == nil || job.Status != cluster.JobStatusCompleted || len(job.ExitCodes) != 1 || job.ExitCodes[0] != 7 {
+		t.Fatalf("recovered job = %#v", job)
+	}
+}
+
 func TestScheduleJobSetsChildTokenExpiry(t *testing.T) {
 	server := NewClusterServerImplWithOptions(
 		cluster.NodeID("node-1"),
@@ -1722,6 +1772,51 @@ func TestStrictSSICommandIncludesVFIOGroups(t *testing.T) {
 	}
 	if !argPairBeforeCommand(cmd.Args, "--vfio-groups", "7,8") {
 		t.Fatalf("command args missing --vfio-groups before command separator: %v", cmd.Args)
+	}
+}
+
+func TestStrictSSIRemoteChildCommandIncludesExitStatusFile(t *testing.T) {
+	root := t.TempDir()
+	for _, dir := range []string{"usr/bin", "usr/lib"} {
+		if err := os.MkdirAll(filepath.Join(root, dir), 0755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	executor := filepath.Join(t.TempDir(), "octopos-exec")
+	if err := os.WriteFile(executor, []byte("#!/bin/sh\n"), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	server := NewClusterServerImplWithOptions(
+		cluster.NodeID("worker-node"),
+		scheduler.NewScheduler(&scheduler.BinPackPolicy{}),
+		tracker.NewTracker(),
+		nil,
+		ServerOptions{SSI: ssi.Config{
+			ClusterRoot:  root,
+			RootFS:       root,
+			Executor:     executor,
+			RequireMount: false,
+			Required:     true,
+		}},
+	)
+
+	req := &ExecuteRequest{
+		JobId:   "job-child",
+		Command: []string{"/bin/sh"},
+		Cwd:     "/",
+		Env:     []string{remotechild.EnvRemoteChild + "=1"},
+	}
+	if err := server.normalizeScheduledRequest(req); err != nil {
+		t.Fatalf("normalizeScheduledRequest: %v", err)
+	}
+
+	cmd, err := server.buildSSICommand(context.Background(), req, cluster.Requirements{}, false, "")
+	if err != nil {
+		t.Fatalf("buildSSICommand: %v", err)
+	}
+	if !argPairBeforeCommand(cmd.Args, "--exit-status-file", remotechild.WorkerExitStatusPath("job-child")) {
+		t.Fatalf("command args missing --exit-status-file before command separator: %v", cmd.Args)
 	}
 }
 

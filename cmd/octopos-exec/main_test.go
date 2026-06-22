@@ -170,6 +170,32 @@ func TestParseVFIOGroupsRejectsInvalid(t *testing.T) {
 	}
 }
 
+func TestRunAndRecordExitWritesStatus(t *testing.T) {
+	statusPath := filepath.Join(t.TempDir(), "worker.json")
+	err := runAndRecordExit("/bin/sh", []string{"/bin/sh", "-c", "exit 7"}, []string{"OCTOPOS_JOB_ID=job-child"}, statusPath)
+	var exitErr recordedExitError
+	if !errors.As(err, &exitErr) {
+		t.Fatalf("runAndRecordExit error = %v, want recordedExitError", err)
+	}
+	if exitErr.Code != 7 {
+		t.Fatalf("exit code = %d, want 7", exitErr.Code)
+	}
+	status, readErr := remotechild.ReadWorkerExitStatus(statusPath)
+	if readErr != nil {
+		t.Fatalf("ReadWorkerExitStatus: %v", readErr)
+	}
+	if status.JobID != "job-child" || status.ExitCode != 7 || status.Signal != 0 || status.ExitedAt.IsZero() {
+		t.Fatalf("status = %#v", status)
+	}
+}
+
+func TestWorkerExitResultCapturesExecFailure(t *testing.T) {
+	exitCode, sig := workerExitResult(errors.New("start failed"))
+	if exitCode != -1 || sig != 0 {
+		t.Fatalf("exit result = (%d, %d), want (-1, 0)", exitCode, sig)
+	}
+}
+
 func TestApplyFDReopenPlan(t *testing.T) {
 	target := filepath.Join(t.TempDir(), "fd-target")
 	if err := os.WriteFile(target, []byte("start"), 0600); err != nil {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"syscall"
@@ -101,9 +102,15 @@ func (s *ClusterServerImpl) RecoverRemoteChildren(ctx context.Context) RemoteChi
 
 func (s *ClusterServerImpl) recoverLocalRemoteChildRecord(record remotechild.ShadowRecord, now time.Time) remoteChildRecoveryOutcome {
 	if record.RemoteLocalPID <= 0 {
+		if outcome, ok := s.recoverLocalRemoteChildExitStatus(record, now); ok {
+			return outcome
+		}
 		return s.expireOrDeferRecoveringChild(record, now)
 	}
 	if !processAlive(record.RemoteLocalPID) {
+		if outcome, ok := s.recoverLocalRemoteChildExitStatus(record, now); ok {
+			return outcome
+		}
 		reason := fmt.Sprintf("local worker pid %d is not running after daemon restart", record.RemoteLocalPID)
 		record = terminalRecoveredRecord(record, remotechild.StateOrphaned, -1, 0, reason, now)
 		s.remoteChildren.MarkFinished(record.RemoteJobID, record.State, record.ExitCode, record.Signal, record.FailureReason, record.FinishedAt)
@@ -329,8 +336,14 @@ func (s *ClusterServerImpl) followRecoveredLocalProcess(ctx context.Context, rec
 			if processAlive(record.RemoteLocalPID) {
 				continue
 			}
-			reason := fmt.Sprintf("recovered local worker pid %d exited; exit status unavailable after daemon restart", record.RemoteLocalPID)
 			now := time.Now()
+			if _, ok := s.recoverLocalRemoteChildExitStatus(record, now); ok {
+				if s.tracker != nil {
+					s.tracker.Unregister(cluster.GlobalPID(record.RemoteGlobalPID))
+				}
+				return
+			}
+			reason := fmt.Sprintf("recovered local worker pid %d exited; exit status unavailable after daemon restart", record.RemoteLocalPID)
 			record = terminalRecoveredRecord(record, remotechild.StateOrphaned, -1, 0, reason, now)
 			if s.tracker != nil {
 				s.tracker.Unregister(cluster.GlobalPID(record.RemoteGlobalPID))
@@ -340,6 +353,43 @@ func (s *ClusterServerImpl) followRecoveredLocalProcess(ctx context.Context, rec
 			return
 		}
 	}
+}
+
+func (s *ClusterServerImpl) recoverLocalRemoteChildExitStatus(record remotechild.ShadowRecord, now time.Time) (remoteChildRecoveryOutcome, bool) {
+	status, ok := s.readLocalRemoteChildExitStatus(record)
+	if !ok {
+		return remoteChildRecoveryUnobservable, false
+	}
+	finishedAt := nonZeroTime(status.ExitedAt, now)
+	state := remotechild.ShadowState(remotechild.StateCompleted)
+	jobStatus := cluster.JobStatusCompleted
+	outcome := remoteChildRecoveryCompleted
+	reason := ""
+	if status.Error != "" {
+		state = remotechild.StateFailed
+		jobStatus = cluster.JobStatusFailed
+		outcome = remoteChildRecoveryFailed
+		reason = status.Error
+	}
+	record = terminalRecoveredRecord(record, state, status.ExitCode, status.Signal, reason, finishedAt)
+	s.remoteChildren.MarkFinished(record.RemoteJobID, record.State, record.ExitCode, record.Signal, record.FailureReason, record.FinishedAt)
+	s.upsertRecoveredJob(record, jobStatus, recoveredJobInfoFromRecord(record, jobStatusToProto(jobStatus), now))
+	return outcome, true
+}
+
+func (s *ClusterServerImpl) readLocalRemoteChildExitStatus(record remotechild.ShadowRecord) (remotechild.WorkerExitStatus, bool) {
+	if record.RemoteJobID == "" || !s.ssiConfig.Required {
+		return remotechild.WorkerExitStatus{}, false
+	}
+	statusPath := filepath.Join(s.ssiConfig.WithDefaults().RootFS, strings.TrimPrefix(remotechild.WorkerExitStatusPath(record.RemoteJobID), "/"))
+	status, err := remotechild.ReadWorkerExitStatus(statusPath)
+	if err != nil {
+		return remotechild.WorkerExitStatus{}, false
+	}
+	if status.JobID != "" && status.JobID != record.RemoteJobID {
+		return remotechild.WorkerExitStatus{}, false
+	}
+	return status, true
 }
 
 func terminalRecoveredRecord(record remotechild.ShadowRecord, state remotechild.ShadowState, exitCode int, signal int, reason string, at time.Time) remotechild.ShadowRecord {

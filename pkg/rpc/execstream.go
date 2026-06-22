@@ -1014,6 +1014,9 @@ func (s *ClusterServerImpl) buildSSICommand(ctx context.Context, req *ExecuteReq
 	if len(reqs.VFIOGroups) > 0 {
 		args = append(args, "--vfio-groups", vfioGroupFlag(reqs.VFIOGroups))
 	}
+	if isRemoteChildRequest(req) {
+		args = append(args, "--exit-status-file", remotechild.WorkerExitStatusPath(req.JobId))
+	}
 	args = append(args, "--")
 	args = append(args, req.Command...)
 	cmd := exec.CommandContext(ctx, cfg.Executor, args...)
