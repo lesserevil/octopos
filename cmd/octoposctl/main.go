@@ -1049,7 +1049,7 @@ func main() {
 	vfioCmd.AddCommand(vfioListCmd, vfioAllocateCmd, vfioReleaseCmd)
 	pipeCmd.AddCommand(pipeStatsCmd)
 	sessionCmd.AddCommand(sessionListCmd, sessionCreateCmd, sessionDeleteCmd)
-	clusterCmd.AddCommand(clusterStatusCmd, clusterDoctorCmd, clusterBootstrapCmd)
+	clusterCmd.AddCommand(clusterStatusCmd, clusterDoctorCmd, clusterVerifyCmd, clusterBootstrapCmd)
 
 	rootCmd.AddCommand(nodeCmd, jobCmd, execCmd, sessionCmd, psCmd, vfioCmd, pipeCmd, clusterCmd)
 

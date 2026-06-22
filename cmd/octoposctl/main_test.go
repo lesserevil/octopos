@@ -161,6 +161,88 @@ func TestFormatVFIORequirement(t *testing.T) {
 	}
 }
 
+func TestClusterVerifyHelpRegistersFlags(t *testing.T) {
+	output := runOctoposctl(t, "cluster", "verify", "--help")
+
+	for _, want := range []string{"--install-shared-helper", "--pd-endpoints", "--minio-health-url", "--local-helper"} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("verify help missing %q:\n%s", want, output)
+		}
+	}
+}
+
+func TestParseSSHHostOverrides(t *testing.T) {
+	got, err := parseSSHHostOverrides([]string{"node-1=10.0.0.1", "node-2=octo2"})
+	if err != nil {
+		t.Fatalf("parseSSHHostOverrides: %v", err)
+	}
+	if got["node-1"] != "10.0.0.1" || got["node-2"] != "octo2" {
+		t.Fatalf("overrides = %#v", got)
+	}
+	if _, err := parseSSHHostOverrides([]string{"node-1"}); err == nil {
+		t.Fatal("accepted invalid override")
+	}
+}
+
+func TestDerivePDEndpoints(t *testing.T) {
+	got := derivePDEndpoints([]*octopospb.NodeInfo{
+		{NodeId: "node-1", Address: "10.0.0.1"},
+		{NodeId: "node-2", Address: "10.0.0.2:1234"},
+	})
+	want := []string{"10.0.0.1:2379", "10.0.0.2:1234"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("endpoints = %#v, want %#v", got, want)
+	}
+}
+
+func TestClusterVerifyOptionsDefaults(t *testing.T) {
+	cmd := &cobra.Command{}
+	cmd.Flags().String("ssh-user", "", "")
+	cmd.Flags().StringArray("ssh-host", nil, "")
+	cmd.Flags().Bool("ssh-use-node-address", false, "")
+	cmd.Flags().Duration("timeout", 10, "")
+	cmd.Flags().String("cluster-root", "/cluster", "")
+	cmd.Flags().String("rw-dir", "", "")
+	cmd.Flags().String("pd-endpoints", "10.0.0.1:2379, 10.0.0.2:2379", "")
+	cmd.Flags().StringArray("minio-health-url", []string{defaultVerifyMinIOHealthURL}, "")
+	cmd.Flags().String("host-helper", defaultVerifyHostHelper, "")
+	cmd.Flags().String("shared-helper", "", "")
+	cmd.Flags().String("local-helper", "", "")
+	cmd.Flags().String("expect-helper-sha", "", "")
+	cmd.Flags().String("install-shared-helper", "", "")
+	cmd.Flags().String("install-via", "", "")
+
+	opts, err := clusterVerifyOptionsFromFlags(cmd)
+	if err != nil {
+		t.Fatalf("clusterVerifyOptionsFromFlags: %v", err)
+	}
+	if opts.SharedHelper != "/cluster/usr/local/bin/octopos-remote-child" {
+		t.Fatalf("shared helper = %q", opts.SharedHelper)
+	}
+	if opts.RWDir != "/cluster/tmp" {
+		t.Fatalf("rw dir = %q", opts.RWDir)
+	}
+	if len(opts.PDEndpoints) != 2 || opts.PDEndpoints[1] != "10.0.0.2:2379" {
+		t.Fatalf("pd endpoints = %#v", opts.PDEndpoints)
+	}
+}
+
+func TestHelperConsistencyRowsDetectMismatch(t *testing.T) {
+	hashA := strings.Repeat("a", 64)
+	hashB := strings.Repeat("b", 64)
+	rows := helperConsistencyRows([]verifyRow{
+		{Node: "node-1", Check: "host-helper", Status: "OK", Detail: hashA},
+		{Node: "node-2", Check: "host-helper", Status: "OK", Detail: hashA},
+		{Node: "node-1", Check: "shared-helper", Status: "OK", Detail: hashB},
+	})
+	if len(rows) != 3 {
+		t.Fatalf("rows = %#v", rows)
+	}
+	if rows[0].Status != "OK" || rows[1].Status != "OK" || rows[2].Status != "FAIL" {
+		t.Fatalf("consistency rows = %#v", rows)
+	}
+}
+
 func TestVFIODeviceSummary(t *testing.T) {
 	got := vfioDeviceSummary([]*octopospb.PCIDevice{{
 		Address:  "0000:01:00.0",

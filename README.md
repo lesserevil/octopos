@@ -100,6 +100,22 @@ List nodes:
 octoposctl --addr 10.0.0.1:50051 node list -o wide
 ```
 
+Verify the live SSI/storage/runtime plumbing across registered nodes:
+
+```bash
+octoposctl --addr 10.0.0.1:50051 cluster verify
+```
+
+`cluster verify` uses bounded SSH checks for PD health, the JuiceFS mount,
+node-local MinIO health, shared filesystem read/write, and host/shared
+`octopos-remote-child` helper hashes. To repair or upgrade the shared SSI-root
+helper, stage it through one node and atomically replace the shared path:
+
+```bash
+octoposctl --addr 10.0.0.1:50051 cluster verify \
+  --install-shared-helper bin/octopos-remote-child
+```
+
 Run a command in the cluster filesystem:
 
 ```bash
