@@ -573,7 +573,9 @@ Tasks:
    - `SIGTSTP`
    - `SIGCONT`
    - terminal resize
-4. Model stopped/continued states.
+4. Model stopped/continued states. Implemented: remote-child lifecycle records
+   carry dedicated stopped/continued state detail and do not report these
+   transitions as failures.
 5. Integrate with shell-visible `waitpid` behavior through the shadow.
 6. Tests/manual validation:
    - `sleep 100`, Ctrl-C
@@ -731,7 +733,7 @@ The initial production version should explicitly support the following:
 | Exit status and `waitpid` | Required | Parent waits on local shadow. Shadow exits with remote status. |
 | `SIGCHLD` | Required | Provided naturally by local shadow exit. |
 | `SIGINT`, `SIGTERM`, `SIGHUP`, `SIGQUIT` | Required | Forward from shadow/process group to remote worker. |
-| `SIGSTOP`, `SIGCONT` | Phase 2 | Needed for shell job control. |
+| `SIGSTOP`, `SIGCONT` | State tracked; shell integration remaining | Remote-child records now model stopped/continued state without failure semantics. Full shell `fg`/`waitpid` behavior still needs shadow integration. |
 | Terminal resize | Required for PTY sessions | Forward window size to remote PTY. |
 | Process groups and sessions | Phase 2 | Required for interactive shells and job control. |
 | Regular files on SSI rootfs | Required | Rely on shared cluster FS. |

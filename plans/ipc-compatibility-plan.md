@@ -364,14 +364,16 @@ Completed:
 - Expanded live validation coverage for explicit cross-node remote children,
   stdin/stdout/stderr streaming, multi-stage transparent pipelines, named
   FIFOs, large streams, child lifecycle records, and pipe graph counters.
+- Richer remote-child job-control state for stopped/continued jobs. Remote
+  child records now carry a dedicated state detail for stopped and continued
+  signals without treating those transitions as failures.
 
 Remaining:
 
-1. Add richer job-control state for stopped/continued remote children.
-2. Add optional future localhost TCP proxying if real workloads need it.
-3. Consider a second-generation FIFO coordinator only if multi-reader or
+1. Add optional future localhost TCP proxying if real workloads need it.
+2. Consider a second-generation FIFO coordinator only if multi-reader or
    multi-writer FIFO workloads become important.
-4. Consider Unix datagram or message-queue brokers only with a concrete
+3. Consider Unix datagram or message-queue brokers only with a concrete
    workload that needs message boundary semantics.
 
 Defer everything involving distributed shared memory, futexes, `SCM_RIGHTS`,
