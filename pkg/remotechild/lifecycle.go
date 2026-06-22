@@ -356,7 +356,7 @@ func (s *Store) MarkFinished(remoteJobID string, state ShadowState, exitCode int
 	record.StateReason = reason
 	record.ExitCode = exitCode
 	record.Signal = signal
-	record.FailureReason = reason
+	record.FailureReason = failureReasonForState(state, reason)
 	record.FinishedAt = at
 	record.UpdatedAt = at
 	s.records[remoteJobID] = record
@@ -442,7 +442,7 @@ func (s *Store) MarkParentTerminal(parentJobID string, state ShadowState, reason
 		}
 		record.State = state
 		record.StateReason = reason
-		record.FailureReason = reason
+		record.FailureReason = failureReasonForState(state, reason)
 		record.FinishedAt = at
 		record.UpdatedAt = at
 		s.records[id] = record

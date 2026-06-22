@@ -87,6 +87,58 @@ func TestStoreLifecycleTransitions(t *testing.T) {
 	}
 }
 
+func TestStoreTerminalFailureReasonByState(t *testing.T) {
+	store := NewStore()
+	store.Upsert(ShadowRecord{RemoteJobID: "job-child", State: StateRunning})
+
+	finished := time.Unix(30, 0)
+	store.MarkFinished("job-child", StateCompleted, 0, 0, "normal exit", finished)
+	record, _ := store.Get("job-child")
+	if record.State != StateCompleted || record.StateReason != "normal exit" {
+		t.Fatalf("completed record = %#v", record)
+	}
+	if record.FailureReason != "" {
+		t.Fatalf("completed record has failure reason: %#v", record)
+	}
+
+	store.Upsert(ShadowRecord{RemoteJobID: "job-child", State: StateRunning})
+	store.MarkFinished("job-child", StateOrphaned, -1, 0, "lease expired", finished)
+	record, _ = store.Get("job-child")
+	if record.FailureReason != "lease expired" {
+		t.Fatalf("orphaned failure reason = %q, want lease expired", record.FailureReason)
+	}
+}
+
+func TestStoreMarkParentTerminalUsesStateFailureSemantics(t *testing.T) {
+	store := NewStore()
+	store.Upsert(ShadowRecord{
+		ParentJobID: "job-parent",
+		RemoteJobID: "job-child",
+		State:       StateRunning,
+	})
+
+	finished := time.Unix(40, 0)
+	store.MarkParentTerminal("job-parent", StateCompleted, "parent completed", finished)
+	record, _ := store.Get("job-child")
+	if record.State != StateCompleted || record.StateReason != "parent completed" {
+		t.Fatalf("completed child = %#v", record)
+	}
+	if record.FailureReason != "" {
+		t.Fatalf("completed child has failure reason: %#v", record)
+	}
+
+	store.Upsert(ShadowRecord{
+		ParentJobID: "job-parent",
+		RemoteJobID: "job-child",
+		State:       StateRunning,
+	})
+	store.MarkParentTerminal("job-parent", StateFailed, "parent failed", finished)
+	record, _ = store.Get("job-child")
+	if record.State != StateFailed || record.FailureReason != "parent failed" {
+		t.Fatalf("failed child = %#v", record)
+	}
+}
+
 func TestStorePruneTerminal(t *testing.T) {
 	store := NewStore()
 	oldFinished := time.Unix(10, 0)
