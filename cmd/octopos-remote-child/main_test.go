@@ -112,6 +112,18 @@ func TestParseArgsRejectsConflictingGPUAliases(t *testing.T) {
 	}
 }
 
+func TestAutoTTYForPreloadRequiresGuardAndTerminal(t *testing.T) {
+	if !autoTTYForPreload([]string{remotechild.EnvPreloadActive + "=1"}, true) {
+		t.Fatal("autoTTYForPreload disabled for preloaded terminal child")
+	}
+	if autoTTYForPreload([]string{remotechild.EnvPreloadActive + "=1"}, false) {
+		t.Fatal("autoTTYForPreload enabled without terminal")
+	}
+	if autoTTYForPreload([]string{"PATH=/usr/bin"}, true) {
+		t.Fatal("autoTTYForPreload enabled without preload guard")
+	}
+}
+
 func TestFDPlanOptionsAllowsFileLocksOnlyWhenExplicit(t *testing.T) {
 	env := []string{"OCTOPOS_SSI=1"}
 	opts := fdPlanOptions(env)

@@ -41,6 +41,8 @@ Implemented and live-tested on `shedwards-octo1`, `shedwards-octo2`, and
 - Process group ID, kernel session ID, and PTY foreground process group ID are
   recorded for exec processes, exposed through `job status`/`ps`, and retained
   in remote-child lifecycle records.
+- Transparent preload-spawned children automatically request PTY mode when they
+  inherit a real terminal, while explicit helper calls still require `-t`.
 - TTY-capable explicit remote-child execution via the existing ExecStream PTY
   path.
 - Resource and placement flags on `octopos-remote-child`:

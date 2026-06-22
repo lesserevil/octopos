@@ -16,6 +16,7 @@ import (
 	"github.com/octopos/octopos/pkg/execclient"
 	"github.com/octopos/octopos/pkg/remotechild"
 	octopospb "github.com/octopos/octopos/pkg/rpc"
+	"github.com/octopos/octopos/pkg/termio"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 )
@@ -41,6 +42,9 @@ func main() {
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "octopos-remote-child: %v\n", err)
 		os.Exit(2)
+	}
+	if !cfg.TTY && autoTTYForPreload(os.Environ(), termio.IsTerminal(os.Stdin.Fd())) {
+		cfg.TTY = true
 	}
 	if err := applyLocalPolicy(cfg, command); err != nil {
 		fmt.Fprintf(os.Stderr, "octopos-remote-child: %v\n", err)
@@ -320,6 +324,10 @@ func parseArgs(args []string) (config, []string, error) {
 		return config{}, nil, errors.New("missing command")
 	}
 	return cfg, command, nil
+}
+
+func autoTTYForPreload(env []string, stdinIsTerminal bool) bool {
+	return stdinIsTerminal && lookupEnv(env, remotechild.EnvPreloadActive) == "1"
 }
 
 func dialCluster(ctx context.Context, cfg config) (*grpc.ClientConn, string, error) {
