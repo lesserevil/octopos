@@ -149,6 +149,10 @@ func remotePipeEnvFromCurrentProcess() ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
+	return remotePipeEnvFromPlans(plans, os.Environ()), nil
+}
+
+func remotePipeEnvFromPlans(plans []remotechild.FDPlan, env []string) []string {
 	var out []string
 	for _, plan := range plans {
 		if plan.FD < 0 || plan.FD > 2 || plan.PipeID == "" {
@@ -157,9 +161,12 @@ func remotePipeEnvFromCurrentProcess() ([]string, error) {
 			}
 			continue
 		}
+		if plan.PipeID == lookupEnv(env, remotechild.EnvParentStdioPipeFD(plan.FD)) {
+			continue
+		}
 		out = append(out, remotechild.EnvPipeFD(plan.FD)+"="+plan.PipeID)
 	}
-	return out, nil
+	return out
 }
 
 var defaultDenyCommands = []string{

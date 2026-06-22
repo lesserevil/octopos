@@ -205,6 +205,7 @@ func enterSSI(root, base, workdir string, strictVFS bool, gpu nvidiaRuntimeConfi
 	if hostFDDir != "" {
 		env = setEnvValue(env, remotechild.EnvHostFDDir, hostFDDir)
 	}
+	env = applyParentStdioPipeEnv(env)
 	if gpu.enabled() {
 		env = applyNVIDIAEnv(env, gpu)
 	}
@@ -741,6 +742,20 @@ func envValue(env []string, key string) string {
 func ensureDefaultEnv(env []string) []string {
 	if envValue(env, "PATH") == "" {
 		env = append(env, "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
+	}
+	return env
+}
+
+func applyParentStdioPipeEnv(env []string) []string {
+	plans, err := remotechild.ClassifyInheritedFDs(os.Getpid())
+	if err != nil {
+		return env
+	}
+	for _, plan := range plans {
+		if plan.FD < 0 || plan.FD > 2 || plan.PipeID == "" {
+			continue
+		}
+		env = setEnvValue(env, remotechild.EnvParentStdioPipeFD(plan.FD), plan.PipeID)
 	}
 	return env
 }

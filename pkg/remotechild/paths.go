@@ -31,6 +31,7 @@ const (
 	EnvFallbackCode    = "OCTOPOS_REMOTE_CHILD_FALLBACK_CODE"
 	EnvParentJobID     = "OCTOPOS_PARENT_JOB_ID"
 	EnvParentPID       = "OCTOPOS_PARENT_PID"
+	EnvParentStdioPipe = "OCTOPOS_PARENT_STDIO_PIPE_FD_"
 	EnvShadowPID       = "OCTOPOS_SHADOW_PID"
 )
 
@@ -40,4 +41,8 @@ func EnvPipeFD(fd int) string {
 
 func EnvFIFOFD(fd int) string {
 	return EnvFIFOFDPrefix + strconv.Itoa(fd)
+}
+
+func EnvParentStdioPipeFD(fd int) string {
+	return EnvParentStdioPipe + strconv.Itoa(fd)
 }

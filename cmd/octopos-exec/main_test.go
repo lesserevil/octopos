@@ -127,6 +127,30 @@ func TestApplyNVIDIAEnv(t *testing.T) {
 	}
 }
 
+func TestApplyParentStdioPipeEnvMarksPipeFDs(t *testing.T) {
+	readEnd, writeEnd, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer readEnd.Close()
+	defer writeEnd.Close()
+
+	savedStdout, err := unix.Dup(1)
+	if err != nil {
+		t.Fatalf("dup stdout: %v", err)
+	}
+	defer unix.Close(savedStdout)
+	if err := unix.Dup2(int(writeEnd.Fd()), 1); err != nil {
+		t.Fatalf("replace stdout: %v", err)
+	}
+	defer unix.Dup2(savedStdout, 1)
+
+	got := applyParentStdioPipeEnv([]string{remotechild.EnvParentStdioPipeFD(1) + "=stale"})
+	if value := envValue(got, remotechild.EnvParentStdioPipeFD(1)); value == "" || value == "stale" {
+		t.Fatalf("%s = %q, want detected pipe id", remotechild.EnvParentStdioPipeFD(1), value)
+	}
+}
+
 func TestParseVFIOGroups(t *testing.T) {
 	groups, err := parseVFIOGroups("7, 8,7")
 	if err != nil {

@@ -252,6 +252,36 @@ func TestRemotePipeEnvFromCurrentProcess(t *testing.T) {
 	}
 }
 
+func TestRemotePipeEnvFromCurrentProcessSkipsParentStdioPipe(t *testing.T) {
+	readEnd, writeEnd, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer readEnd.Close()
+	defer writeEnd.Close()
+
+	savedStdout, err := unix.Dup(1)
+	if err != nil {
+		t.Fatalf("dup stdout: %v", err)
+	}
+	defer unix.Close(savedStdout)
+	if err := unix.Dup2(int(writeEnd.Fd()), 1); err != nil {
+		t.Fatalf("replace stdout: %v", err)
+	}
+	defer unix.Dup2(savedStdout, 1)
+
+	t.Setenv(remotechild.EnvParentStdioPipeFD(1), currentPipeIDForFD(t, 1))
+	env, err := remotePipeEnvFromCurrentProcess()
+	if err != nil {
+		t.Fatalf("remotePipeEnvFromCurrentProcess: %v", err)
+	}
+	for _, entry := range env {
+		if strings.HasPrefix(entry, remotechild.EnvPipeFD(1)+"=") {
+			t.Fatalf("parent stdio pipe was not skipped: %#v", env)
+		}
+	}
+}
+
 func TestRemotePipeEnvFromCurrentProcessReportsFIFO(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "test.fifo")
 	if err := unix.Mkfifo(path, 0600); err != nil {
@@ -435,4 +465,23 @@ func openNonCloseOnExecFile(t *testing.T) *os.File {
 		t.Fatalf("clear close-on-exec: %v", err)
 	}
 	return file
+}
+
+func currentPipeIDForFD(t *testing.T, fd int) string {
+	t.Helper()
+	plans, err := remotechild.ClassifyInheritedFDs(os.Getpid())
+	if err != nil {
+		t.Fatalf("ClassifyInheritedFDs: %v", err)
+	}
+	for _, plan := range plans {
+		if plan.FD != fd {
+			continue
+		}
+		if plan.PipeID == "" {
+			t.Fatalf("fd %d plan missing pipe id: %#v", fd, plan)
+		}
+		return plan.PipeID
+	}
+	t.Fatalf("fd %d plan not found in %#v", fd, plans)
+	return ""
 }
