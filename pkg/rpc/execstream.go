@@ -1524,9 +1524,13 @@ func (s *ClusterServerImpl) stopRemoteChildrenForParent(parentJobID cluster.JobI
 		ActiveOnly:  true,
 	})
 	for _, record := range records {
-		s.remoteChildren.MarkState(record.RemoteJobID, remotechild.StateStopping, reason, time.Now())
+		now := time.Now()
+		s.remoteChildren.MarkState(record.RemoteJobID, remotechild.StateStopping, reason, now)
+		s.markRemoteChildJobState(cluster.JobID(record.RemoteJobID), remotechild.StateStopping, reason, -1, int(syscall.SIGTERM), now)
 		if record.RemoteGlobalPID == 0 {
-			s.remoteChildren.MarkFinished(record.RemoteJobID, remotechild.StateFailed, -1, int(syscall.SIGTERM), reason, time.Now())
+			now = time.Now()
+			s.remoteChildren.MarkFinished(record.RemoteJobID, remotechild.StateFailed, -1, int(syscall.SIGTERM), reason, now)
+			s.markRemoteChildJobState(cluster.JobID(record.RemoteJobID), remotechild.StateFailed, reason, -1, int(syscall.SIGTERM), now)
 			continue
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -1535,7 +1539,38 @@ func (s *ClusterServerImpl) stopRemoteChildrenForParent(parentJobID cluster.JobI
 			Signal:    int32(syscall.SIGTERM),
 		})
 		cancel()
-		s.remoteChildren.MarkFinished(record.RemoteJobID, remotechild.StateFailed, -1, int(syscall.SIGTERM), reason, time.Now())
+		now = time.Now()
+		s.remoteChildren.MarkFinished(record.RemoteJobID, remotechild.StateFailed, -1, int(syscall.SIGTERM), reason, now)
+		s.markRemoteChildJobState(cluster.JobID(record.RemoteJobID), remotechild.StateFailed, reason, -1, int(syscall.SIGTERM), now)
+	}
+}
+
+func (s *ClusterServerImpl) markRemoteChildJobState(jobID cluster.JobID, state remotechild.ShadowState, reason string, exitCode int, signal int, at time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	job, exists := s.cluster.jobs[jobID]
+	if !exists || job.RemoteChild == nil {
+		return
+	}
+	job.RemoteChild.State = string(state)
+	job.RemoteChild.StateReason = reason
+	job.RemoteChild.FailureReason = remoteChildFailureReasonForState(state, reason)
+	if remotechild.TerminalState(state) {
+		job.Status = cluster.JobStatusFailed
+		job.ExitCodes = []int{exitCode}
+		job.FinishedAt = at
+		job.RemoteChild.FinishedAt = at
+		clearJobChildToken(job)
+	}
+}
+
+func remoteChildFailureReasonForState(state remotechild.ShadowState, reason string) string {
+	switch state {
+	case remotechild.StateFailed, remotechild.StateFallback, remotechild.StateOrphaned, remotechild.StateRecovering:
+		return reason
+	default:
+		return ""
 	}
 }
 

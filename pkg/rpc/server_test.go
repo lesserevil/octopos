@@ -1406,6 +1406,63 @@ func TestRemoteChildSignalStateTransitions(t *testing.T) {
 	}
 }
 
+func TestParentExitMarksLocalRemoteChildJobTerminal(t *testing.T) {
+	server := NewClusterServerImpl(
+		cluster.NodeID("node-1"),
+		scheduler.NewScheduler(&scheduler.BinPackPolicy{}),
+		tracker.NewTracker(),
+		nil,
+	)
+	parentID := cluster.JobID("job-parent")
+	childID := cluster.JobID("job-child")
+	server.cluster.jobs[parentID] = &cluster.JobInfo{
+		ID:        parentID,
+		SessionID: "session-1",
+		Status:    cluster.JobStatusRunning,
+	}
+	server.cluster.jobs[childID] = &cluster.JobInfo{
+		ID:          childID,
+		SessionID:   "session-1",
+		Status:      cluster.JobStatusRunning,
+		PrimaryNode: "node-1",
+		RemoteChild: &cluster.RemoteChildInfo{
+			ParentJobID:  parentID,
+			RemoteJobID:  childID,
+			RemoteNodeID: "node-1",
+			State:        remotechild.StateRunning,
+		},
+		ChildToken:          "child-token",
+		ChildTokenExpiresAt: time.Now().Add(time.Minute),
+	}
+	server.remoteChildren.Upsert(remotechild.ShadowRecord{
+		SessionID:    "session-1",
+		ParentJobID:  string(parentID),
+		RemoteJobID:  string(childID),
+		RemoteNodeID: "node-1",
+		State:        remotechild.StateRunning,
+	})
+
+	server.failJob(parentID, "", cluster.Requirements{}, "parent failed")
+
+	child := server.cluster.jobs[childID]
+	if child.Status != cluster.JobStatusFailed {
+		t.Fatalf("child status = %s, want failed", child.Status)
+	}
+	if child.ChildToken != "" || !child.ChildTokenExpiresAt.IsZero() {
+		t.Fatalf("child token not cleared: token=%q expiry=%s", child.ChildToken, child.ChildTokenExpiresAt)
+	}
+	if child.RemoteChild == nil || child.RemoteChild.State != remotechild.StateFailed || child.RemoteChild.FailureReason != "parent failed" {
+		t.Fatalf("child remote state = %#v", child.RemoteChild)
+	}
+	if child.FinishedAt.IsZero() || child.RemoteChild.FinishedAt.IsZero() {
+		t.Fatalf("child finish time missing: job=%s remote=%s", child.FinishedAt, child.RemoteChild.FinishedAt)
+	}
+	record, _ := server.remoteChildren.Get(string(childID))
+	if record.State != remotechild.StateFailed || record.FailureReason != "parent failed" {
+		t.Fatalf("record after parent failure = %#v", record)
+	}
+}
+
 func TestCommandContextForRemoteChildSurvivesStreamCancel(t *testing.T) {
 	parentCtx, cancel := context.WithCancel(context.Background())
 	workerCtx := commandContextForStream(parentCtx, true)
