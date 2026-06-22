@@ -113,18 +113,18 @@ Do not relax:
 | Process groups and job control | Support | Medium-hard | Finish stopped job table semantics and process-group mapping. |
 | Regular files on SSI rootfs | Support | Medium | Use cluster FS, reopen eligible inherited files remotely. |
 | File locks | Support after validation | Medium-hard | Validate `flock` and `fcntl` lock semantics on JuiceFS. |
-| Anonymous pipes | Support common streams | Medium-hard | Build full pipe graph coordination with bounded buffers. |
-| Named FIFOs | Support later | Medium-hard | Broker FIFO endpoints or force-local until proven. |
+| Anonymous pipes | Support common streams | Done/basic | Pipe graph coordinates common stream endpoints with bounded buffers and stats. |
+| Named FIFOs | Support common streams | Done/basic | Blocking `O_RDONLY`/`O_WRONLY` SSI-root FIFO opens are brokered through the pipe graph. |
 | TCP/UDP routable addresses | Support | Low-medium | Let normal networking handle it. |
 | Localhost TCP | Force local by default | Medium | Optional future loopback proxy with explicit opt-in. |
-| Unix pathname sockets | Support later for streams | Hard | Broker bind/connect/send/recv and peer identity. |
+| Unix pathname sockets | Support streams | Done/basic | Pathname `AF_UNIX`/`SOCK_STREAM` sockets under the SSI root use the Unix socket broker. |
 | Unix datagram sockets | Defer | Hard | Requires message-boundary and credential semantics. |
 | Unix abstract sockets | Force local | Very hard | Kernel-local namespace, no SSI path to broker safely. |
 | `SCM_RIGHTS` fd passing | Force local | Very hard | Requires arbitrary cross-node FD recreation and policy. |
 | POSIX/System V shared memory | Force local | Very hard | Requires distributed shared memory coherence. |
 | `memfd` and `/dev/shm` | Force local | Very hard | Same shared-memory problem plus lifecycle complexity. |
 | Writable `mmap(MAP_SHARED)` | Force local | Very hard | Needs coherent shared page state and invalidation. |
-| Read-only file-backed `MAP_SHARED` | Possible relaxed support | Medium | Treat as private/read-only if policy allows. |
+| Read-only file-backed `MAP_SHARED` | Relaxed opt-in support | Done/basic | Relaxed mode converts eligible read-only file-backed mappings to private mappings. |
 | Shared-memory futexes | Force local | Extremely hard | Needs coherent memory plus distributed futex wait/wake. |
 | POSIX/System V semaphores | Force local | Hard | Kernel-local semaphore state and wakeup ordering. |
 | POSIX/System V message queues | Force local initially | Hard | Could be brokered, but not worth first wave. |
@@ -137,6 +137,29 @@ Do not relax:
 | Netlink | Force local for system state | Hard | Often refers to local kernel, device, and namespace state. |
 
 ## Implementation Phases
+
+### Current Status
+
+As of the current implementation:
+
+- Phase 1 diagnostics and policy hardening are implemented for inherited FD
+  classification and preload-blocked IPC classes.
+- Phase 2 pipe graph coordination is implemented for common anonymous pipe and
+  inherited FIFO stream cases, with bounded stream chunks and `pipe stats`.
+- Phase 3 file-lock handling is guarded by policy; locked inherited regular
+  files force local unless the operator opts in after validating the active SSI
+  filesystem.
+- Phase 4 named FIFO broker is implemented for blocking `O_RDONLY` and
+  `O_WRONLY` opens of absolute SSI-root paths in opt-in execs and remote
+  children. `O_RDWR`, nonblocking, relative-path, and multi-reader/multi-writer
+  FIFO semantics remain unsupported.
+- Phase 5 Unix pathname socket broker is implemented for
+  `AF_UNIX`/`SOCK_STREAM` filesystem paths under the SSI root. Abstract sockets,
+  datagrams, credential-sensitive semantics, and `SCM_RIGHTS` remain
+  unsupported.
+- Phase 6 relaxed read-only mapping compatibility is implemented for eligible
+  file-backed read-only `MAP_SHARED` mappings; writable or shared-memory-backed
+  mappings remain blocked.
 
 ### Phase 1: Diagnostics and Policy Hardening
 
@@ -334,14 +357,15 @@ project, not an incremental IPC feature.
 - Shared-memory-heavy frameworks should be configured to use TCP or explicit
   distributed transports when run under OctopOS.
 
-## Recommended Priority
+## Remaining Priority
 
-1. Diagnostics and reason codes.
-2. Full pipe graph coordination.
-3. File lock validation.
-4. Named FIFO broker.
-5. Pathname Unix socket broker for stream sockets.
-6. Optional read-only mapping compatibility mode.
+1. Expand live validation coverage for multi-stage pipelines and large streams.
+2. Add richer job-control state for stopped/continued remote children.
+3. Add optional future localhost TCP proxying if real workloads need it.
+4. Consider a second-generation FIFO coordinator only if multi-reader or
+   multi-writer FIFO workloads become important.
+5. Consider Unix datagram or message-queue brokers only with a concrete
+   workload that needs message boundary semantics.
 
 Defer everything involving distributed shared memory, futexes, `SCM_RIGHTS`,
 pidfds, ptrace, and abstract sockets.

@@ -2,11 +2,10 @@
 
 ## Purpose
 
-This plan defines how to complete the sketched VFIO allocation work in OctopOS.
-The current repository has protobuf messages, cluster structs, virtual `/dev`
-hooks, and RPC stubs for VFIO, but it does not yet discover VFIO groups,
-reserve them in the scheduler, expose them safely inside exec namespaces, or
-release them reliably.
+This plan records the VFIO allocation model in OctopOS and the remaining
+validation work. The implementation now discovers VFIO groups, reserves them in
+the scheduler, exposes only allocated groups inside exec namespaces, and
+releases allocations on job/session lifecycle events.
 
 The goal is to make VFIO device groups an explicitly allocated cluster resource
 that can be requested by jobs and projected into an exec namespace without
@@ -34,18 +33,28 @@ Implemented today:
   - `ProcessInfo.VFIOGroups`
 - `octopos-devfs` has a prototype `--vfio-groups` option.
 - `octoposd` has a `vfio_enabled` config field.
-
-Not implemented today:
-
-- VFIO group discovery from sysfs.
-- Group viability validation.
-- Node heartbeat propagation of available and claimed VFIO groups.
+- `pkg/vfio` sysfs discovery and group viability checks.
+- Cluster config allow/deny policy for VFIO groups, classes, and vendors.
+- Node heartbeat propagation of discovered VFIO groups and claim state.
 - Scheduler filtering and reservation for `Requirements.VFIODevs`.
 - Allocation ownership records tied to session/job lifecycle.
 - RPC implementations in `pkg/rpc/server.go`.
-- CLI commands for listing, allocating, or releasing VFIO groups.
-- Exec namespace projection for `/dev/vfio/vfio` and `/dev/vfio/<group>`.
-- Release-on-job-exit, release-on-session-destroy, or daemon-restart recovery.
+- CLI commands for listing, manually allocating, and releasing VFIO groups.
+- `octoposctl exec --vfio ...` job-integrated allocation.
+- Exec namespace projection for `/dev/vfio/vfio` and only allocated
+  `/dev/vfio/<group>` nodes.
+- Release-on-job-exit, release-on-session-destroy, launch-failure cleanup, and
+  daemon-restart recovery from `/var/lib/octopos/vfio-allocations.json`.
+
+Remaining work:
+
+- Live validation with a non-critical VFIO-bound test device on prepared
+  hardware.
+- Optional protobuf cleanup for explicit allocation IDs and deprecating unused
+  fd fields.
+- Optional device-cgroup integration if OctopOS later runs jobs under a device
+  controller. Current isolation is by narrow device-node projection in a
+  privileged namespace.
 
 ## Design Principles
 
@@ -395,16 +404,15 @@ available and the user approves host-level driver binding:
 - Device-node projection must be narrow. A VFIO job should not inherit all of
   `/dev/vfio`.
 
-## Suggested Implementation Order
+## Remaining Implementation Order
 
-1. Add `pkg/vfio` discovery and tests.
-2. Add cluster/scheduler VFIO reservation and tests.
-3. Implement `GetVFIODevices`.
-4. Implement allocation/release RPCs with in-memory lifecycle records.
-5. Wire `exec --vfio` through scheduling and namespace projection.
-6. Add persistent recovery.
-7. Add CLI/docs.
-8. Run bounded live validation on prepared hardware.
+1. Run bounded live validation on prepared hardware.
+2. Add allocation IDs to the protobuf API if manual allocation workflows need
+   more precise release handles than node/group/session.
+3. Add device-cgroup enforcement if the runtime starts using device
+   controllers for exec isolation.
+4. Extend status output if operators need historical released/failed allocation
+   records, not only current claimed/free group state.
 
 Each phase should be committed separately after `go test ./...` and `go vet
 ./...` pass.

@@ -216,15 +216,17 @@ Partially implemented:
     regular-file reopen paths, pipe/socket IDs, char/block device major/minor
     metadata, gives category-specific force-local diagnostics, reopens eligible
     regular files and safe character devices remotely in SSI mode, and treats
-    other inherited FDs as force-local with explicit diagnostics.
-  - Missing: broader device allowlists, pipe endpoint coordination, Unix socket
-    peer/path decisions,
-    `/dev/shm`/memfd/eventfd/signalfd/timerfd/netlink-specific decisions, and
-    tests for every unsupported IPC category.
+    other inherited FDs as force-local with explicit diagnostics. The preload
+    also blocks unsupported local-kernel IPC after launch and implements the
+    current supported byte-stream IPC set: anonymous pipes, eligible named
+    FIFOs, and pathname Unix stream sockets.
+  - Missing: broader administrator device allowlists, richer multi-reader or
+    multi-writer FIFO semantics, localhost TCP proxying if needed, exact
+    credential-sensitive Unix socket behavior, and any future explicitly
+    approved broker for currently unsupported kernel IPC classes.
 
 Not implemented yet:
 
-- Full multi-node pipe graph coordination beyond shadow stdio streaming.
 - Full shell job table semantics for stopped remote jobs beyond forwarding
   stop/continue and reflecting stopped/running lifecycle state.
 - Production seccomp user-notification remoting loop. The support check, command
@@ -238,8 +240,8 @@ behind explicit opt-in behavior and include local tests plus at least one
 bounded live validation on the `shedwards-octo*` cluster.
 
 The IPC compatibility strategy is refined in `plans/ipc-compatibility-plan.md`.
-That plan is authoritative for which IPC classes should be supported, brokered
-later, force-local, or treated as permanent non-goals.
+That plan is authoritative for which IPC classes are implemented today, which
+remain future work, which force local, and which are permanent non-goals.
 
 ### Phase 1: Finish Secure Child Control
 
@@ -726,8 +728,8 @@ The initial production version should explicitly support the following:
 | File locks | Phase 2/3 | Depends on cluster FS lock semantics. Must test carefully. |
 | TCP and UDP using routable addresses | Required | Normal network paths work. |
 | Anonymous pipes | Required for simple streams | Force local for non-byte-stream assumptions. |
-| Named FIFOs | Phase 2 | Prefer local proxying or force local until semantics are proven. |
-| Unix pathname sockets | Phase 3 | Proxyable but complex. |
+| Named FIFOs | Supported for simple streams | Blocking `O_RDONLY`/`O_WRONLY` SSI-root opens are brokered. |
+| Unix pathname sockets | Supported for streams | Pathname `AF_UNIX`/`SOCK_STREAM` sockets under the SSI root are brokered. |
 | Localhost TCP | Unsupported transparently | Remote worker has its own localhost. Provide diagnostics. |
 | Unix abstract sockets | Unsupported initially | Kernel-local. Force local. |
 | `SCM_RIGHTS` fd passing | Unsupported initially | Very hard. Force local. |
@@ -739,7 +741,7 @@ The initial production version should explicitly support the following:
 | `ptrace` | Unsupported | Force local. |
 | `inotify` and `fanotify` | Partial later | Shared FS events are subtle. Force local initially. |
 | Netlink | Local only | Force local for commands depending on netlink state. |
-| `mmap(MAP_SHARED)` | File-backed only, with caveats | Memory-object semantics are not cluster-coherent. |
+| `mmap(MAP_SHARED)` | Relaxed read-only file-backed support | Writable or shared-memory-backed mappings remain unsupported. |
 
 ## Compatibility Contract
 
@@ -1491,9 +1493,9 @@ Initial tasks:
 3. Add fallback reason output.
 4. Write user and admin docs.
 
-## Implementation Order
+## Historical Implementation Order
 
-Recommended order:
+The original recommended order was:
 
 1. Milestone 0: Design validation.
 2. Milestone 1: Explicit shadow worker prototype.
