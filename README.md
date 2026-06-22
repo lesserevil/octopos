@@ -229,9 +229,9 @@ octoposctl --addr 10.0.0.1:50051 exec --remote-children=safe --remote-file-locks
 Remote-child lifecycle state is stored by default at
 `/var/lib/octopos/remote-children.json`; authorization and placement audit events
 are appended to `/var/lib/octopos/remote-children.json.audit.jsonl`. In strict
-SSI mode, remote-child workers also write durable exit records under
-`/var/lib/octopos/worker-exits` inside the SSI root so daemon restart recovery
-can preserve the actual remote worker exit code. Useful daemon flags:
+SSI mode, remote-child workers also write durable host-local exit records under
+`/var/lib/octopos/worker-exits` so daemon restart recovery can preserve the
+actual remote worker exit code. Useful daemon flags:
 
 ```bash
 octoposd --remote-child-token-ttl=24h \

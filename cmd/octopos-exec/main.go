@@ -169,6 +169,13 @@ func enterSSI(root, base, workdir string, strictVFS bool, gpu nvidiaRuntimeConfi
 	if vfio.enabled() && !filepath.IsAbs(vfio.devRoot) {
 		return fmt.Errorf("VFIO device root %s must be absolute", vfio.devRoot)
 	}
+	exitStatus, err := remotechild.OpenWorkerExitStatusFile(exitFile)
+	if err != nil {
+		return err
+	}
+	if exitStatus != nil {
+		defer exitStatus.Close()
+	}
 
 	if err := unix.Unshare(unix.CLONE_NEWNS | unix.CLONE_NEWUTS | unix.CLONE_NEWIPC); err != nil {
 		return fmt.Errorf("unshare SSI namespaces: %w", err)
@@ -236,14 +243,13 @@ func enterSSI(root, base, workdir string, strictVFS bool, gpu nvidiaRuntimeConfi
 	if err != nil {
 		return err
 	}
-	if exitFile != "" {
-		return runAndRecordExit(path, argv, env, exitFile)
+	if exitStatus != nil {
+		return runAndRecordExit(path, argv, env, exitStatus)
 	}
 	return syscall.Exec(path, argv, env)
 }
 
-func runAndRecordExit(path string, argv []string, env []string, exitFile string) error {
-	_ = os.Remove(exitFile)
+func runAndRecordExit(path string, argv []string, env []string, exitStatus *os.File) error {
 	cmd := exec.Command(path, argv[1:]...)
 	cmd.Env = env
 	cmd.Stdin = os.Stdin
@@ -256,7 +262,7 @@ func runAndRecordExit(path string, argv []string, env []string, exitFile string)
 			Error:    err.Error(),
 			ExitedAt: time.Now(),
 		}
-		if writeErr := remotechild.WriteWorkerExitStatus(exitFile, status); writeErr != nil {
+		if writeErr := remotechild.WriteWorkerExitStatusFile(exitStatus, status); writeErr != nil {
 			fmt.Fprintf(os.Stderr, "octopos-exec: write worker exit status: %v\n", writeErr)
 		}
 		return recordedExitError{Code: 1}
@@ -290,7 +296,7 @@ func runAndRecordExit(path string, argv []string, env []string, exitFile string)
 	if err != nil && signal == 0 && exitCode < 0 {
 		status.Error = err.Error()
 	}
-	if writeErr := remotechild.WriteWorkerExitStatus(exitFile, status); writeErr != nil {
+	if writeErr := remotechild.WriteWorkerExitStatusFile(exitStatus, status); writeErr != nil {
 		fmt.Fprintf(os.Stderr, "octopos-exec: write worker exit status: %v\n", writeErr)
 	}
 	if signal > 0 {

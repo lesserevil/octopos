@@ -1501,6 +1501,7 @@ func TestRecoverLocalRemoteChildRecordOrphansMissingPID(t *testing.T) {
 
 func TestRecoverLocalRemoteChildRecordUsesExitStatusForMissingPID(t *testing.T) {
 	root := t.TempDir()
+	exitStatusDir := t.TempDir()
 	server := NewClusterServerImplWithOptions(
 		cluster.NodeID("node-1"),
 		scheduler.NewScheduler(&scheduler.BinPackPolicy{}),
@@ -1511,7 +1512,7 @@ func TestRecoverLocalRemoteChildRecordUsesExitStatusForMissingPID(t *testing.T) 
 			RootFS:       root,
 			RequireMount: false,
 			Required:     true,
-		}},
+		}, RemoteChildExitStatusDir: exitStatusDir},
 	)
 	now := time.Unix(200, 0)
 	record := remotechild.ShadowRecord{
@@ -1525,7 +1526,7 @@ func TestRecoverLocalRemoteChildRecordUsesExitStatusForMissingPID(t *testing.T) 
 		UpdatedAt:       now,
 	}
 	server.remoteChildren.Upsert(record)
-	statusPath := filepath.Join(root, strings.TrimPrefix(remotechild.WorkerExitStatusPath(record.RemoteJobID), "/"))
+	statusPath := remotechild.WorkerExitStatusPathInDir(exitStatusDir, record.RemoteJobID)
 	if err := remotechild.WriteWorkerExitStatus(statusPath, remotechild.WorkerExitStatus{
 		JobID:    record.RemoteJobID,
 		PID:      99999999,
@@ -1690,6 +1691,7 @@ func TestJobInfoToProtoIncludesRemoteChild(t *testing.T) {
 
 func TestStrictSSIPTYCommandIncludesSlaveProjection(t *testing.T) {
 	root := t.TempDir()
+	exitStatusDir := t.TempDir()
 	for _, dir := range []string{"usr/bin", "usr/lib"} {
 		if err := os.MkdirAll(filepath.Join(root, dir), 0755); err != nil {
 			t.Fatal(err)
@@ -1711,7 +1713,7 @@ func TestStrictSSIPTYCommandIncludesSlaveProjection(t *testing.T) {
 			Executor:     executor,
 			RequireMount: false,
 			Required:     true,
-		}},
+		}, RemoteChildExitStatusDir: exitStatusDir},
 	)
 
 	req := &ExecuteRequest{
@@ -1777,6 +1779,7 @@ func TestStrictSSICommandIncludesVFIOGroups(t *testing.T) {
 
 func TestStrictSSIRemoteChildCommandIncludesExitStatusFile(t *testing.T) {
 	root := t.TempDir()
+	exitStatusDir := t.TempDir()
 	for _, dir := range []string{"usr/bin", "usr/lib"} {
 		if err := os.MkdirAll(filepath.Join(root, dir), 0755); err != nil {
 			t.Fatal(err)
@@ -1798,7 +1801,7 @@ func TestStrictSSIRemoteChildCommandIncludesExitStatusFile(t *testing.T) {
 			Executor:     executor,
 			RequireMount: false,
 			Required:     true,
-		}},
+		}, RemoteChildExitStatusDir: exitStatusDir},
 	)
 
 	req := &ExecuteRequest{
@@ -1815,7 +1818,7 @@ func TestStrictSSIRemoteChildCommandIncludesExitStatusFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildSSICommand: %v", err)
 	}
-	if !argPairBeforeCommand(cmd.Args, "--exit-status-file", remotechild.WorkerExitStatusPath("job-child")) {
+	if !argPairBeforeCommand(cmd.Args, "--exit-status-file", remotechild.WorkerExitStatusPathInDir(exitStatusDir, "job-child")) {
 		t.Fatalf("command args missing --exit-status-file before command separator: %v", cmd.Args)
 	}
 }

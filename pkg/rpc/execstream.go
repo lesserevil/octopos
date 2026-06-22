@@ -1015,7 +1015,7 @@ func (s *ClusterServerImpl) buildSSICommand(ctx context.Context, req *ExecuteReq
 		args = append(args, "--vfio-groups", vfioGroupFlag(reqs.VFIOGroups))
 	}
 	if isRemoteChildRequest(req) {
-		args = append(args, "--exit-status-file", remotechild.WorkerExitStatusPath(req.JobId))
+		args = append(args, "--exit-status-file", s.remoteChildExitStatusPath(req.JobId))
 	}
 	args = append(args, "--")
 	args = append(args, req.Command...)
@@ -1025,6 +1025,14 @@ func (s *ClusterServerImpl) buildSSICommand(ctx context.Context, req *ExecuteReq
 		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	}
 	return cmd, nil
+}
+
+func (s *ClusterServerImpl) remoteChildExitStatusPath(jobID string) string {
+	dir := remotechild.WorkerExitStatusDir
+	if s != nil && s.remoteChildExitStatusDir != "" {
+		dir = s.remoteChildExitStatusDir
+	}
+	return remotechild.WorkerExitStatusPathInDir(dir, jobID)
 }
 
 func vfioGroupFlag(groups []int) string {

@@ -100,10 +100,10 @@ Implemented and live-tested on `shedwards-octo1`, `shedwards-octo2`, and
 - Worker-side lifecycle records persist the worker OS PID. After an abrupt
   worker-side daemon restart, the daemon can reattach tracker state for a
   still-running local worker process. Strict-SSI remote-child workers write a
-  durable exit-status record before exiting, allowing recovery to preserve the
-  actual exit code after the original worker-side daemon is gone. Workers that
-  predate this support or die before writing the record still become terminal
-  with an explicit "exit status unavailable" diagnostic.
+  durable host-local exit-status record before exiting, allowing recovery to
+  preserve the actual exit code after the original worker-side daemon is gone.
+  Workers that predate this support or die before writing the record still
+  become terminal with an explicit "exit status unavailable" diagnostic.
 - Bootstrap and node-add/provisioned `octoposd.service` units set
   `KillMode=process`, allowing exec workers to survive an octoposd process
   restart long enough for lifecycle recovery to reattach them.

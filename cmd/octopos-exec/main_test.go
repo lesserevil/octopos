@@ -172,7 +172,12 @@ func TestParseVFIOGroupsRejectsInvalid(t *testing.T) {
 
 func TestRunAndRecordExitWritesStatus(t *testing.T) {
 	statusPath := filepath.Join(t.TempDir(), "worker.json")
-	err := runAndRecordExit("/bin/sh", []string{"/bin/sh", "-c", "exit 7"}, []string{"OCTOPOS_JOB_ID=job-child"}, statusPath)
+	statusFile, openErr := remotechild.OpenWorkerExitStatusFile(statusPath)
+	if openErr != nil {
+		t.Fatalf("OpenWorkerExitStatusFile: %v", openErr)
+	}
+	defer statusFile.Close()
+	err := runAndRecordExit("/bin/sh", []string{"/bin/sh", "-c", "exit 7"}, []string{"OCTOPOS_JOB_ID=job-child"}, statusFile)
 	var exitErr recordedExitError
 	if !errors.As(err, &exitErr) {
 		t.Fatalf("runAndRecordExit error = %v, want recordedExitError", err)

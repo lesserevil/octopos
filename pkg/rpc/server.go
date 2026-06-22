@@ -38,6 +38,7 @@ type ClusterServerImpl struct {
 	maxRemoteChildrenPerNode    int
 	remoteChildLeaseTimeout     time.Duration
 	remoteChildTokenTTL         time.Duration
+	remoteChildExitStatusDir    string
 	remoteChildren              *remotechild.Store
 	vfioAllocationStorePath     string
 	pipes                       *pipeCoordinator
@@ -70,6 +71,7 @@ type ServerOptions struct {
 	RemoteChildStorePath        string
 	RemoteChildLeaseTimeout     time.Duration
 	RemoteChildTokenTTL         time.Duration
+	RemoteChildExitStatusDir    string
 	VFIOAllocationStorePath     string
 }
 
@@ -98,6 +100,10 @@ func NewClusterServerImplWithOptions(nodeID cluster.NodeID, sched *scheduler.Sch
 	remoteChildTokenTTL := opts.RemoteChildTokenTTL
 	if remoteChildTokenTTL <= 0 {
 		remoteChildTokenTTL = 24 * time.Hour
+	}
+	remoteChildExitStatusDir := opts.RemoteChildExitStatusDir
+	if remoteChildExitStatusDir == "" {
+		remoteChildExitStatusDir = remotechild.WorkerExitStatusDir
 	}
 	remoteChildren := remotechild.NewStore()
 	if opts.RemoteChildStorePath != "" {
@@ -128,6 +134,7 @@ func NewClusterServerImplWithOptions(nodeID cluster.NodeID, sched *scheduler.Sch
 		maxRemoteChildrenPerNode:    maxNodeChildren,
 		remoteChildLeaseTimeout:     remoteChildLeaseTimeout,
 		remoteChildTokenTTL:         remoteChildTokenTTL,
+		remoteChildExitStatusDir:    remoteChildExitStatusDir,
 		remoteChildren:              remoteChildren,
 		vfioAllocationStorePath:     opts.VFIOAllocationStorePath,
 		pipes:                       newPipeCoordinator(),

@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"syscall"
@@ -381,7 +380,7 @@ func (s *ClusterServerImpl) readLocalRemoteChildExitStatus(record remotechild.Sh
 	if record.RemoteJobID == "" || !s.ssiConfig.Required {
 		return remotechild.WorkerExitStatus{}, false
 	}
-	statusPath := filepath.Join(s.ssiConfig.WithDefaults().RootFS, strings.TrimPrefix(remotechild.WorkerExitStatusPath(record.RemoteJobID), "/"))
+	statusPath := s.remoteChildExitStatusPath(record.RemoteJobID)
 	status, err := remotechild.ReadWorkerExitStatus(statusPath)
 	if err != nil {
 		return remotechild.WorkerExitStatus{}, false
