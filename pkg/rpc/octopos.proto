@@ -483,6 +483,7 @@ message RemoteChildInfo {
   int32 kernel_session_id = 16;
   int32 foreground_process_group_id = 17;
   string state_reason = 18;
+  int32 remote_local_pid = 19;
 }
 
 message RemoteChildRecord {
@@ -509,6 +510,7 @@ message RemoteChildRecord {
   int32 kernel_session_id = 21;
   int32 foreground_process_group_id = 22;
   string state_reason = 23;
+  int32 remote_local_pid = 24;
 }
 
 message CommandSpec {

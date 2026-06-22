@@ -92,6 +92,23 @@ func TestRemoteChildDetailPrefersStateReason(t *testing.T) {
 	}
 }
 
+func TestRemoteChildProcessSummaryIncludesLocalPID(t *testing.T) {
+	child := &octopospb.RemoteChildInfo{
+		ShadowPid:       101,
+		RemoteNodeId:    "node-2",
+		RemoteGlobalPid: 42,
+		RemoteLocalPid:  4242,
+	}
+	if got := remoteChildProcessSummary(child); got != "101->node-2/42:4242" {
+		t.Fatalf("summary = %q, want local pid", got)
+	}
+
+	child.RemoteLocalPid = 0
+	if got := remoteChildProcessSummary(child); got != "101->node-2/42" {
+		t.Fatalf("summary = %q, want legacy form", got)
+	}
+}
+
 func TestExecResourceDefaultsUsesClusterConfig(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "octoposd.yaml")
 	if err := os.WriteFile(path, []byte("exec_defaults:\n  cpu_cores: 4\n  memory_gb: 12\n"), 0600); err != nil {

@@ -2029,6 +2029,7 @@ func TestListRemoteChildrenUsesLifecycleStore(t *testing.T) {
 		RemoteJobID:     "job-child",
 		RemoteNodeID:    "node-2",
 		RemoteGlobalPID: 42,
+		RemoteLocalPID:  4242,
 		Command:         []string{"hostname"},
 		State:           remotechild.StateRunning,
 		StartedAt:       time.Unix(20, 0),
@@ -2057,6 +2058,9 @@ func TestListRemoteChildrenUsesLifecycleStore(t *testing.T) {
 	if child.RemoteJobId != "job-child" || child.State != remotechild.StateRunning {
 		t.Fatalf("child = %#v", child)
 	}
+	if child.RemoteLocalPid != 4242 {
+		t.Fatalf("remote local pid = %d, want 4242", child.RemoteLocalPid)
+	}
 }
 
 func TestJobInfoToProtoIncludesRemoteChild(t *testing.T) {
@@ -2083,6 +2087,7 @@ func TestJobInfoToProtoIncludesRemoteChild(t *testing.T) {
 			RemoteJobID:     "job-child",
 			RemoteNodeID:    "node-2",
 			RemoteGlobalPID: 42,
+			RemoteLocalPID:  4242,
 			Command:         []string{"hostname"},
 			PlacementReason: "explicit",
 			State:           remotechild.StateRunning,
@@ -2099,6 +2104,9 @@ func TestJobInfoToProtoIncludesRemoteChild(t *testing.T) {
 	}
 	if protoJob.RemoteChild.RemoteGlobalPid != 42 {
 		t.Fatalf("remote global pid = %d", protoJob.RemoteChild.RemoteGlobalPid)
+	}
+	if protoJob.RemoteChild.RemoteLocalPid != 4242 {
+		t.Fatalf("remote local pid = %d", protoJob.RemoteChild.RemoteLocalPid)
 	}
 	if protoJob.RemoteChild.State != remotechild.StateRunning || protoJob.RemoteChild.StartedAt != 20 {
 		t.Fatalf("remote lifecycle fields = %#v", protoJob.RemoteChild)

@@ -418,14 +418,15 @@ var jobChildrenCmd = &cobra.Command{
 			return fmt.Errorf("ListRemoteChildren failed: %w", err)
 		}
 
-		fmt.Printf("%-20s %-20s %-15s %-10s %-10s %-12s %-30s %s\n", "REMOTE JOB", "PARENT JOB", "REMOTE NODE", "SHADOW", "PID", "STATE", "DETAIL", "COMMAND")
+		fmt.Printf("%-20s %-20s %-15s %-10s %-10s %-10s %-12s %-30s %s\n", "REMOTE JOB", "PARENT JOB", "REMOTE NODE", "SHADOW", "GPID", "LPID", "STATE", "DETAIL", "COMMAND")
 		for _, child := range resp.Children {
-			fmt.Printf("%-20s %-20s %-15s %-10d %-10d %-12s %-30s %s\n",
+			fmt.Printf("%-20s %-20s %-15s %-10d %-10d %-10d %-12s %-30s %s\n",
 				child.RemoteJobId,
 				child.ParentJobId,
 				child.RemoteNodeId,
 				child.ShadowPid,
 				child.RemoteGlobalPid,
+				child.RemoteLocalPid,
 				child.State,
 				remoteChildDetail(child),
 				strings.Join(child.Command, " "),
@@ -831,13 +832,23 @@ var psCmd = &cobra.Command{
 			}
 			remote := "-"
 			if child := p.RemoteChild; child != nil {
-				remote = fmt.Sprintf("%d->%s/%d", child.ShadowPid, child.RemoteNodeId, child.RemoteGlobalPid)
+				remote = remoteChildProcessSummary(child)
 			}
 			fmt.Printf("%-20d %-15s %-8d %-8d %-8d %-8d %-14s %-10s %-10s %-24s %s\n",
 				p.GlobalPid, p.NodeId, p.LocalPid, p.ProcessGroupId, p.KernelSessionId, p.ForegroundProcessGroupId, kind, p.SessionId, p.JobId, remote, p.Cmdline)
 		}
 		return nil
 	},
+}
+
+func remoteChildProcessSummary(child *octopospb.RemoteChildInfo) string {
+	if child == nil {
+		return "-"
+	}
+	if child.RemoteLocalPid > 0 {
+		return fmt.Sprintf("%d->%s/%d:%d", child.ShadowPid, child.RemoteNodeId, child.RemoteGlobalPid, child.RemoteLocalPid)
+	}
+	return fmt.Sprintf("%d->%s/%d", child.ShadowPid, child.RemoteNodeId, child.RemoteGlobalPid)
 }
 
 var clusterCmd = &cobra.Command{

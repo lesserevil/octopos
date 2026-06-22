@@ -258,7 +258,10 @@ Remote-child lifecycle state is stored by default at
 are appended to `/var/lib/octopos/remote-children.json.audit.jsonl`. In strict
 SSI mode, remote-child workers also write durable host-local exit records under
 `/var/lib/octopos/worker-exits` so daemon restart recovery can preserve the
-actual remote worker exit code. Useful daemon flags:
+actual remote worker exit code. `octoposctl job children` shows the parent job,
+shadow PID, remote node, remote global PID, remote local worker PID, state, and
+placement/failure detail. `octoposctl ps` includes the same shadow-to-worker
+mapping in the `REMOTE` column. Useful daemon flags:
 
 ```bash
 octoposd --remote-child-token-ttl=24h \
