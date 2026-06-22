@@ -190,6 +190,7 @@ func enterSSI(root, base, workdir string, strictVFS bool, gpu nvidiaRuntimeConfi
 	if err != nil {
 		return err
 	}
+	parentStdioPipeEnv := parentStdioPipeEnvFromCurrentProcess()
 
 	if err := syscall.Chroot(root); err != nil {
 		return fmt.Errorf("chroot %s: %w", root, err)
@@ -205,7 +206,7 @@ func enterSSI(root, base, workdir string, strictVFS bool, gpu nvidiaRuntimeConfi
 	if hostFDDir != "" {
 		env = setEnvValue(env, remotechild.EnvHostFDDir, hostFDDir)
 	}
-	env = applyParentStdioPipeEnv(env)
+	env = applyParentStdioPipeEnv(env, parentStdioPipeEnv)
 	if gpu.enabled() {
 		env = applyNVIDIAEnv(env, gpu)
 	}
@@ -746,16 +747,32 @@ func ensureDefaultEnv(env []string) []string {
 	return env
 }
 
-func applyParentStdioPipeEnv(env []string) []string {
+func parentStdioPipeEnvFromCurrentProcess() []string {
 	plans, err := remotechild.ClassifyInheritedFDs(os.Getpid())
 	if err != nil {
-		return env
+		return nil
 	}
+	return parentStdioPipeEnvFromPlans(plans)
+}
+
+func parentStdioPipeEnvFromPlans(plans []remotechild.FDPlan) []string {
+	env := make([]string, 0, 3)
 	for _, plan := range plans {
 		if plan.FD < 0 || plan.FD > 2 || plan.PipeID == "" {
 			continue
 		}
-		env = setEnvValue(env, remotechild.EnvParentStdioPipeFD(plan.FD), plan.PipeID)
+		env = append(env, remotechild.EnvParentStdioPipeFD(plan.FD)+"="+plan.PipeID)
+	}
+	return env
+}
+
+func applyParentStdioPipeEnv(env []string, markers []string) []string {
+	for _, marker := range markers {
+		key, value, ok := strings.Cut(marker, "=")
+		if !ok || key == "" || value == "" {
+			continue
+		}
+		env = setEnvValue(env, key, value)
 	}
 	return env
 }

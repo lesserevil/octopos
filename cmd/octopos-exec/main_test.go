@@ -145,7 +145,8 @@ func TestApplyParentStdioPipeEnvMarksPipeFDs(t *testing.T) {
 	}
 	defer unix.Dup2(savedStdout, 1)
 
-	got := applyParentStdioPipeEnv([]string{remotechild.EnvParentStdioPipeFD(1) + "=stale"})
+	markers := parentStdioPipeEnvFromCurrentProcess()
+	got := applyParentStdioPipeEnv([]string{remotechild.EnvParentStdioPipeFD(1) + "=stale"}, markers)
 	if value := envValue(got, remotechild.EnvParentStdioPipeFD(1)); value == "" || value == "stale" {
 		t.Fatalf("%s = %q, want detected pipe id", remotechild.EnvParentStdioPipeFD(1), value)
 	}
