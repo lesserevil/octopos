@@ -234,6 +234,17 @@ Run the bounded remote-child IPC validation matrix against a live cluster with:
 scripts/validate-remote-children.sh shedwards-octo1:50051
 ```
 
+The validation covers explicit cross-node child launch, stdin/stdout/stderr
+streaming, transparent multi-stage shell pipelines, named FIFOs, lock behavior,
+remote-child lifecycle records, pipe graph counters, and a configurable large
+stream. Useful overrides:
+
+```bash
+OCTOPOS_VALIDATE_TARGET_NODE=shedwards-octo2 \
+OCTOPOS_VALIDATE_LARGE_BYTES=8388608 \
+scripts/validate-remote-children.sh shedwards-octo1:50051
+```
+
 Inherited locked regular files force local by default. After validating the
 active SSI filesystem lock behavior across nodes, opt in with:
 
