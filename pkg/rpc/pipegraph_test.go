@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"io"
+	"os"
 	"testing"
 	"time"
 
@@ -65,6 +66,74 @@ func TestPipeCoordinatorLocalPipe(t *testing.T) {
 	}
 	if len(coordinator.local) != 0 {
 		t.Fatalf("local pipe registry not cleaned: %#v", coordinator.local)
+	}
+}
+
+func TestPipeCoordinatorFIFOBlocksUntilPeer(t *testing.T) {
+	coordinator := newPipeCoordinator()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	readerCh := make(chan struct {
+		file *os.File
+		err  error
+	}, 1)
+	go func() {
+		file, err := coordinator.attachFIFO(ctx, "session\x00job\x00fifo-path:/cluster/tmp/test", 0)
+		readerCh <- struct {
+			file *os.File
+			err  error
+		}{file: file, err: err}
+	}()
+
+	select {
+	case got := <-readerCh:
+		if got.err == nil {
+			_ = got.file.Close()
+		}
+		t.Fatalf("reader attached before writer: %#v", got)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	writer, err := coordinator.attachFIFO(ctx, "session\x00job\x00fifo-path:/cluster/tmp/test", 1)
+	if err != nil {
+		t.Fatalf("attach writer: %v", err)
+	}
+	defer writer.Close()
+
+	got := <-readerCh
+	if got.err != nil {
+		t.Fatalf("reader attach failed: %v", got.err)
+	}
+	defer got.file.Close()
+
+	if _, err := writer.Write([]byte("fifo data")); err != nil {
+		t.Fatalf("write fifo: %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close writer: %v", err)
+	}
+	data, err := io.ReadAll(got.file)
+	if err != nil {
+		t.Fatalf("read fifo: %v", err)
+	}
+	if string(data) != "fifo data" {
+		t.Fatalf("fifo data = %q", data)
+	}
+	if len(coordinator.fifos) != 0 {
+		t.Fatalf("fifo registry not cleaned: %#v", coordinator.fifos)
+	}
+}
+
+func TestPipeCoordinatorKeyPrefix(t *testing.T) {
+	key := "session\x00job\x00fifo-path:/cluster/tmp/test"
+	wrapped := pipeKeyWithCoordinator("node-1", key)
+	nodeID, localKey := splitPipeCoordinatorKey(wrapped)
+	if nodeID != "node-1" || localKey != key {
+		t.Fatalf("split coordinator key = (%q, %q), want node-1 and %q", nodeID, localKey, key)
+	}
+	if !pipeKeyIsFIFO(localKey) {
+		t.Fatalf("pipeKeyIsFIFO(%q) = false", localKey)
 	}
 }
 

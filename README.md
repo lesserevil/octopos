@@ -42,6 +42,7 @@ go build -o bin/octoposd ./cmd/octoposd
 go build -o bin/octopos-exec ./cmd/octopos-exec
 go build -o bin/octopos-remote-child ./cmd/octopos-remote-child
 go build -o bin/octopos-child-supervisor ./cmd/octopos-child-supervisor
+go build -o bin/octopos-fifo-proxy ./cmd/octopos-fifo-proxy
 ```
 
 Or build the common binaries with:
@@ -169,8 +170,9 @@ mode falls back local for host-sensitive commands and inherited descriptors that
 cannot yet be recreated on a remote node. Regular files and safe character
 devices inherited as non-stdio descriptors are reopened in the remote SSI
 namespace when possible. Anonymous pipes and already-open FIFO endpoints on
-stdin/stdout/stderr are proxied through the OctopOS pipe graph; FIFO opens
-performed after process start are still local kernel operations.
+stdin/stdout/stderr are proxied through the OctopOS pipe graph. Supported
+blocking `O_RDONLY`/`O_WRONLY` opens of absolute named FIFO paths under the SSI
+root are also proxied through the same graph for remote children.
 
 Inspect pipe proxy counters with:
 
@@ -203,8 +205,9 @@ and credential-sensitive socket semantics are not distributed.
 For remote children, the preload runtime blocks unsupported Unix socket
 operations after launch with `ENOTSUP`; eligible pathname stream `connect`
 calls are attached to the `octoposd` broker through `octopos-unixsock-proxy`.
-Named FIFO endpoints are only distributed when inherited on stdin/stdout/stderr;
-FIFO creation or open calls after remote-child launch return `ENOTSUP`.
+Named FIFO creation is allowed on the shared filesystem. Supported FIFO opens
+are attached to the pipe graph through `octopos-fifo-proxy`; `O_RDWR`,
+nonblocking, and relative FIFO opens still return `ENOTSUP`.
 Other local-kernel IPC objects such as eventfd, signalfd, timerfd, memfd,
 POSIX/SysV shared memory, SysV semaphores/message queues, inotify/fanotify,
 netlink sockets, and ptrace are also blocked after launch in remote children.

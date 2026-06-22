@@ -1,6 +1,6 @@
 # OctopOS Makefile
 
-.PHONY: all build build-daemon build-octoposd build-tools build-octoposctl build-octopos-exec build-octopos-remote-child build-octopos-child-supervisor build-octopos-lockcheck build-octopos-unixsock-proxy build-remotechild-preload build-octopos-gw build-octopos-objectstore-proxy build-fuse build-octopos-procfs build-octopos-devfs build-octopos-sysfs test test-unit test-tools test-integration test-e2e clean fmt vet lint generate ebpf-build ebpf-verify bash-build dev install deploy status help
+.PHONY: all build build-daemon build-octoposd build-tools build-octoposctl build-octopos-exec build-octopos-remote-child build-octopos-child-supervisor build-octopos-lockcheck build-octopos-unixsock-proxy build-octopos-fifo-proxy build-remotechild-preload build-octopos-gw build-octopos-objectstore-proxy build-fuse build-octopos-procfs build-octopos-devfs build-octopos-sysfs test test-unit test-tools test-integration test-e2e clean fmt vet lint generate ebpf-build ebpf-verify bash-build dev install deploy status help
 
 # Variables
 GO_VERSION := 1.22
@@ -8,8 +8,8 @@ BINARY_NAME := octoposd
 BASH_BINARY := octo-bash
 BUILD_DIR := ./bin
 CC ?= cc
-GO_BINARIES := octoposd octoposctl octopos-exec octopos-remote-child octopos-child-supervisor octopos-lockcheck octopos-unixsock-proxy octopos-gw octopos-objectstore-proxy octopos-procfs octopos-devfs octopos-sysfs
-TOOL_PKGS := ./cmd/octoposctl ./cmd/octopos-exec ./cmd/octopos-remote-child ./cmd/octopos-child-supervisor ./cmd/octopos-lockcheck ./cmd/octopos-unixsock-proxy ./cmd/octopos-gw ./cmd/octopos-objectstore-proxy ./fuse/procfs ./fuse/devfs ./fuse/sysfs
+GO_BINARIES := octoposd octoposctl octopos-exec octopos-remote-child octopos-child-supervisor octopos-lockcheck octopos-unixsock-proxy octopos-fifo-proxy octopos-gw octopos-objectstore-proxy octopos-procfs octopos-devfs octopos-sysfs
+TOOL_PKGS := ./cmd/octoposctl ./cmd/octopos-exec ./cmd/octopos-remote-child ./cmd/octopos-child-supervisor ./cmd/octopos-lockcheck ./cmd/octopos-unixsock-proxy ./cmd/octopos-fifo-proxy ./cmd/octopos-gw ./cmd/octopos-objectstore-proxy ./fuse/procfs ./fuse/devfs ./fuse/sysfs
 GO_PKGS := ./cmd/... ./pkg/... ./fuse/...
 REMOTECHILD_PRELOAD := $(BUILD_DIR)/liboctopos_remotechild_preload.so
 
@@ -26,7 +26,7 @@ build-octoposd:
 	go build -o $(BUILD_DIR)/$(BINARY_NAME) ./cmd/octoposd
 
 # Build support tools
-build-tools: build-octoposctl build-octopos-exec build-octopos-remote-child build-octopos-child-supervisor build-octopos-lockcheck build-octopos-unixsock-proxy build-remotechild-preload build-octopos-gw build-octopos-objectstore-proxy build-fuse
+build-tools: build-octoposctl build-octopos-exec build-octopos-remote-child build-octopos-child-supervisor build-octopos-lockcheck build-octopos-unixsock-proxy build-octopos-fifo-proxy build-remotechild-preload build-octopos-gw build-octopos-objectstore-proxy build-fuse
 
 build-octoposctl:
 	@mkdir -p $(BUILD_DIR)
@@ -51,6 +51,10 @@ build-octopos-lockcheck:
 build-octopos-unixsock-proxy:
 	@mkdir -p $(BUILD_DIR)
 	go build -o $(BUILD_DIR)/octopos-unixsock-proxy ./cmd/octopos-unixsock-proxy
+
+build-octopos-fifo-proxy:
+	@mkdir -p $(BUILD_DIR)
+	go build -o $(BUILD_DIR)/octopos-fifo-proxy ./cmd/octopos-fifo-proxy
 
 build-remotechild-preload:
 	@mkdir -p $(BUILD_DIR)

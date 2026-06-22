@@ -55,6 +55,8 @@ static const char *remote_child_path = "/usr/local/bin/octopos-remote-child";
 static const char *remote_child_path_env = "OCTOPOS_REMOTE_CHILD_PATH";
 static const char *unixsock_proxy_path = "/usr/local/bin/octopos-unixsock-proxy";
 static const char *unixsock_proxy_path_env = "OCTOPOS_UNIXSOCK_PROXY_PATH";
+static const char *fifo_proxy_path = "/usr/local/bin/octopos-fifo-proxy";
+static const char *fifo_proxy_path_env = "OCTOPOS_FIFO_PROXY_PATH";
 static const char *active_env = "OCTOPOS_REMOTE_CHILD_PRELOAD_ACTIVE=1";
 static const char *ipc_compat_env = "OCTOPOS_REMOTE_IPC_COMPAT";
 static const char *ipc_compat_warned_env = "OCTOPOS_REMOTE_IPC_COMPAT_WARNED";
@@ -106,6 +108,21 @@ static int remote_child_process(void) {
     return remote_child != NULL && strcmp(remote_child, "1") == 0;
 }
 
+static int fifo_proxy_enabled(void) {
+    const char *active = getenv("OCTOPOS_REMOTE_CHILD_PRELOAD_ACTIVE");
+    if (active != NULL && strcmp(active, "1") == 0) {
+        return 0;
+    }
+    if (remote_child_process()) {
+        return 1;
+    }
+    const char *mode = getenv(mode_env);
+    if (mode == NULL || mode[0] == '\0' || strcmp(mode, "off") == 0 || strcmp(mode, "0") == 0) {
+        return 0;
+    }
+    return strcmp(mode, "safe") == 0 || strcmp(mode, "aggressive") == 0 || strcmp(mode, "1") == 0;
+}
+
 static const char *remote_child_binary(void) {
     const char *override = getenv(remote_child_path_env);
     if (override != NULL && override[0] != '\0') {
@@ -120,6 +137,14 @@ static const char *unixsock_proxy_binary(void) {
         return override;
     }
     return unixsock_proxy_path;
+}
+
+static const char *fifo_proxy_binary(void) {
+    const char *override = getenv(fifo_proxy_path_env);
+    if (override != NULL && override[0] != '\0') {
+        return override;
+    }
+    return fifo_proxy_path;
 }
 
 static const char *broker_addr(void) {
@@ -441,6 +466,115 @@ static int spawn_unixsock_proxy(int app_fd, const char *path) {
     return 0;
 }
 
+static int read_errno_status(int fd, int *value) {
+    int out = 0;
+    ssize_t n = read(fd, &out, sizeof(out));
+    if (n == (ssize_t)sizeof(out)) {
+        *value = out;
+        return 0;
+    }
+    if (n == 0) {
+        *value = ECHILD;
+        return -1;
+    }
+    *value = errno != 0 ? errno : EIO;
+    return -1;
+}
+
+static int spawn_fifo_proxy(const char *path, const char *mode, int flags) {
+    int (*real_socketpair)(int, int, int, int[2]) = dlsym(RTLD_NEXT, "socketpair");
+    if (real_socketpair == NULL) {
+        errno = ENOSYS;
+        return -1;
+    }
+
+    int pair[2] = {-1, -1};
+    if (real_socketpair(AF_UNIX, SOCK_STREAM, 0, pair) != 0) {
+        return -1;
+    }
+
+    int ready_pipe[2] = {-1, -1};
+    if (pipe(ready_pipe) != 0) {
+        int saved = errno;
+        close(pair[0]);
+        close(pair[1]);
+        errno = saved;
+        return -1;
+    }
+
+    pid_t pid = fork();
+    if (pid < 0) {
+        int saved = errno;
+        close(pair[0]);
+        close(pair[1]);
+        close(ready_pipe[0]);
+        close(ready_pipe[1]);
+        errno = saved;
+        return -1;
+    }
+    if (pid == 0) {
+        close(ready_pipe[0]);
+        pid_t grandchild = fork();
+        if (grandchild < 0) {
+            int saved = errno;
+            write_errno_status(ready_pipe[1], saved);
+            _exit(127);
+        }
+        if (grandchild > 0) {
+            _exit(0);
+        }
+
+        close(pair[0]);
+        if (dup2(pair[1], STDIN_FILENO) < 0 || dup2(pair[1], STDOUT_FILENO) < 0) {
+            int saved = errno;
+            write_errno_status(ready_pipe[1], saved);
+            _exit(127);
+        }
+        if (pair[1] != STDIN_FILENO && pair[1] != STDOUT_FILENO) {
+            close(pair[1]);
+        }
+        if (ready_pipe[1] != 3 && dup2(ready_pipe[1], 3) < 0) {
+            int saved = errno;
+            write_errno_status(ready_pipe[1], saved);
+            _exit(127);
+        }
+        if (ready_pipe[1] != 3) {
+            close(ready_pipe[1]);
+        }
+        setenv("OCTOPOS_REMOTE_CHILD_PRELOAD_ACTIVE", "1", 1);
+        execlp(fifo_proxy_binary(), fifo_proxy_binary(),
+               "--addr", broker_addr(),
+               "--mode", mode,
+               "--path", path,
+               "--ready-fd", "3",
+               (char *)NULL);
+        int saved = errno;
+        write_errno_status(3, saved);
+        _exit(127);
+    }
+
+    close(pair[1]);
+    close(ready_pipe[1]);
+    int status = 0;
+    while (waitpid(pid, &status, 0) < 0) {
+        if (errno != EINTR) {
+            break;
+        }
+    }
+    int ready_errno = 0;
+    int ready_status = read_errno_status(ready_pipe[0], &ready_errno);
+    close(ready_pipe[0]);
+    if (ready_status != 0 || ready_errno != 0) {
+        close(pair[0]);
+        errno = ready_errno != 0 ? ready_errno : EIO;
+        return -1;
+    }
+    if ((flags & O_CLOEXEC) != 0) {
+        (void)fcntl(pair[0], F_SETFD, FD_CLOEXEC);
+    }
+    return pair[0];
+}
+
 struct unixsock_binding {
     int fd;
     int registered;
@@ -570,6 +704,41 @@ static int path_is_fifo_at(int dirfd, const char *path) {
         return 0;
     }
     return S_ISFIFO(st.st_mode);
+}
+
+static int proxy_fifo_open_at(int dirfd, const char *pathname, int flags) {
+    if (pathname == NULL) {
+        errno = EINVAL;
+        return -1;
+    }
+    if ((flags & O_NONBLOCK) != 0) {
+        return unsupported_fifo("nonblocking FIFO opens are not distributed yet");
+    }
+    if ((flags & O_ACCMODE) == O_RDWR) {
+        return unsupported_fifo("O_RDWR FIFO opens are not distributed");
+    }
+    if (pathname[0] != '/') {
+        return unsupported_fifo("relative FIFO paths are not distributed after launch");
+    }
+
+    const char *mode = NULL;
+    switch (flags & O_ACCMODE) {
+    case O_RDONLY:
+        mode = "read";
+        break;
+    case O_WRONLY:
+        mode = "write";
+        break;
+    default:
+        return unsupported_fifo("unsupported FIFO open mode");
+    }
+
+    char broker_path[4096];
+    if (broker_path_for_unix_socket(pathname, broker_path, sizeof(broker_path)) != 0) {
+        return unsupported_fifo("FIFO path is outside the SSI root");
+    }
+    (void)dirfd;
+    return spawn_fifo_proxy(broker_path, mode, flags);
 }
 
 static int apply_mmap_policy(int prot, int *flags, int fd) {
@@ -1079,8 +1248,8 @@ int open(const char *pathname, int flags, ...) {
         mode = (mode_t)va_arg(ap, int);
         va_end(ap);
     }
-    if (remote_child_process() && path_is_fifo_at(AT_FDCWD, pathname)) {
-        return unsupported_fifo("opening FIFO paths after launch is not distributed");
+    if (fifo_proxy_enabled() && path_is_fifo_at(AT_FDCWD, pathname)) {
+        return proxy_fifo_open_at(AT_FDCWD, pathname, flags);
     }
     if ((flags & O_CREAT) != 0) {
         return real_open(pathname, flags, mode);
@@ -1101,8 +1270,8 @@ int open64(const char *pathname, int flags, ...) {
         mode = (mode_t)va_arg(ap, int);
         va_end(ap);
     }
-    if (remote_child_process() && path_is_fifo_at(AT_FDCWD, pathname)) {
-        return unsupported_fifo("opening FIFO paths after launch is not distributed");
+    if (fifo_proxy_enabled() && path_is_fifo_at(AT_FDCWD, pathname)) {
+        return proxy_fifo_open_at(AT_FDCWD, pathname, flags);
     }
     if ((flags & O_CREAT) != 0) {
         return real_open64(pathname, flags, mode);
@@ -1123,8 +1292,8 @@ int openat(int dirfd, const char *pathname, int flags, ...) {
         mode = (mode_t)va_arg(ap, int);
         va_end(ap);
     }
-    if (remote_child_process() && path_is_fifo_at(dirfd, pathname)) {
-        return unsupported_fifo("opening FIFO paths after launch is not distributed");
+    if (fifo_proxy_enabled() && path_is_fifo_at(dirfd, pathname)) {
+        return proxy_fifo_open_at(dirfd, pathname, flags);
     }
     if ((flags & O_CREAT) != 0) {
         return real_openat(dirfd, pathname, flags, mode);
@@ -1145,8 +1314,8 @@ int openat64(int dirfd, const char *pathname, int flags, ...) {
         mode = (mode_t)va_arg(ap, int);
         va_end(ap);
     }
-    if (remote_child_process() && path_is_fifo_at(dirfd, pathname)) {
-        return unsupported_fifo("opening FIFO paths after launch is not distributed");
+    if (fifo_proxy_enabled() && path_is_fifo_at(dirfd, pathname)) {
+        return proxy_fifo_open_at(dirfd, pathname, flags);
     }
     if ((flags & O_CREAT) != 0) {
         return real_openat64(dirfd, pathname, flags, mode);
@@ -1160,9 +1329,6 @@ int mkfifo(const char *pathname, mode_t mode) {
         errno = ENOSYS;
         return -1;
     }
-    if (remote_child_process()) {
-        return unsupported_fifo("creating FIFO paths after launch is not distributed");
-    }
     return real_mkfifo(pathname, mode);
 }
 
@@ -1171,9 +1337,6 @@ int mkfifoat(int dirfd, const char *pathname, mode_t mode) {
     if (real_mkfifoat == NULL) {
         errno = ENOSYS;
         return -1;
-    }
-    if (remote_child_process()) {
-        return unsupported_fifo("creating FIFO paths after launch is not distributed");
     }
     return real_mkfifoat(dirfd, pathname, mode);
 }

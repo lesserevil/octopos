@@ -20,6 +20,7 @@ type pipeCoordinator struct {
 	mu               sync.Mutex
 	placement        map[string]cluster.NodeID
 	local            map[string]*localPipe
+	fifos            map[string]*pendingFIFO
 	activeStreams    uint64
 	totalStreams     uint64
 	bytesFromWriters uint64
@@ -30,6 +31,20 @@ type pipeCoordinator struct {
 type localPipe struct {
 	read  *os.File
 	write *os.File
+}
+
+type pendingFIFO struct {
+	read   *os.File
+	write  *os.File
+	reader *fifoWaiter
+	writer *fifoWaiter
+}
+
+type fifoWaiter struct {
+	fd    int
+	file  *os.File
+	err   error
+	ready chan struct{}
 }
 
 type pipeStats struct {
@@ -44,6 +59,7 @@ func newPipeCoordinator() *pipeCoordinator {
 	return &pipeCoordinator{
 		placement: make(map[string]cluster.NodeID),
 		local:     make(map[string]*localPipe),
+		fifos:     make(map[string]*pendingFIFO),
 	}
 }
 
@@ -90,6 +106,38 @@ func remoteChildPipeKeys(req *ExecuteRequest) map[int]string {
 
 func remoteChildPipeKey(sessionID string, parentJobID string, pipeID string) string {
 	return sessionID + "\x00" + parentJobID + "\x00" + pipeID
+}
+
+const (
+	pipeCoordinatorKeyPrefix = "coord:"
+	fifoPipeKeyPrefix        = "fifo-path:"
+)
+
+func pipeKeyWithCoordinator(nodeID cluster.NodeID, key string) string {
+	if nodeID == "" {
+		return key
+	}
+	return pipeCoordinatorKeyPrefix + string(nodeID) + "\x00" + key
+}
+
+func splitPipeCoordinatorKey(key string) (cluster.NodeID, string) {
+	if !strings.HasPrefix(key, pipeCoordinatorKeyPrefix) {
+		return "", key
+	}
+	rest := strings.TrimPrefix(key, pipeCoordinatorKeyPrefix)
+	node, localKey, ok := strings.Cut(rest, "\x00")
+	if !ok || node == "" || localKey == "" {
+		return "", key
+	}
+	return cluster.NodeID(node), localKey
+}
+
+func pipeKeyIsFIFO(key string) bool {
+	parts := strings.Split(key, "\x00")
+	if len(parts) == 0 {
+		return false
+	}
+	return strings.HasPrefix(parts[len(parts)-1], fifoPipeKeyPrefix)
 }
 
 func remoteChildPipeCoordinatorNode(env []string) cluster.NodeID {
@@ -174,6 +222,110 @@ func (p *pipeCoordinator) attachLocal(key string, fd int) (*os.File, error) {
 		delete(p.local, key)
 	}
 	return file, nil
+}
+
+func (p *pipeCoordinator) attachFIFO(ctx context.Context, key string, fd int) (*os.File, error) {
+	if p == nil || key == "" {
+		return nil, fmt.Errorf("missing pipe coordinator")
+	}
+	if fd != 0 && fd != 1 {
+		return nil, fmt.Errorf("unsupported FIFO fd %d", fd)
+	}
+
+	waiter := &fifoWaiter{fd: fd, ready: make(chan struct{})}
+	p.mu.Lock()
+	pending := p.fifos[key]
+	if pending == nil {
+		read, write, err := os.Pipe()
+		if err != nil {
+			p.mu.Unlock()
+			return nil, err
+		}
+		pending = &pendingFIFO{read: read, write: write}
+		p.fifos[key] = pending
+	}
+
+	var err error
+	switch fd {
+	case 0:
+		if pending.reader != nil {
+			err = fmt.Errorf("FIFO read endpoint already pending")
+		} else {
+			pending.reader = waiter
+		}
+	case 1:
+		if pending.writer != nil {
+			err = fmt.Errorf("FIFO write endpoint already pending")
+		} else {
+			pending.writer = waiter
+		}
+	}
+	if err != nil {
+		if pending.reader == nil && pending.writer == nil {
+			p.closeAndDeleteFIFO(key, pending)
+		}
+		p.mu.Unlock()
+		return nil, err
+	}
+	p.completeFIFOIfReadyLocked(key, pending)
+	p.mu.Unlock()
+
+	select {
+	case <-waiter.ready:
+		if waiter.err != nil {
+			return nil, waiter.err
+		}
+		return waiter.file, nil
+	case <-ctx.Done():
+		p.cancelFIFOWaiter(key, waiter)
+		return nil, ctx.Err()
+	}
+}
+
+func (p *pipeCoordinator) completeFIFOIfReadyLocked(key string, pending *pendingFIFO) {
+	if pending.reader == nil || pending.writer == nil {
+		return
+	}
+	reader, readErr := dupFile(pending.read, "octopos-fifo-read")
+	writer, writeErr := dupFile(pending.write, "octopos-fifo-write")
+	_ = pending.read.Close()
+	_ = pending.write.Close()
+	delete(p.fifos, key)
+
+	pending.reader.file = reader
+	pending.reader.err = readErr
+	close(pending.reader.ready)
+	pending.writer.file = writer
+	pending.writer.err = writeErr
+	close(pending.writer.ready)
+}
+
+func (p *pipeCoordinator) cancelFIFOWaiter(key string, waiter *fifoWaiter) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	pending := p.fifos[key]
+	if pending == nil {
+		return
+	}
+	if pending.reader == waiter {
+		pending.reader = nil
+	}
+	if pending.writer == waiter {
+		pending.writer = nil
+	}
+	if pending.reader == nil && pending.writer == nil {
+		p.closeAndDeleteFIFO(key, pending)
+	}
+}
+
+func (p *pipeCoordinator) closeAndDeleteFIFO(key string, pending *pendingFIFO) {
+	if pending.read != nil {
+		_ = pending.read.Close()
+	}
+	if pending.write != nil {
+		_ = pending.write.Close()
+	}
+	delete(p.fifos, key)
 }
 
 func (p *pipeCoordinator) beginProxyStream() {
@@ -346,18 +498,39 @@ func (s *ClusterServerImpl) PipeStream(stream Cluster_PipeStreamServer) error {
 	if first.Key == "" {
 		return status.Error(codes.InvalidArgument, "pipe key is required")
 	}
+	if coordinatorNode, localKey := splitPipeCoordinatorKey(first.Key); coordinatorNode != "" {
+		first.Key = localKey
+		if coordinatorNode != s.nodeID {
+			if isInternalForward(stream.Context()) {
+				_ = stream.Send(&PipeFrame{Error: fmt.Sprintf("pipe coordinator %s is not local node %s", coordinatorNode, s.nodeID), Close: true})
+				return nil
+			}
+			return s.proxyPipeStream(stream, coordinatorNode, first)
+		}
+	}
 	fd := int(first.Fd)
 	if fd < 0 || fd > 2 {
 		return status.Errorf(codes.InvalidArgument, "unsupported pipe fd %d", fd)
 	}
 	s.pipes.beginProxyStream()
 	defer s.pipes.endProxyStream()
-	file, err := s.pipes.attachLocal(first.Key, fd)
+	isFIFO := pipeKeyIsFIFO(first.Key)
+	var file *os.File
+	if isFIFO {
+		file, err = s.pipes.attachFIFO(stream.Context(), first.Key, fd)
+	} else {
+		file, err = s.pipes.attachLocal(first.Key, fd)
+	}
 	if err != nil {
 		_ = stream.Send(&PipeFrame{Error: err.Error(), Close: true})
 		return nil
 	}
 	defer file.Close()
+	if isFIFO {
+		if err := stream.Send(&PipeFrame{}); err != nil {
+			return err
+		}
+	}
 
 	switch fd {
 	case 0:
@@ -366,6 +539,61 @@ func (s *ClusterServerImpl) PipeStream(stream Cluster_PipeStreamServer) error {
 		return s.pipeStreamToFile(stream, file)
 	default:
 		return status.Errorf(codes.InvalidArgument, "unsupported pipe fd %d", fd)
+	}
+}
+
+func (s *ClusterServerImpl) proxyPipeStream(stream Cluster_PipeStreamServer, nodeID cluster.NodeID, first *PipeFrame) error {
+	if s.clientPool == nil {
+		_ = stream.Send(&PipeFrame{Error: "no peer connections available for pipe coordinator", Close: true})
+		return nil
+	}
+	client, ok := s.clientPool.GetPeer(nodeID)
+	if !ok {
+		_ = stream.Send(&PipeFrame{Error: fmt.Sprintf("no connection to pipe coordinator node %s", nodeID), Close: true})
+		return nil
+	}
+	peerStream, err := client.PipeStream(internalForwardContext(stream.Context()))
+	if err != nil {
+		_ = stream.Send(&PipeFrame{Error: err.Error(), Close: true})
+		return nil
+	}
+	if err := peerStream.Send(first); err != nil {
+		_ = peerStream.CloseSend()
+		_ = stream.Send(&PipeFrame{Error: err.Error(), Close: true})
+		return nil
+	}
+
+	go func() {
+		defer peerStream.CloseSend()
+		for {
+			frame, err := stream.Recv()
+			if err != nil {
+				return
+			}
+			if err := peerStream.Send(frame); err != nil {
+				return
+			}
+			if frame.GetClose() || frame.GetError() != "" {
+				return
+			}
+		}
+	}()
+
+	for {
+		frame, err := peerStream.Recv()
+		if err != nil {
+			if err == io.EOF {
+				return nil
+			}
+			_ = stream.Send(&PipeFrame{Error: err.Error(), Close: true})
+			return nil
+		}
+		if err := stream.Send(frame); err != nil {
+			return err
+		}
+		if frame.GetClose() || frame.GetError() != "" {
+			return nil
+		}
 	}
 }
 

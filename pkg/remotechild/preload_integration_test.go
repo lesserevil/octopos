@@ -151,7 +151,7 @@ func TestPreloadBlocksUnsupportedUnixSocketOperations(t *testing.T) {
 	}
 }
 
-func TestPreloadBlocksUnsupportedFIFOOperations(t *testing.T) {
+func TestPreloadProxiesSupportedFIFOOperations(t *testing.T) {
 	so := buildTestPreload(t)
 	probe := buildFIFOPolicyProbe(t)
 	dir := t.TempDir()
@@ -160,11 +160,20 @@ func TestPreloadBlocksUnsupportedFIFOOperations(t *testing.T) {
 		t.Fatalf("mkfifo test fixture: %v", err)
 	}
 	newFIFOPath := filepath.Join(dir, "new.fifo")
+	helper := filepath.Join(dir, "octopos-fifo-proxy")
+	logPath := filepath.Join(dir, "fifo-proxy.log")
+	helperScript := "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$OCTOPOS_FIFO_PROXY_LOG\"\nprintf '\\000\\000\\000\\000' >&3\nexit 0\n"
+	if err := os.WriteFile(helper, []byte(helperScript), 0700); err != nil {
+		t.Fatalf("write fake fifo proxy: %v", err)
+	}
 
 	cmd := exec.Command(probe, fifoPath, newFIFOPath)
 	cmd.Env = append(os.Environ(),
 		"LD_PRELOAD="+so,
 		EnvRemoteChild+"=1",
+		EnvBrokerAddr+"=127.0.0.1:50051",
+		"OCTOPOS_FIFO_PROXY_PATH="+helper,
+		"OCTOPOS_FIFO_PROXY_LOG="+logPath,
 	)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
@@ -172,13 +181,56 @@ func TestPreloadBlocksUnsupportedFIFOOperations(t *testing.T) {
 	}
 	got := string(output)
 	for _, want := range []string{
-		"open_fifo blocked",
-		"openat_fifo blocked",
-		"mkfifo blocked",
+		"open_fifo proxied",
+		"openat_fifo proxied",
+		"open_fifo_nonblock blocked",
+		"mkfifo allowed",
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("probe output missing %q:\n%s", want, got)
 		}
+	}
+	logData, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read fake fifo proxy log: %v", err)
+	}
+	log := string(logData)
+	if strings.Count(log, "--mode read") != 2 {
+		t.Fatalf("fifo proxy log missing read opens:\n%s", log)
+	}
+}
+
+func TestPreloadProxiesFIFOOperationsInOptInParent(t *testing.T) {
+	so := buildTestPreload(t)
+	probe := buildFIFOPolicyProbe(t)
+	dir := t.TempDir()
+	fifoPath := filepath.Join(dir, "existing.fifo")
+	if err := syscall.Mkfifo(fifoPath, 0600); err != nil {
+		t.Fatalf("mkfifo test fixture: %v", err)
+	}
+	newFIFOPath := filepath.Join(dir, "new.fifo")
+	helper := filepath.Join(dir, "octopos-fifo-proxy")
+	logPath := filepath.Join(dir, "fifo-proxy.log")
+	helperScript := "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$OCTOPOS_FIFO_PROXY_LOG\"\nprintf '\\000\\000\\000\\000' >&3\nexit 0\n"
+	if err := os.WriteFile(helper, []byte(helperScript), 0700); err != nil {
+		t.Fatalf("write fake fifo proxy: %v", err)
+	}
+
+	cmd := exec.Command(probe, fifoPath, newFIFOPath)
+	cmd.Env = append(os.Environ(),
+		"LD_PRELOAD="+so,
+		EnvMode+"=safe",
+		EnvBrokerAddr+"=127.0.0.1:50051",
+		"OCTOPOS_FIFO_PROXY_PATH="+helper,
+		"OCTOPOS_FIFO_PROXY_LOG="+logPath,
+	)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("fifo parent probe failed: %v\n%s", err, output)
+	}
+	got := string(output)
+	if !strings.Contains(got, "open_fifo proxied") || !strings.Contains(got, "openat_fifo proxied") {
+		t.Fatalf("parent probe did not proxy FIFO opens:\n%s", got)
 	}
 }
 
@@ -580,6 +632,25 @@ static int expect_enotsup(const char *name, int rc) {
     return 1;
 }
 
+static int expect_success(const char *name, int rc) {
+    if (rc >= 0) {
+        printf("%s allowed\n", name);
+        return 0;
+    }
+    fprintf(stderr, "%s: rc=%d errno=%d\n", name, rc, errno);
+    return 1;
+}
+
+static int expect_fd(const char *name, int fd) {
+    if (fd >= 0) {
+        printf("%s proxied\n", name);
+        close(fd);
+        return 0;
+    }
+    fprintf(stderr, "%s: fd=%d errno=%d\n", name, fd, errno);
+    return 1;
+}
+
 int main(int argc, char **argv) {
     if (argc != 3) {
         return 2;
@@ -587,21 +658,20 @@ int main(int argc, char **argv) {
     int failures = 0;
 
     errno = 0;
-    int fd = open(argv[1], O_RDONLY | O_NONBLOCK);
-    failures += expect_enotsup("open_fifo", fd);
-    if (fd >= 0) {
-        close(fd);
-    }
+    int fd = open(argv[1], O_RDONLY);
+    failures += expect_fd("open_fifo", fd);
 
     errno = 0;
-    fd = openat(AT_FDCWD, argv[1], O_RDONLY | O_NONBLOCK);
-    failures += expect_enotsup("openat_fifo", fd);
-    if (fd >= 0) {
-        close(fd);
-    }
+    fd = openat(AT_FDCWD, argv[1], O_RDONLY);
+    failures += expect_fd("openat_fifo", fd);
 
     errno = 0;
-    failures += expect_enotsup("mkfifo", mkfifo(argv[2], 0600));
+    fd = open(argv[1], O_RDONLY | O_NONBLOCK);
+    failures += expect_enotsup("open_fifo_nonblock", fd);
+    if (fd >= 0) close(fd);
+
+    errno = 0;
+    failures += expect_success("mkfifo", mkfifo(argv[2], 0600));
 
     return failures == 0 ? 0 : 1;
 }
