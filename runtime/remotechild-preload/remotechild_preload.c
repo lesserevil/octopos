@@ -9,6 +9,7 @@
 #include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdarg.h>
 #include <sys/mman.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
@@ -47,6 +48,7 @@ static const char *active_env = "OCTOPOS_REMOTE_CHILD_PRELOAD_ACTIVE=1";
 static const char *ipc_compat_env = "OCTOPOS_REMOTE_IPC_COMPAT";
 static const char *ipc_compat_warned_env = "OCTOPOS_REMOTE_IPC_COMPAT_WARNED";
 static const char *ipc_compat_block_warned_env = "OCTOPOS_REMOTE_IPC_BLOCK_WARNED";
+static const char *fifo_warned_env = "OCTOPOS_REMOTE_FIFO_WARNED";
 static const char *unixsock_warned_env = "OCTOPOS_REMOTE_UNIXSOCK_WARNED";
 static const char *mode_env = "OCTOPOS_REMOTE_CHILDREN";
 
@@ -217,6 +219,14 @@ static void warn_once(const char *env_key, const char *message, const char *deta
 static int unsupported_unix_socket(const char *detail) {
     warn_once(unixsock_warned_env,
               "octopos-remote-child: unsupported Unix socket operation blocked in remote child",
+              detail);
+    errno = ENOTSUP;
+    return -1;
+}
+
+static int unsupported_fifo(const char *detail) {
+    warn_once(fifo_warned_env,
+              "octopos-remote-child: unsupported FIFO operation blocked in remote child",
               detail);
     errno = ENOTSUP;
     return -1;
@@ -417,6 +427,17 @@ static int contains_scm_rights(const struct msghdr *msg) {
     return 0;
 }
 
+static int path_is_fifo_at(int dirfd, const char *path) {
+    if (path == NULL || path[0] == '\0') {
+        return 0;
+    }
+    struct stat st;
+    if (fstatat(dirfd, path, &st, 0) != 0) {
+        return 0;
+    }
+    return S_ISFIFO(st.st_mode);
+}
+
 static int apply_mmap_policy(int prot, int *flags, int fd) {
     if (!remote_child_process() || !shared_mapping(*flags)) {
         return 0;
@@ -522,6 +543,10 @@ typedef ssize_t (*sendmsg_fn)(int, const struct msghdr *, int);
 typedef ssize_t (*recvmsg_fn)(int, struct msghdr *, int);
 typedef int (*getsockopt_fn)(int, int, int, void *, socklen_t *);
 typedef int (*setsockopt_fn)(int, int, int, const void *, socklen_t);
+typedef int (*open_fn)(const char *, int, ...);
+typedef int (*openat_fn)(int, const char *, int, ...);
+typedef int (*mkfifo_fn)(const char *, mode_t);
+typedef int (*mkfifoat_fn)(int, const char *, mode_t);
 
 int execve(const char *pathname, char *const argv[], char *const envp[]) {
     execve_fn real_execve = (execve_fn)dlsym(RTLD_NEXT, "execve");
@@ -835,4 +860,116 @@ int setsockopt(int sockfd, int level, int optname, const void *optval, socklen_t
         return unsupported_unix_socket("SO_PASSCRED is not meaningful across the Unix socket broker");
     }
     return real_setsockopt(sockfd, level, optname, optval, optlen);
+}
+
+int open(const char *pathname, int flags, ...) {
+    open_fn real_open = (open_fn)dlsym(RTLD_NEXT, "open");
+    if (real_open == NULL) {
+        errno = ENOSYS;
+        return -1;
+    }
+    mode_t mode = 0;
+    if ((flags & O_CREAT) != 0) {
+        va_list ap;
+        va_start(ap, flags);
+        mode = (mode_t)va_arg(ap, int);
+        va_end(ap);
+    }
+    if (remote_child_process() && path_is_fifo_at(AT_FDCWD, pathname)) {
+        return unsupported_fifo("opening FIFO paths after launch is not distributed");
+    }
+    if ((flags & O_CREAT) != 0) {
+        return real_open(pathname, flags, mode);
+    }
+    return real_open(pathname, flags);
+}
+
+int open64(const char *pathname, int flags, ...) {
+    open_fn real_open64 = (open_fn)dlsym(RTLD_NEXT, "open64");
+    if (real_open64 == NULL) {
+        errno = ENOSYS;
+        return -1;
+    }
+    mode_t mode = 0;
+    if ((flags & O_CREAT) != 0) {
+        va_list ap;
+        va_start(ap, flags);
+        mode = (mode_t)va_arg(ap, int);
+        va_end(ap);
+    }
+    if (remote_child_process() && path_is_fifo_at(AT_FDCWD, pathname)) {
+        return unsupported_fifo("opening FIFO paths after launch is not distributed");
+    }
+    if ((flags & O_CREAT) != 0) {
+        return real_open64(pathname, flags, mode);
+    }
+    return real_open64(pathname, flags);
+}
+
+int openat(int dirfd, const char *pathname, int flags, ...) {
+    openat_fn real_openat = (openat_fn)dlsym(RTLD_NEXT, "openat");
+    if (real_openat == NULL) {
+        errno = ENOSYS;
+        return -1;
+    }
+    mode_t mode = 0;
+    if ((flags & O_CREAT) != 0) {
+        va_list ap;
+        va_start(ap, flags);
+        mode = (mode_t)va_arg(ap, int);
+        va_end(ap);
+    }
+    if (remote_child_process() && path_is_fifo_at(dirfd, pathname)) {
+        return unsupported_fifo("opening FIFO paths after launch is not distributed");
+    }
+    if ((flags & O_CREAT) != 0) {
+        return real_openat(dirfd, pathname, flags, mode);
+    }
+    return real_openat(dirfd, pathname, flags);
+}
+
+int openat64(int dirfd, const char *pathname, int flags, ...) {
+    openat_fn real_openat64 = (openat_fn)dlsym(RTLD_NEXT, "openat64");
+    if (real_openat64 == NULL) {
+        errno = ENOSYS;
+        return -1;
+    }
+    mode_t mode = 0;
+    if ((flags & O_CREAT) != 0) {
+        va_list ap;
+        va_start(ap, flags);
+        mode = (mode_t)va_arg(ap, int);
+        va_end(ap);
+    }
+    if (remote_child_process() && path_is_fifo_at(dirfd, pathname)) {
+        return unsupported_fifo("opening FIFO paths after launch is not distributed");
+    }
+    if ((flags & O_CREAT) != 0) {
+        return real_openat64(dirfd, pathname, flags, mode);
+    }
+    return real_openat64(dirfd, pathname, flags);
+}
+
+int mkfifo(const char *pathname, mode_t mode) {
+    mkfifo_fn real_mkfifo = (mkfifo_fn)dlsym(RTLD_NEXT, "mkfifo");
+    if (real_mkfifo == NULL) {
+        errno = ENOSYS;
+        return -1;
+    }
+    if (remote_child_process()) {
+        return unsupported_fifo("creating FIFO paths after launch is not distributed");
+    }
+    return real_mkfifo(pathname, mode);
+}
+
+int mkfifoat(int dirfd, const char *pathname, mode_t mode) {
+    mkfifoat_fn real_mkfifoat = (mkfifoat_fn)dlsym(RTLD_NEXT, "mkfifoat");
+    if (real_mkfifoat == NULL) {
+        errno = ENOSYS;
+        return -1;
+    }
+    if (remote_child_process()) {
+        return unsupported_fifo("creating FIFO paths after launch is not distributed");
+    }
+    return real_mkfifoat(dirfd, pathname, mode);
 }

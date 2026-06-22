@@ -203,6 +203,8 @@ and credential-sensitive socket semantics are not distributed.
 For remote children, the preload runtime blocks unsupported Unix socket
 operations after launch with `ENOTSUP`; eligible pathname stream `connect`
 calls are attached to the `octoposd` broker through `octopos-unixsock-proxy`.
+Named FIFO endpoints are only distributed when inherited on stdin/stdout/stderr;
+FIFO creation or open calls after remote-child launch return `ENOTSUP`.
 
 Run the bounded remote-child IPC validation matrix against a live cluster with:
 

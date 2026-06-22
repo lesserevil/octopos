@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	goruntime "runtime"
 	"strings"
+	"syscall"
 	"testing"
 )
 
@@ -128,6 +129,37 @@ func TestPreloadBlocksUnsupportedUnixSocketOperations(t *testing.T) {
 	}
 }
 
+func TestPreloadBlocksUnsupportedFIFOOperations(t *testing.T) {
+	so := buildTestPreload(t)
+	probe := buildFIFOPolicyProbe(t)
+	dir := t.TempDir()
+	fifoPath := filepath.Join(dir, "existing.fifo")
+	if err := syscall.Mkfifo(fifoPath, 0600); err != nil {
+		t.Fatalf("mkfifo test fixture: %v", err)
+	}
+	newFIFOPath := filepath.Join(dir, "new.fifo")
+
+	cmd := exec.Command(probe, fifoPath, newFIFOPath)
+	cmd.Env = append(os.Environ(),
+		"LD_PRELOAD="+so,
+		EnvRemoteChild+"=1",
+	)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("fifo policy probe failed: %v\n%s", err, output)
+	}
+	got := string(output)
+	for _, want := range []string{
+		"open_fifo blocked",
+		"openat_fifo blocked",
+		"mkfifo blocked",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("probe output missing %q:\n%s", want, got)
+		}
+	}
+}
+
 func buildTestPreload(t *testing.T) string {
 	t.Helper()
 	if goruntime.GOOS != "linux" {
@@ -195,6 +227,25 @@ func buildUnixSocketPolicyProbe(t *testing.T) string {
 	cmd := exec.Command(cc, "-O2", "-Wall", "-Wextra", "-o", bin, src)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("build unix socket policy probe: %v\n%s", err, output)
+	}
+	return bin
+}
+
+func buildFIFOPolicyProbe(t *testing.T) string {
+	t.Helper()
+	if goruntime.GOOS != "linux" {
+		t.Skip("remote child preload is Linux-only")
+	}
+	cc := testCCompiler(t)
+	dir := t.TempDir()
+	src := filepath.Join(dir, "fifo_policy_probe.c")
+	bin := filepath.Join(dir, "fifo_policy_probe")
+	if err := os.WriteFile(src, []byte(fifoPolicyProbeSource), 0600); err != nil {
+		t.Fatalf("write fifo policy probe: %v", err)
+	}
+	cmd := exec.Command(cc, "-O2", "-Wall", "-Wextra", "-o", bin, src)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("build fifo policy probe: %v\n%s", err, output)
 	}
 	return bin
 }
@@ -409,6 +460,50 @@ int main(int argc, char **argv) {
     failures += expect_enotsup("so_passcred", setsockopt(stream, SOL_SOCKET, SO_PASSCRED, &one, sizeof(one)));
 
     close(stream);
+    return failures == 0 ? 0 : 1;
+}
+`
+
+const fifoPolicyProbeSource = `
+#define _GNU_SOURCE
+#include <errno.h>
+#include <fcntl.h>
+#include <stdio.h>
+#include <sys/stat.h>
+#include <unistd.h>
+
+static int expect_enotsup(const char *name, int rc) {
+    if (rc == -1 && errno == ENOTSUP) {
+        printf("%s blocked\n", name);
+        return 0;
+    }
+    fprintf(stderr, "%s: rc=%d errno=%d\n", name, rc, errno);
+    return 1;
+}
+
+int main(int argc, char **argv) {
+    if (argc != 3) {
+        return 2;
+    }
+    int failures = 0;
+
+    errno = 0;
+    int fd = open(argv[1], O_RDONLY | O_NONBLOCK);
+    failures += expect_enotsup("open_fifo", fd);
+    if (fd >= 0) {
+        close(fd);
+    }
+
+    errno = 0;
+    fd = openat(AT_FDCWD, argv[1], O_RDONLY | O_NONBLOCK);
+    failures += expect_enotsup("openat_fifo", fd);
+    if (fd >= 0) {
+        close(fd);
+    }
+
+    errno = 0;
+    failures += expect_enotsup("mkfifo", mkfifo(argv[2], 0600));
+
     return failures == 0 ? 0 : 1;
 }
 `
