@@ -16,6 +16,7 @@ func main() {
 	checkOnly := flag.Bool("check", false, "Print seccomp user-notification support and exit")
 	require := flag.Bool("require", false, "Exit non-zero when production supervisor support is unavailable")
 	observe := flag.Bool("observe", false, "Run the command under an observe-only seccomp user-notification loop")
+	jsonLog := flag.Bool("json-log", false, "Emit observe decisions as newline-delimited JSON")
 	flag.Parse()
 
 	report := childsupervisor.CheckSupport()
@@ -33,7 +34,10 @@ func main() {
 
 	var err error
 	if *observe {
-		err = childsupervisor.RunObserve(context.Background(), flag.Args(), childsupervisor.ObserveOptions{Log: os.Stderr})
+		err = childsupervisor.RunObserve(context.Background(), flag.Args(), childsupervisor.ObserveOptions{
+			Log:     os.Stderr,
+			JSONLog: *jsonLog,
+		})
 	} else {
 		err = execLocal(flag.Args())
 	}

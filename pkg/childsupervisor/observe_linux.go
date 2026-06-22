@@ -4,9 +4,9 @@ package childsupervisor
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"syscall"
@@ -15,10 +15,6 @@ import (
 
 	"golang.org/x/sys/unix"
 )
-
-type ObserveOptions struct {
-	Log io.Writer
-}
 
 type seccompData struct {
 	Nr                 int32
@@ -39,6 +35,11 @@ type seccompNotifResp struct {
 	Val   int64
 	Error int32
 	Flags uint32
+}
+
+type syscallDecisionLog struct {
+	Event    SyscallEvent    `json:"event"`
+	Decision SyscallDecision `json:"decision"`
 }
 
 func RunObserve(ctx context.Context, argv []string, opts ObserveOptions) error {
@@ -62,7 +63,7 @@ func RunObserve(ctx context.Context, argv []string, opts ObserveOptions) error {
 	defer cancel()
 	observeErr := make(chan error, 1)
 	go func() {
-		observeErr <- serveNotifications(observeCtx, listenerFD, opts.Log)
+		observeErr <- serveNotifications(observeCtx, listenerFD, opts)
 	}()
 
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
@@ -135,7 +136,7 @@ func execNotificationFilter() []unix.SockFilter {
 	}
 }
 
-func serveNotifications(ctx context.Context, listenerFD int, log io.Writer) error {
+func serveNotifications(ctx context.Context, listenerFD int, opts ObserveOptions) error {
 	for {
 		events := []unix.PollFd{{Fd: int32(listenerFD), Events: unix.POLLIN}}
 		n, err := unix.Poll(events, 10)
@@ -176,12 +177,14 @@ func serveNotifications(ctx context.Context, listenerFD int, log io.Writer) erro
 			}
 			return fmt.Errorf("receive seccomp notification: %w", err)
 		}
-		if log != nil {
-			fmt.Fprintf(log, "octopos-child-supervisor: observed syscall=%d pid=%d id=%d at=%s\n", req.Data.Nr, req.PID, req.ID, time.Now().Format(time.RFC3339Nano))
+		event := syscallEventFromNotification(req, time.Now())
+		decision := decideSyscall(ctx, event, opts.Policy)
+		if err := logSyscallDecision(opts, event, decision); err != nil {
+			return err
 		}
-		resp := seccompNotifResp{
-			ID:    req.ID,
-			Flags: uint32(unix.SECCOMP_USER_NOTIF_FLAG_CONTINUE),
+		resp, err := responseForDecision(req.ID, decision)
+		if err != nil {
+			return err
 		}
 		if err := notificationIOCTL(listenerFD, unix.SECCOMP_IOCTL_NOTIF_SEND, unsafe.Pointer(&resp)); err != nil {
 			if errors.Is(err, unix.ENOENT) {
@@ -190,16 +193,94 @@ func serveNotifications(ctx context.Context, listenerFD int, log io.Writer) erro
 			if errors.Is(err, unix.EBADF) && ctx.Err() != nil {
 				return nil
 			}
-			return fmt.Errorf("continue seccomp notification: %w", err)
-		}
-		if log != nil {
-			fmt.Fprintf(log, "octopos-child-supervisor: continued syscall=%d pid=%d id=%d\n", req.Data.Nr, req.PID, req.ID)
+			return fmt.Errorf("send seccomp notification decision: %w", err)
 		}
 		select {
 		case <-ctx.Done():
 			return nil
 		default:
 		}
+	}
+}
+
+func syscallEventFromNotification(req seccompNotif, at time.Time) SyscallEvent {
+	return SyscallEvent{
+		ID:                 req.ID,
+		PID:                req.PID,
+		Syscall:            req.Data.Nr,
+		SyscallName:        syscallName(req.Data.Nr),
+		Arch:               req.Data.Arch,
+		InstructionPointer: req.Data.InstructionPointer,
+		Args:               req.Data.Args,
+		At:                 at,
+	}
+}
+
+func decideSyscall(ctx context.Context, event SyscallEvent, policy SyscallPolicy) SyscallDecision {
+	if policy == nil {
+		return ContinueSyscall("observe")
+	}
+	decision := policy(ctx, event)
+	if decision.Action == "" {
+		decision.Action = SyscallDecisionContinue
+	}
+	if decision.Action == SyscallDecisionDeny && decision.Errno == 0 {
+		decision.Errno = syscall.EPERM
+	}
+	return decision
+}
+
+func responseForDecision(id uint64, decision SyscallDecision) (seccompNotifResp, error) {
+	switch decision.Action {
+	case SyscallDecisionContinue:
+		return seccompNotifResp{
+			ID:    id,
+			Flags: uint32(unix.SECCOMP_USER_NOTIF_FLAG_CONTINUE),
+		}, nil
+	case SyscallDecisionDeny:
+		errno := decision.Errno
+		if errno == 0 {
+			errno = syscall.EPERM
+		}
+		return seccompNotifResp{
+			ID:    id,
+			Error: -int32(errno),
+		}, nil
+	default:
+		return seccompNotifResp{}, fmt.Errorf("unsupported syscall decision action %q", decision.Action)
+	}
+}
+
+func logSyscallDecision(opts ObserveOptions, event SyscallEvent, decision SyscallDecision) error {
+	if opts.Log == nil {
+		return nil
+	}
+	if opts.JSONLog {
+		return json.NewEncoder(opts.Log).Encode(syscallDecisionLog{
+			Event:    event,
+			Decision: decision,
+		})
+	}
+	fmt.Fprintf(opts.Log, "octopos-child-supervisor: observed syscall=%d syscall_name=%s pid=%d id=%d at=%s decision=%s",
+		event.Syscall, event.SyscallName, event.PID, event.ID, event.At.Format(time.RFC3339Nano), decision.Action)
+	if decision.Reason != "" {
+		fmt.Fprintf(opts.Log, " reason=%q", decision.Reason)
+	}
+	if decision.Action == SyscallDecisionDeny {
+		fmt.Fprintf(opts.Log, " errno=%d", decision.Errno)
+	}
+	fmt.Fprintln(opts.Log)
+	return nil
+}
+
+func syscallName(nr int32) string {
+	switch nr {
+	case unix.SYS_EXECVE:
+		return "execve"
+	case unix.SYS_EXECVEAT:
+		return "execveat"
+	default:
+		return fmt.Sprintf("syscall_%d", nr)
 	}
 }
 

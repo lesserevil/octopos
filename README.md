@@ -222,10 +222,13 @@ Run a command under the observe-only seccomp user-notification prototype:
 
 ```bash
 octopos-child-supervisor --observe -- /bin/sh -c 'exec /bin/true'
+octopos-child-supervisor --observe --json-log -- /bin/sh -c 'exec /bin/true'
 ```
 
-Observe mode logs trapped `execve`/`execveat` syscalls and replies with
-`SECCOMP_USER_NOTIF_FLAG_CONTINUE`; it does not place children remotely yet.
+Observe mode converts trapped `execve`/`execveat` syscalls into policy events,
+logs the resulting decision, and replies with
+`SECCOMP_USER_NOTIF_FLAG_CONTINUE` by default; it does not place children
+remotely yet.
 
 Submit a background job:
 
