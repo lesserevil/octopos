@@ -45,16 +45,47 @@ Implemented today:
   `/dev/vfio/<group>` nodes.
 - Release-on-job-exit, release-on-session-destroy, launch-failure cleanup, and
   daemon-restart recovery from `/var/lib/octopos/vfio-allocations.json`.
+- Bounded live validation on `shedwards-octo1`, `shedwards-octo2`, and
+  `shedwards-octo3` confirmed the no-device path: each VM has `/dev/vfio/vfio`,
+  but exposes zero `/sys/kernel/iommu_groups`; `octoposctl vfio list` reports no
+  groups and a VFIO allocation request fails cleanly with `no eligible node for
+  requirements`.
 
 Remaining work:
 
-- Live validation with a non-critical VFIO-bound test device on prepared
-  hardware.
+- Live allocation/release validation with a non-critical VFIO-bound test device
+  on prepared hardware. The current `shedwards-octo*` VMs are not sufficient
+  because guest IOMMU groups are absent.
 - Optional protobuf cleanup for explicit allocation IDs and deprecating unused
   fd fields.
 - Optional device-cgroup integration if OctopOS later runs jobs under a device
   controller. Current isolation is by narrow device-node projection in a
   privileged namespace.
+
+## Live Validation Notes
+
+Validation on June 22, 2026:
+
+- Hosts checked: `shedwards-octo1`, `shedwards-octo2`, `shedwards-octo3`.
+- Kernel: `6.8.0-71-generic` on all three hosts.
+- Boot command line: no guest IOMMU enablement flags were present.
+- `/dev/vfio/vfio` exists on all three hosts.
+- `/sys/kernel/iommu_groups` contains zero groups on all three hosts.
+- Each host exposes the same PCI inventory, including an NVIDIA device at
+  `0000:00:06.0` bound to the `nvidia` driver, but no VFIO group is available
+  for safe allocation.
+- `octoposctl --addr shedwards-octo1:50051 vfio list` returned an empty group
+  table.
+- `octoposctl --addr shedwards-octo1:50051 vfio allocate --session
+  vfio-validation-20260622 --job vfio-validation-20260622 --class 0302` failed
+  with `no eligible node for requirements`, and a follow-up list showed no
+  claimed groups.
+
+Next live-validation prerequisite:
+
+- Provide a non-critical passthrough test device in a viable IOMMU group, or
+  enable guest IOMMU support for a VM that can expose IOMMU groups without
+  disrupting the NVIDIA compute path.
 
 ## Design Principles
 
