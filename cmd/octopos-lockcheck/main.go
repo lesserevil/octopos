@@ -143,13 +143,24 @@ func selfTestKind(path string, kind lockcheck.Kind, holderMode lockcheck.Mode, c
 
 func executablePath() (string, error) {
 	exe, err := osExecutable()
-	if err == nil && exe != "" {
+	if err == nil && executableLooksRunnable(exe) {
 		return exe, nil
 	}
 	if os.Args[0] != "" {
 		return os.Args[0], nil
 	}
 	return "", err
+}
+
+func executableLooksRunnable(path string) bool {
+	if path == "" {
+		return false
+	}
+	if filepath.IsAbs(path) || filepath.Dir(path) != "." {
+		return true
+	}
+	_, err := exec.LookPath(path)
+	return err == nil
 }
 
 func waitReady(path string, timeout time.Duration) error {
