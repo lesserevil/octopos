@@ -6,17 +6,23 @@ import (
 )
 
 type SupportReport struct {
-	OS                         string
-	Arch                       string
-	SeccompSyscall             bool
-	UserNotificationAction     bool
-	UserNotificationSizes      bool
-	UserNotificationSize       uint16
-	UserNotificationRespSize   uint16
-	UserNotificationDataSize   uint16
-	UserNotificationActionErr  string
-	UserNotificationSizesErr   string
+	OS                        string
+	Arch                      string
+	SeccompSyscall            bool
+	UserNotificationAction    bool
+	UserNotificationSizes     bool
+	UserNotificationSize      uint16
+	UserNotificationRespSize  uint16
+	UserNotificationDataSize  uint16
+	UserNotificationActionErr string
+	UserNotificationSizesErr  string
+	SeccompAuditUsable        bool
+	// Deprecated: use SeccompAuditUsable or AuditUsable.
 	ProductionSupervisorUsable bool
+}
+
+func (r SupportReport) AuditUsable() bool {
+	return r.SeccompAuditUsable || r.ProductionSupervisorUsable
 }
 
 func (r SupportReport) Lines() []string {
@@ -40,7 +46,7 @@ func (r SupportReport) Lines() []string {
 			fmt.Sprintf("seccomp_data_size=%d", r.UserNotificationDataSize),
 		)
 	}
-	lines = append(lines, fmt.Sprintf("production_supervisor_usable=%t", r.ProductionSupervisorUsable))
+	lines = append(lines, fmt.Sprintf("seccomp_audit_usable=%t", r.AuditUsable()))
 	return lines
 }
 

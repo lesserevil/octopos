@@ -16,7 +16,7 @@ FUSE, namespaces, and root access for privileged runtime setup.
 - Foreground, background, and PTY exec across the cluster
 - Explicit distributed child launch with `octopos-remote-child`
 - Opt-in transparent child exec remoting with `--remote-children`
-- Seccomp user-notification support checks with `octopos-child-supervisor`
+- Seccomp user-notification audit/support checks with `octopos-child-supervisor`
 - Per-exec private `/dev`, `/proc`, and `/sys` setup
 - NVIDIA GPU scheduling and projection with `--gpu` / `--gpus`
 - FUSE-backed virtual procfs, sysfs, and devfs components
@@ -163,7 +163,7 @@ Opt in to transparent child exec remoting for dynamic binaries:
 octoposctl --addr 10.0.0.1:50051 exec --remote-children=safe -- bash -lc 'hostname'
 ```
 
-This uses the LD_PRELOAD prototype installed by `cluster bootstrap` and
+This uses the LD_PRELOAD runtime installed by `cluster bootstrap` and
 `node add`. Static binaries and unsupported inherited file descriptors continue
 to run locally or require an explicit `octopos-remote-child` launch. Transparent
 mode falls back local for host-sensitive commands and inherited descriptors that
@@ -237,24 +237,25 @@ octoposd --remote-child-token-ttl=24h \
   --remote-child-state=/var/lib/octopos/remote-children.json
 ```
 
-Check whether a host has the kernel support needed for the future production
-child supervisor:
+Check whether a host has seccomp user-notification support for audit mode:
 
 ```bash
 octopos-child-supervisor --check
 ```
 
-Run a command under the observe-only seccomp user-notification prototype:
+Run a command under the audit-only seccomp user-notification loop:
 
 ```bash
-octopos-child-supervisor --observe -- /bin/sh -c 'exec /bin/true'
-octopos-child-supervisor --observe --json-log -- /bin/sh -c 'exec /bin/true'
+octopos-child-supervisor --audit -- /bin/sh -c 'exec /bin/true'
+octopos-child-supervisor --audit --json-log -- /bin/sh -c 'exec /bin/true'
 ```
 
-Observe mode converts trapped `execve`/`execveat` syscalls into policy events,
-logs the resulting decision, and replies with
-`SECCOMP_USER_NOTIF_FLAG_CONTINUE` by default; it does not place children
-remotely yet.
+Audit mode converts trapped `execve`/`execveat` syscalls into policy events,
+logs the continue decision, and replies with `SECCOMP_USER_NOTIF_FLAG_CONTINUE`.
+It is diagnostics only: static binaries and direct syscalls are observed when
+run under the supervisor, but transparent remoting remains the LD_PRELOAD runtime
+or an explicit `octopos-remote-child` launch. `--observe` remains available for
+developer policy experiments.
 
 Submit a background job:
 
@@ -291,7 +292,7 @@ make generate
 - `cmd/octoposd`: node daemon and gRPC server
 - `cmd/octopos-exec`: privileged SSI command launcher
 - `cmd/octopos-remote-child`: explicit distributed child-process launcher
-- `cmd/octopos-child-supervisor`: seccomp user-notification supervisor entry point
+- `cmd/octopos-child-supervisor`: seccomp user-notification audit entry point
 - `cmd/octopos-gw`: optional SSH gateway for cluster access
 - `cmd/octopos-objectstore-proxy`: node-local object-store proxy for shared filesystems
 - `pkg/cluster`: cluster data types and resource accounting
@@ -299,7 +300,7 @@ make generate
 - `pkg/scheduler`: resource scheduling policy
 - `pkg/ssi`: SSI root and mount validation helpers
 - `pkg/nvidia`: NVIDIA device discovery and projection support
-- `pkg/childsupervisor`: production supervisor support checks
+- `pkg/childsupervisor`: seccomp audit support checks
 - `fuse/`: virtual procfs, sysfs, and devfs daemons
 - `ebpf/`: optional eBPF programs
 - `docs/`: setup and usage guides

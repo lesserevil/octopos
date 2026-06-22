@@ -39,6 +39,10 @@ type ObserveOptions struct {
 	JSONLog bool
 }
 
+func AuditPolicy(ctx context.Context, event SyscallEvent) SyscallDecision {
+	return ContinueSyscall("audit-only: exec observed; transparent remoting remains LD_PRELOAD or explicit octopos-remote-child")
+}
+
 func ContinueSyscall(reason string) SyscallDecision {
 	return SyscallDecision{Action: SyscallDecisionContinue, Reason: reason}
 }

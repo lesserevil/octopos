@@ -14,31 +14,43 @@ import (
 
 func main() {
 	checkOnly := flag.Bool("check", false, "Print seccomp user-notification support and exit")
-	require := flag.Bool("require", false, "Exit non-zero when production supervisor support is unavailable")
-	observe := flag.Bool("observe", false, "Run the command under an observe-only seccomp user-notification loop")
-	jsonLog := flag.Bool("json-log", false, "Emit observe decisions as newline-delimited JSON")
+	require := flag.Bool("require", false, "Exit non-zero when seccomp audit support is unavailable")
+	audit := flag.Bool("audit", false, "Audit exec syscalls with seccomp user notification and continue locally")
+	observe := flag.Bool("observe", false, "Run the command under a developer observe-only seccomp user-notification loop")
+	jsonLog := flag.Bool("json-log", false, "Emit supervisor decisions as newline-delimited JSON")
 	flag.Parse()
+
+	if *audit && *observe {
+		fmt.Fprintln(os.Stderr, "octopos-child-supervisor: --audit and --observe are mutually exclusive")
+		os.Exit(2)
+	}
 
 	report := childsupervisor.CheckSupport()
 	if *checkOnly || flag.NArg() == 0 {
 		fmt.Println(report.String())
-		if *require && !report.ProductionSupervisorUsable {
+		if *require && !report.AuditUsable() {
 			os.Exit(1)
 		}
 		return
 	}
-	if *require && !report.ProductionSupervisorUsable {
+	if *require && !report.AuditUsable() {
 		fmt.Fprintln(os.Stderr, "octopos-child-supervisor: seccomp user notification is unavailable")
 		os.Exit(1)
 	}
 
 	var err error
-	if *observe {
+	switch {
+	case *audit:
+		err = childsupervisor.RunAudit(context.Background(), flag.Args(), childsupervisor.ObserveOptions{
+			Log:     os.Stderr,
+			JSONLog: *jsonLog,
+		})
+	case *observe:
 		err = childsupervisor.RunObserve(context.Background(), flag.Args(), childsupervisor.ObserveOptions{
 			Log:     os.Stderr,
 			JSONLog: *jsonLog,
 		})
-	} else {
+	default:
 		err = execLocal(flag.Args())
 	}
 	if err != nil {

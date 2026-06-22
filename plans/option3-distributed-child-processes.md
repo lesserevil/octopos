@@ -155,13 +155,13 @@ Implemented and live-tested on `shedwards-octo1`, `shedwards-octo2`, and
   lifecycle records.
 - Stopped remote jobs remain active for wait/recovery purposes instead of being
   treated as terminal failures by the parent-side watcher.
-- Production supervisor entry point:
+- Seccomp audit entry point:
   - `cmd/octopos-child-supervisor`
   - seccomp user-notification kernel support checks
-  - observe-only seccomp user-notification loop for `execve`/`execveat`
+  - audit/observe-only seccomp user-notification loop for `execve`/`execveat`
   - notification responses use `SECCOMP_USER_NOTIF_FLAG_CONTINUE`
   - bootstrap/node-add/build integration
-  - not enabled by default and does not place children remotely yet.
+  - not enabled by default and intentionally does not place children remotely.
 - Live validation on `shedwards-octo1`, `shedwards-octo2`, and
   `shedwards-octo3`:
   - explicit `octopos-remote-child --node shedwards-octo2`
@@ -188,8 +188,8 @@ Implemented and live-tested on `shedwards-octo1`, `shedwards-octo2`, and
   - `octoposctl job children`
   - `octoposctl ps`
   - local child socket denies generic cluster APIs.
-  - local `octopos-child-supervisor --observe -- /bin/true`
-  - local `octopos-child-supervisor --observe -- /bin/sh -c 'exec /bin/true'`
+  - local `octopos-child-supervisor --audit -- /bin/true`
+  - local `octopos-child-supervisor --audit -- /bin/sh -c 'exec /bin/true'`
 
 Partially implemented:
 
@@ -229,9 +229,9 @@ Not implemented yet:
 
 - Full shell job table semantics for stopped remote jobs beyond forwarding
   stop/continue and reflecting stopped/running lifecycle state.
-- Production seccomp user-notification remoting loop. The support check, command
-  entry point, and observe-and-continue syscall trapping loop exist, but
-  notifications are not translated into remote child placement yet.
+- Static-binary and direct-syscall transparent remoting. The seccomp support
+  check and audit loop exist, but seccomp notification events intentionally
+  continue locally and are not translated into remote child placement.
 
 ## Remaining Implementation Backlog
 
@@ -576,7 +576,7 @@ Acceptance criteria:
 - Common interactive shell job control works or falls back local with a reason.
 - Ctrl-C and terminal resize reach the correct remote foreground process.
 
-### Phase 9: Transparent Interception Prototype
+### Phase 9: Transparent Interception Runtime
 
 Goal: make common child creation paths use the shadow-worker mechanism without
 explicitly invoking `octopos-remote-child`.
@@ -586,7 +586,7 @@ Tasks:
 1. Add opt-in control:
    - `octoposctl exec --remote-children=off|safe|aggressive`
    - env override `OCTOPOS_REMOTE_CHILDREN=off|safe|aggressive`
-2. Build an LD_PRELOAD prototype.
+2. Build an LD_PRELOAD runtime.
    - Intercept `execve`
    - Intercept `execveat`
    - Intercept `posix_spawn`
@@ -606,29 +606,29 @@ Acceptance criteria:
 - Static binaries continue local rather than failing.
 - Users can disable remoting per process.
 
-### Phase 10: Production Supervisor
+### Phase 10: Seccomp Audit And Future Static-Binary Coverage
 
-Goal: cover more than LD_PRELOAD can cover while preserving safe fallback.
+Goal: make non-LD_PRELOAD exec visibility explicit while preserving safe local
+fallback.
 
 Tasks:
 
-1. Prototype seccomp user notification supervisor.
+1. Maintain the seccomp user notification audit supervisor.
 2. Observe:
    - `execve`
    - `execveat`
-   - `clone`
-   - `vfork`
-   - `wait4` if needed
-3. Detect `fork -> exec` patterns.
-4. Allow local continuation for unsupported flows.
-5. Measure overhead on build workloads.
-6. Decide whether seccomp user notification or ptrace is the production path.
+3. Detect dynamic/static/direct-syscall coverage gaps that bypass LD_PRELOAD.
+4. Always continue locally from audit mode.
+5. Measure audit overhead on build workloads.
+6. Decide whether a future ptrace/seccomp hybrid is justified by real
+   workloads before attempting static-binary remoting.
 
 Acceptance criteria:
 
-- Static and dynamic binaries are both observed.
-- Unsupported flows do not crash.
-- Overhead is acceptable for batch/build workloads.
+- Static and dynamic binaries are both observed when run under audit mode.
+- Audit mode never attempts remote placement.
+- Unsupported flows continue locally.
+- Audit overhead is acceptable for diagnostics on batch/build workloads.
 
 ### Phase 11: Test Matrix and Documentation
 
@@ -672,9 +672,10 @@ Acceptance criteria:
   Unix file descriptor passing in the first production version.
 - Do not replace the Linux scheduler or modify the host kernel in the first
   version.
-- Do not make system-wide behavior depend on LD_PRELOAD alone; LD_PRELOAD is
-  acceptable for prototypes and opt-in compatibility helpers, but not as the
-  only design.
+- Do not claim transparent static-binary or direct-syscall coverage until a
+  future ptrace/seccomp hybrid is designed and validated. Production v1
+  transparent remoting is the opt-in LD_PRELOAD runtime plus explicit
+  `octopos-remote-child`.
 
 ## Definitions
 
@@ -783,9 +784,12 @@ Tasks:
    - `OCTOPOS_CHILD_MEM`
    - `OCTOPOS_CHILD_LOCAL=1`
 5. Decide first interception mechanism:
-   - For prototype: wrapper/shim commands and shell integration.
-   - For production v1: seccomp user notification or ptrace supervisor.
-   - LD_PRELOAD may be used as an acceleration path but cannot be the only path.
+   - For prototype and production v1: opt-in LD_PRELOAD runtime plus explicit
+     `octopos-remote-child`.
+   - For future static-binary coverage: evaluate a ptrace/seccomp hybrid only
+     after audit data shows the workload need.
+   - Seccomp user notification remains audit-only until a design can preserve
+     Linux process semantics for remote placement.
 6. Document unsupported IPC and local fallback rules.
 
 Acceptance criteria:
@@ -1021,18 +1025,18 @@ Suggested junior developer tasks:
 - Add debug rendering.
 - Add policy config for allowed devices.
 
-## Milestone 5: Interception Prototype
+## Milestone 5: Interception Runtime
 
 Goal: intercept common child creation paths and replace eligible children with
 shadow processes.
 
-Start with a prototype interception mode. Do not make it default.
+Start with opt-in dynamic-binary interception. Do not make it default.
 
 Candidate approaches:
 
-1. **LD_PRELOAD prototype**
+1. **LD_PRELOAD runtime**
    - Intercept `posix_spawn`, `execve`, `fork`, `vfork`, and `system`.
-   - Easy to build and useful for shell/Python/Make experiments.
+   - Useful for shell/Python/Make workloads.
    - Not sufficient for static binaries or direct syscalls.
 
 2. **ptrace supervisor**
@@ -1041,19 +1045,20 @@ Candidate approaches:
    - Complex signal interactions.
 
 3. **seccomp user notification**
-   - Better production direction for syscall trapping.
-   - Requires careful process supervision.
-   - Must handle syscall continuation and fallback.
+   - Useful audit mechanism for syscall visibility.
+   - Not a remoting mechanism in production v1.
 
 Recommended path:
 
-- Implement LD_PRELOAD prototype first for speed.
-- Design production supervisor around seccomp user notification.
+- Treat the opt-in LD_PRELOAD runtime as production v1 for dynamic binaries.
+- Keep seccomp user notification audit-only for static/direct syscall visibility.
+- Defer ptrace/seccomp remoting until there is workload evidence that justifies
+  the extra signal, wait, and security complexity.
 - Keep the remote-child decision API independent of interception mechanism.
 
 Tasks:
 
-1. Add `cmd/octopos-child-supervisor` or `liboctopos_child.so` prototype.
+1. Add `cmd/octopos-child-supervisor` audit mode and the LD_PRELOAD runtime.
 2. Intercept `execve` after `fork` for common shell workloads.
 3. For eligible commands:
    - create local shadow process
@@ -1204,44 +1209,37 @@ Suggested junior developer tasks:
 - Add process mapping tests.
 - Add CLI output tests.
 
-## Milestone 9: Production Supervisor
+## Milestone 9: Seccomp Audit Supervisor
 
-Goal: move beyond LD_PRELOAD for broader process coverage.
+Goal: make broader process coverage observable without claiming transparent
+remoting semantics that are not implemented.
 
-Recommended production mechanism: seccomp user notification, with fallback to
-local execution when semantics are uncertain.
+Recommended mechanism: seccomp user notification audit mode, with unconditional
+local continuation.
 
 Tasks:
 
-1. Create a supervisor process per exec session.
-2. Install seccomp filters for selected syscalls:
+1. Provide an explicit audit supervisor command.
+2. Install seccomp filters for selected syscall visibility:
    - `execve`
    - `execveat`
-   - `clone`
-   - `fork` equivalent via `clone`
-   - `vfork`
-   - `wait4`
-   - signal syscalls if needed
-3. Capture `fork -> exec` patterns.
-4. Allow unsupported flows to continue locally.
-5. Avoid remoting if child mutates state after fork before exec in ways that
-   cannot be represented.
-6. Ensure supervisor teardown kills or detaches remote children according to
-   policy.
-7. Measure overhead.
+3. Log audit events in text and JSON form.
+4. Continue all trapped syscalls locally.
+5. Document that static binaries and direct syscalls are audit-only in v1.
+6. Measure overhead.
 
 Acceptance criteria:
 
 - Dynamically linked and static binaries both continue to work.
-- Static binaries are observed and either remoted or safely kept local.
-- Unsupported syscalls do not crash the workload.
-- Supervisor overhead is acceptable for build workloads.
+- Static binaries are observed and safely kept local.
+- Audit mode does not crash the workload.
+- Supervisor overhead is acceptable for diagnostic runs.
 
 Suggested junior developer tasks:
 
-- Prototype seccomp user notification harness.
+- Maintain seccomp user notification harness.
 - Add syscall event structs.
-- Add local continuation path.
+- Add text/JSON audit assertions.
 - Add benchmark harness.
 
 ## Milestone 10: Scheduler and Policy Integration
@@ -1464,16 +1462,16 @@ Initial tasks:
 
 Owns:
 
-- LD_PRELOAD prototype
-- seccomp user notification prototype
+- LD_PRELOAD runtime
+- seccomp user notification audit mode
 - exec/fork observation
 - local fallback path
 
 Initial tasks:
 
-1. Build LD_PRELOAD proof of concept.
+1. Maintain LD_PRELOAD interception runtime.
 2. Add shell workload experiments.
-3. Build seccomp prototype.
+3. Maintain seccomp audit mode.
 4. Compare reliability and overhead.
 
 ### Team E: Procfs and CLI
@@ -1507,8 +1505,8 @@ The original recommended order was:
 8. Milestone 11: Failure semantics.
 9. Milestone 8: Procfs integration.
 10. Milestone 7: PTY and job control.
-11. Milestone 5: LD_PRELOAD interception prototype.
-12. Milestone 9: Production supervisor.
+11. Milestone 5: LD_PRELOAD interception runtime.
+12. Milestone 9: Seccomp audit supervisor.
 13. Milestone 12 and 13 continuously throughout.
 
 The explicit shadow worker should ship first because it is useful even without

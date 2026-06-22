@@ -36,7 +36,8 @@ func CheckSupport() SupportReport {
 		report.UserNotificationDataSize = sizes.Data
 	}
 
-	report.ProductionSupervisorUsable = report.UserNotificationAction && report.UserNotificationSizes
+	report.SeccompAuditUsable = report.UserNotificationAction && report.UserNotificationSizes
+	report.ProductionSupervisorUsable = report.SeccompAuditUsable
 	return report
 }
 

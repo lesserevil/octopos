@@ -15,6 +15,7 @@ func TestSupportReportString(t *testing.T) {
 		UserNotificationSize:       80,
 		UserNotificationRespSize:   24,
 		UserNotificationDataSize:   64,
+		SeccompAuditUsable:         true,
 		ProductionSupervisorUsable: true,
 	}
 	out := report.String()
@@ -25,7 +26,7 @@ func TestSupportReportString(t *testing.T) {
 		"user_notification_action=true",
 		"user_notification_sizes=true",
 		"seccomp_notif_size=80",
-		"production_supervisor_usable=true",
+		"seccomp_audit_usable=true",
 	} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("support report missing %q:\n%s", want, out)

@@ -42,12 +42,19 @@ type syscallDecisionLog struct {
 	Decision SyscallDecision `json:"decision"`
 }
 
+func RunAudit(ctx context.Context, argv []string, opts ObserveOptions) error {
+	if opts.Policy == nil {
+		opts.Policy = AuditPolicy
+	}
+	return RunObserve(ctx, argv, opts)
+}
+
 func RunObserve(ctx context.Context, argv []string, opts ObserveOptions) error {
 	if len(argv) == 0 {
 		return nil
 	}
 	report := CheckSupport()
-	if !report.ProductionSupervisorUsable {
+	if !report.AuditUsable() {
 		return fmt.Errorf("seccomp user notification is unavailable")
 	}
 	listenerFD, err := installExecNotificationFilter()

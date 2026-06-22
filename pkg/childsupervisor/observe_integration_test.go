@@ -18,9 +18,29 @@ func TestRunObserveReportsShellExec(t *testing.T) {
 	runObserveIntegration(t, []string{"/bin/sh", "-c", "exec /bin/true"})
 }
 
+func TestRunAuditReportsDirectExec(t *testing.T) {
+	if !CheckSupport().AuditUsable() {
+		t.Skip("seccomp user notification is unavailable")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	var log bytes.Buffer
+	if err := RunAudit(ctx, []string{"/bin/true"}, ObserveOptions{Log: &log}); err != nil {
+		if strings.Contains(err.Error(), "seccomp user notification is unavailable") ||
+			strings.Contains(err.Error(), "operation not permitted") ||
+			strings.Contains(err.Error(), "permission denied") {
+			t.Skipf("seccomp audit unavailable in this environment: %v", err)
+		}
+		t.Fatalf("RunAudit: %v\n%s", err, log.String())
+	}
+	if !strings.Contains(log.String(), "decision=continue") || !strings.Contains(log.String(), "audit-only") {
+		t.Fatalf("audit log missing continue audit decision:\n%s", log.String())
+	}
+}
+
 func runObserveIntegration(t *testing.T, argv []string) {
 	t.Helper()
-	if !CheckSupport().ProductionSupervisorUsable {
+	if !CheckSupport().AuditUsable() {
 		t.Skip("seccomp user notification is unavailable")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -43,7 +63,7 @@ func runObserveIntegration(t *testing.T, argv []string) {
 }
 
 func TestRunObserveInvokesPolicy(t *testing.T) {
-	if !CheckSupport().ProductionSupervisorUsable {
+	if !CheckSupport().AuditUsable() {
 		t.Skip("seccomp user notification is unavailable")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

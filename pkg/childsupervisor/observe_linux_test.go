@@ -63,6 +63,17 @@ func TestDecideSyscallPolicyCanDeny(t *testing.T) {
 	}
 }
 
+func TestAuditPolicyContinuesWithAuditReason(t *testing.T) {
+	event := SyscallEvent{ID: 42, Syscall: int32(unix.SYS_EXECVE)}
+	decision := AuditPolicy(context.Background(), event)
+	if decision.Action != SyscallDecisionContinue {
+		t.Fatalf("audit decision action = %q, want continue", decision.Action)
+	}
+	if !strings.Contains(decision.Reason, "audit-only") {
+		t.Fatalf("audit decision reason = %q, want audit-only context", decision.Reason)
+	}
+}
+
 func TestResponseForDecision(t *testing.T) {
 	continued, err := responseForDecision(7, ContinueSyscall("test"))
 	if err != nil {

@@ -1021,7 +1021,7 @@ func main() {
 	execCmd.Flags().BoolP("tty", "t", false, "Allocate a pseudo-TTY")
 	execCmd.Flags().Bool("background", false, "Submit the command as a background job")
 	execCmd.Flags().Bool("wait", false, "With --background, wait for the detached job to finish")
-	execCmd.Flags().String("remote-children", "off", "Remote eligible child execs with the LD_PRELOAD prototype: off, safe, or aggressive")
+	execCmd.Flags().String("remote-children", "off", "Remote eligible child execs with the LD_PRELOAD runtime: off, safe, or aggressive")
 	execCmd.Flags().String("remote-ipc-compat", "strict", "Remote child IPC compatibility policy: strict or relaxed")
 	execCmd.Flags().Bool("remote-file-locks", false, "Allow remoting inherited locked SSI files after validating cluster filesystem lock semantics")
 
