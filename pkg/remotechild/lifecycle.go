@@ -28,26 +28,29 @@ const (
 )
 
 type ShadowRecord struct {
-	SessionID          string
-	ParentJobID        string
-	ParentPID          int
-	ShadowPID          int
-	RemoteJobID        string
-	RemoteNodeID       string
-	RemoteGlobalPID    uint64
-	RemoteLocalPID     int
-	Command            []string
-	State              ShadowState
-	StartedAt          time.Time
-	FinishedAt         time.Time
-	ExitCode           int
-	Signal             int
-	PlacementReason    string
-	FallbackReason     string
-	FallbackReasonCode string
-	FailureReason      string
-	CreatedAt          time.Time
-	UpdatedAt          time.Time
+	SessionID                string
+	ParentJobID              string
+	ParentPID                int
+	ShadowPID                int
+	RemoteJobID              string
+	RemoteNodeID             string
+	RemoteGlobalPID          uint64
+	RemoteLocalPID           int
+	Command                  []string
+	State                    ShadowState
+	StartedAt                time.Time
+	FinishedAt               time.Time
+	ExitCode                 int
+	Signal                   int
+	PlacementReason          string
+	FallbackReason           string
+	FallbackReasonCode       string
+	FailureReason            string
+	ProcessGroupID           int
+	KernelSessionID          int
+	ForegroundProcessGroupID int
+	CreatedAt                time.Time
+	UpdatedAt                time.Time
 }
 
 type AuditEvent struct {
@@ -261,6 +264,15 @@ func (s *Store) Upsert(record ShadowRecord) ShadowRecord {
 		if record.FailureReason == "" {
 			record.FailureReason = existing.FailureReason
 		}
+		if record.ProcessGroupID == 0 {
+			record.ProcessGroupID = existing.ProcessGroupID
+		}
+		if record.KernelSessionID == 0 {
+			record.KernelSessionID = existing.KernelSessionID
+		}
+		if record.ForegroundProcessGroupID == 0 {
+			record.ForegroundProcessGroupID = existing.ForegroundProcessGroupID
+		}
 		record.CreatedAt = existing.CreatedAt
 	} else if record.CreatedAt.IsZero() {
 		record.CreatedAt = now
@@ -293,6 +305,30 @@ func (s *Store) MarkRunningWithLocalPID(remoteJobID string, globalPID uint64, lo
 	record.FailureReason = ""
 	if record.StartedAt.IsZero() {
 		record.StartedAt = at
+	}
+	record.UpdatedAt = at
+	s.records[remoteJobID] = record
+	s.persistLocked()
+}
+
+func (s *Store) MarkProcessControl(remoteJobID string, processGroupID, kernelSessionID, foregroundProcessGroupID int, at time.Time) {
+	if at.IsZero() {
+		at = time.Now()
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	record, ok := s.records[remoteJobID]
+	if !ok {
+		return
+	}
+	if processGroupID > 0 {
+		record.ProcessGroupID = processGroupID
+	}
+	if kernelSessionID > 0 {
+		record.KernelSessionID = kernelSessionID
+	}
+	if foregroundProcessGroupID > 0 {
+		record.ForegroundProcessGroupID = foregroundProcessGroupID
 	}
 	record.UpdatedAt = at
 	s.records[remoteJobID] = record

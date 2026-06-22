@@ -105,6 +105,9 @@ message ExecuteResponse {
   uint64 global_pid = 2;
   int32 exit_code = 3;
   string error = 4;
+  int32 process_group_id = 5;
+  int32 kernel_session_id = 6;
+  int32 foreground_process_group_id = 7;
 }
 
 message SignalRequest {
@@ -387,6 +390,9 @@ message ProcessInfo {
   repeated string vfio_groups = 16;
   string process_kind = 17;
   RemoteChildInfo remote_child = 18;
+  int32 process_group_id = 19;
+  int32 kernel_session_id = 20;
+  int32 foreground_process_group_id = 21;
 }
 
 message ListRemoteChildrenRequest {
@@ -423,6 +429,9 @@ message JobInfo {
   repeated int32 exit_codes = 9;
   string primary_node = 10;
   RemoteChildInfo remote_child = 11;
+  int32 process_group_id = 12;
+  int32 kernel_session_id = 13;
+  int32 foreground_process_group_id = 14;
 }
 
 message RemoteChildInfo {
@@ -440,6 +449,9 @@ message RemoteChildInfo {
   int64 started_at = 12;
   int64 finished_at = 13;
   string fallback_reason_code = 14;
+  int32 process_group_id = 15;
+  int32 kernel_session_id = 16;
+  int32 foreground_process_group_id = 17;
 }
 
 message RemoteChildRecord {
@@ -462,6 +474,9 @@ message RemoteChildRecord {
   int64 created_at = 17;
   int64 updated_at = 18;
   string fallback_reason_code = 19;
+  int32 process_group_id = 20;
+  int32 kernel_session_id = 21;
+  int32 foreground_process_group_id = 22;
 }
 
 message CommandSpec {

@@ -594,13 +594,16 @@ func (x *ExecuteRequest) GetPipeMap() map[int32]int32 {
 }
 
 type ExecuteResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	JobId         string                 `protobuf:"bytes,1,opt,name=job_id,json=jobId,proto3" json:"job_id,omitempty"`
-	GlobalPid     uint64                 `protobuf:"varint,2,opt,name=global_pid,json=globalPid,proto3" json:"global_pid,omitempty"`
-	ExitCode      int32                  `protobuf:"varint,3,opt,name=exit_code,json=exitCode,proto3" json:"exit_code,omitempty"`
-	Error         string                 `protobuf:"bytes,4,opt,name=error,proto3" json:"error,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state                    protoimpl.MessageState `protogen:"open.v1"`
+	JobId                    string                 `protobuf:"bytes,1,opt,name=job_id,json=jobId,proto3" json:"job_id,omitempty"`
+	GlobalPid                uint64                 `protobuf:"varint,2,opt,name=global_pid,json=globalPid,proto3" json:"global_pid,omitempty"`
+	ExitCode                 int32                  `protobuf:"varint,3,opt,name=exit_code,json=exitCode,proto3" json:"exit_code,omitempty"`
+	Error                    string                 `protobuf:"bytes,4,opt,name=error,proto3" json:"error,omitempty"`
+	ProcessGroupId           int32                  `protobuf:"varint,5,opt,name=process_group_id,json=processGroupId,proto3" json:"process_group_id,omitempty"`
+	KernelSessionId          int32                  `protobuf:"varint,6,opt,name=kernel_session_id,json=kernelSessionId,proto3" json:"kernel_session_id,omitempty"`
+	ForegroundProcessGroupId int32                  `protobuf:"varint,7,opt,name=foreground_process_group_id,json=foregroundProcessGroupId,proto3" json:"foreground_process_group_id,omitempty"`
+	unknownFields            protoimpl.UnknownFields
+	sizeCache                protoimpl.SizeCache
 }
 
 func (x *ExecuteResponse) Reset() {
@@ -659,6 +662,27 @@ func (x *ExecuteResponse) GetError() string {
 		return x.Error
 	}
 	return ""
+}
+
+func (x *ExecuteResponse) GetProcessGroupId() int32 {
+	if x != nil {
+		return x.ProcessGroupId
+	}
+	return 0
+}
+
+func (x *ExecuteResponse) GetKernelSessionId() int32 {
+	if x != nil {
+		return x.KernelSessionId
+	}
+	return 0
+}
+
+func (x *ExecuteResponse) GetForegroundProcessGroupId() int32 {
+	if x != nil {
+		return x.ForegroundProcessGroupId
+	}
+	return 0
 }
 
 type SignalRequest struct {
@@ -3235,27 +3259,30 @@ func (x *VFIORequirement) GetCount() int32 {
 }
 
 type ProcessInfo struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	GlobalPid     uint64                 `protobuf:"varint,1,opt,name=global_pid,json=globalPid,proto3" json:"global_pid,omitempty"`
-	NodeId        string                 `protobuf:"bytes,2,opt,name=node_id,json=nodeId,proto3" json:"node_id,omitempty"`
-	LocalPid      int32                  `protobuf:"varint,3,opt,name=local_pid,json=localPid,proto3" json:"local_pid,omitempty"`
-	Ppid          int32                  `protobuf:"varint,4,opt,name=ppid,proto3" json:"ppid,omitempty"`
-	Uid           uint32                 `protobuf:"varint,5,opt,name=uid,proto3" json:"uid,omitempty"`
-	Gid           uint32                 `protobuf:"varint,6,opt,name=gid,proto3" json:"gid,omitempty"`
-	SessionId     string                 `protobuf:"bytes,7,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
-	JobId         string                 `protobuf:"bytes,8,opt,name=job_id,json=jobId,proto3" json:"job_id,omitempty"`
-	Comm          string                 `protobuf:"bytes,9,opt,name=comm,proto3" json:"comm,omitempty"`
-	Cmdline       string                 `protobuf:"bytes,10,opt,name=cmdline,proto3" json:"cmdline,omitempty"`
-	Cwd           string                 `protobuf:"bytes,11,opt,name=cwd,proto3" json:"cwd,omitempty"`
-	StartTime     int64                  `protobuf:"varint,12,opt,name=start_time,json=startTime,proto3" json:"start_time,omitempty"`
-	CpuPercent    float64                `protobuf:"fixed64,13,opt,name=cpu_percent,json=cpuPercent,proto3" json:"cpu_percent,omitempty"`
-	RssBytes      uint64                 `protobuf:"varint,14,opt,name=rss_bytes,json=rssBytes,proto3" json:"rss_bytes,omitempty"`
-	State         string                 `protobuf:"bytes,15,opt,name=state,proto3" json:"state,omitempty"`
-	VfioGroups    []string               `protobuf:"bytes,16,rep,name=vfio_groups,json=vfioGroups,proto3" json:"vfio_groups,omitempty"`
-	ProcessKind   string                 `protobuf:"bytes,17,opt,name=process_kind,json=processKind,proto3" json:"process_kind,omitempty"`
-	RemoteChild   *RemoteChildInfo       `protobuf:"bytes,18,opt,name=remote_child,json=remoteChild,proto3" json:"remote_child,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state                    protoimpl.MessageState `protogen:"open.v1"`
+	GlobalPid                uint64                 `protobuf:"varint,1,opt,name=global_pid,json=globalPid,proto3" json:"global_pid,omitempty"`
+	NodeId                   string                 `protobuf:"bytes,2,opt,name=node_id,json=nodeId,proto3" json:"node_id,omitempty"`
+	LocalPid                 int32                  `protobuf:"varint,3,opt,name=local_pid,json=localPid,proto3" json:"local_pid,omitempty"`
+	Ppid                     int32                  `protobuf:"varint,4,opt,name=ppid,proto3" json:"ppid,omitempty"`
+	Uid                      uint32                 `protobuf:"varint,5,opt,name=uid,proto3" json:"uid,omitempty"`
+	Gid                      uint32                 `protobuf:"varint,6,opt,name=gid,proto3" json:"gid,omitempty"`
+	SessionId                string                 `protobuf:"bytes,7,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
+	JobId                    string                 `protobuf:"bytes,8,opt,name=job_id,json=jobId,proto3" json:"job_id,omitempty"`
+	Comm                     string                 `protobuf:"bytes,9,opt,name=comm,proto3" json:"comm,omitempty"`
+	Cmdline                  string                 `protobuf:"bytes,10,opt,name=cmdline,proto3" json:"cmdline,omitempty"`
+	Cwd                      string                 `protobuf:"bytes,11,opt,name=cwd,proto3" json:"cwd,omitempty"`
+	StartTime                int64                  `protobuf:"varint,12,opt,name=start_time,json=startTime,proto3" json:"start_time,omitempty"`
+	CpuPercent               float64                `protobuf:"fixed64,13,opt,name=cpu_percent,json=cpuPercent,proto3" json:"cpu_percent,omitempty"`
+	RssBytes                 uint64                 `protobuf:"varint,14,opt,name=rss_bytes,json=rssBytes,proto3" json:"rss_bytes,omitempty"`
+	State                    string                 `protobuf:"bytes,15,opt,name=state,proto3" json:"state,omitempty"`
+	VfioGroups               []string               `protobuf:"bytes,16,rep,name=vfio_groups,json=vfioGroups,proto3" json:"vfio_groups,omitempty"`
+	ProcessKind              string                 `protobuf:"bytes,17,opt,name=process_kind,json=processKind,proto3" json:"process_kind,omitempty"`
+	RemoteChild              *RemoteChildInfo       `protobuf:"bytes,18,opt,name=remote_child,json=remoteChild,proto3" json:"remote_child,omitempty"`
+	ProcessGroupId           int32                  `protobuf:"varint,19,opt,name=process_group_id,json=processGroupId,proto3" json:"process_group_id,omitempty"`
+	KernelSessionId          int32                  `protobuf:"varint,20,opt,name=kernel_session_id,json=kernelSessionId,proto3" json:"kernel_session_id,omitempty"`
+	ForegroundProcessGroupId int32                  `protobuf:"varint,21,opt,name=foreground_process_group_id,json=foregroundProcessGroupId,proto3" json:"foreground_process_group_id,omitempty"`
+	unknownFields            protoimpl.UnknownFields
+	sizeCache                protoimpl.SizeCache
 }
 
 func (x *ProcessInfo) Reset() {
@@ -3412,6 +3439,27 @@ func (x *ProcessInfo) GetRemoteChild() *RemoteChildInfo {
 		return x.RemoteChild
 	}
 	return nil
+}
+
+func (x *ProcessInfo) GetProcessGroupId() int32 {
+	if x != nil {
+		return x.ProcessGroupId
+	}
+	return 0
+}
+
+func (x *ProcessInfo) GetKernelSessionId() int32 {
+	if x != nil {
+		return x.KernelSessionId
+	}
+	return 0
+}
+
+func (x *ProcessInfo) GetForegroundProcessGroupId() int32 {
+	if x != nil {
+		return x.ForegroundProcessGroupId
+	}
+	return 0
 }
 
 type ListRemoteChildrenRequest struct {
@@ -3627,20 +3675,23 @@ func (x *SessionInfo) GetCwd() string {
 }
 
 type JobInfo struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	JobId         string                 `protobuf:"bytes,1,opt,name=job_id,json=jobId,proto3" json:"job_id,omitempty"`
-	SessionId     string                 `protobuf:"bytes,2,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
-	Commands      []*CommandSpec         `protobuf:"bytes,3,rep,name=commands,proto3" json:"commands,omitempty"`
-	PipeMap       map[int32]int32        `protobuf:"bytes,4,rep,name=pipe_map,json=pipeMap,proto3" json:"pipe_map,omitempty" protobuf_key:"varint,1,opt,name=key" protobuf_val:"varint,2,opt,name=value"`
-	Status        JobStatus              `protobuf:"varint,5,opt,name=status,proto3,enum=octopos.rpc.JobStatus" json:"status,omitempty"`
-	CreatedAt     int64                  `protobuf:"varint,6,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
-	StartedAt     int64                  `protobuf:"varint,7,opt,name=started_at,json=startedAt,proto3" json:"started_at,omitempty"`
-	FinishedAt    int64                  `protobuf:"varint,8,opt,name=finished_at,json=finishedAt,proto3" json:"finished_at,omitempty"`
-	ExitCodes     []int32                `protobuf:"varint,9,rep,packed,name=exit_codes,json=exitCodes,proto3" json:"exit_codes,omitempty"`
-	PrimaryNode   string                 `protobuf:"bytes,10,opt,name=primary_node,json=primaryNode,proto3" json:"primary_node,omitempty"`
-	RemoteChild   *RemoteChildInfo       `protobuf:"bytes,11,opt,name=remote_child,json=remoteChild,proto3" json:"remote_child,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state                    protoimpl.MessageState `protogen:"open.v1"`
+	JobId                    string                 `protobuf:"bytes,1,opt,name=job_id,json=jobId,proto3" json:"job_id,omitempty"`
+	SessionId                string                 `protobuf:"bytes,2,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
+	Commands                 []*CommandSpec         `protobuf:"bytes,3,rep,name=commands,proto3" json:"commands,omitempty"`
+	PipeMap                  map[int32]int32        `protobuf:"bytes,4,rep,name=pipe_map,json=pipeMap,proto3" json:"pipe_map,omitempty" protobuf_key:"varint,1,opt,name=key" protobuf_val:"varint,2,opt,name=value"`
+	Status                   JobStatus              `protobuf:"varint,5,opt,name=status,proto3,enum=octopos.rpc.JobStatus" json:"status,omitempty"`
+	CreatedAt                int64                  `protobuf:"varint,6,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
+	StartedAt                int64                  `protobuf:"varint,7,opt,name=started_at,json=startedAt,proto3" json:"started_at,omitempty"`
+	FinishedAt               int64                  `protobuf:"varint,8,opt,name=finished_at,json=finishedAt,proto3" json:"finished_at,omitempty"`
+	ExitCodes                []int32                `protobuf:"varint,9,rep,packed,name=exit_codes,json=exitCodes,proto3" json:"exit_codes,omitempty"`
+	PrimaryNode              string                 `protobuf:"bytes,10,opt,name=primary_node,json=primaryNode,proto3" json:"primary_node,omitempty"`
+	RemoteChild              *RemoteChildInfo       `protobuf:"bytes,11,opt,name=remote_child,json=remoteChild,proto3" json:"remote_child,omitempty"`
+	ProcessGroupId           int32                  `protobuf:"varint,12,opt,name=process_group_id,json=processGroupId,proto3" json:"process_group_id,omitempty"`
+	KernelSessionId          int32                  `protobuf:"varint,13,opt,name=kernel_session_id,json=kernelSessionId,proto3" json:"kernel_session_id,omitempty"`
+	ForegroundProcessGroupId int32                  `protobuf:"varint,14,opt,name=foreground_process_group_id,json=foregroundProcessGroupId,proto3" json:"foreground_process_group_id,omitempty"`
+	unknownFields            protoimpl.UnknownFields
+	sizeCache                protoimpl.SizeCache
 }
 
 func (x *JobInfo) Reset() {
@@ -3750,24 +3801,48 @@ func (x *JobInfo) GetRemoteChild() *RemoteChildInfo {
 	return nil
 }
 
+func (x *JobInfo) GetProcessGroupId() int32 {
+	if x != nil {
+		return x.ProcessGroupId
+	}
+	return 0
+}
+
+func (x *JobInfo) GetKernelSessionId() int32 {
+	if x != nil {
+		return x.KernelSessionId
+	}
+	return 0
+}
+
+func (x *JobInfo) GetForegroundProcessGroupId() int32 {
+	if x != nil {
+		return x.ForegroundProcessGroupId
+	}
+	return 0
+}
+
 type RemoteChildInfo struct {
-	state              protoimpl.MessageState `protogen:"open.v1"`
-	ParentJobId        string                 `protobuf:"bytes,1,opt,name=parent_job_id,json=parentJobId,proto3" json:"parent_job_id,omitempty"`
-	ParentPid          int32                  `protobuf:"varint,2,opt,name=parent_pid,json=parentPid,proto3" json:"parent_pid,omitempty"`
-	ShadowPid          int32                  `protobuf:"varint,3,opt,name=shadow_pid,json=shadowPid,proto3" json:"shadow_pid,omitempty"`
-	RemoteJobId        string                 `protobuf:"bytes,4,opt,name=remote_job_id,json=remoteJobId,proto3" json:"remote_job_id,omitempty"`
-	RemoteNodeId       string                 `protobuf:"bytes,5,opt,name=remote_node_id,json=remoteNodeId,proto3" json:"remote_node_id,omitempty"`
-	RemoteGlobalPid    uint64                 `protobuf:"varint,6,opt,name=remote_global_pid,json=remoteGlobalPid,proto3" json:"remote_global_pid,omitempty"`
-	Command            []string               `protobuf:"bytes,7,rep,name=command,proto3" json:"command,omitempty"`
-	PlacementReason    string                 `protobuf:"bytes,8,opt,name=placement_reason,json=placementReason,proto3" json:"placement_reason,omitempty"`
-	FallbackReason     string                 `protobuf:"bytes,9,opt,name=fallback_reason,json=fallbackReason,proto3" json:"fallback_reason,omitempty"`
-	State              string                 `protobuf:"bytes,10,opt,name=state,proto3" json:"state,omitempty"`
-	FailureReason      string                 `protobuf:"bytes,11,opt,name=failure_reason,json=failureReason,proto3" json:"failure_reason,omitempty"`
-	StartedAt          int64                  `protobuf:"varint,12,opt,name=started_at,json=startedAt,proto3" json:"started_at,omitempty"`
-	FinishedAt         int64                  `protobuf:"varint,13,opt,name=finished_at,json=finishedAt,proto3" json:"finished_at,omitempty"`
-	FallbackReasonCode string                 `protobuf:"bytes,14,opt,name=fallback_reason_code,json=fallbackReasonCode,proto3" json:"fallback_reason_code,omitempty"`
-	unknownFields      protoimpl.UnknownFields
-	sizeCache          protoimpl.SizeCache
+	state                    protoimpl.MessageState `protogen:"open.v1"`
+	ParentJobId              string                 `protobuf:"bytes,1,opt,name=parent_job_id,json=parentJobId,proto3" json:"parent_job_id,omitempty"`
+	ParentPid                int32                  `protobuf:"varint,2,opt,name=parent_pid,json=parentPid,proto3" json:"parent_pid,omitempty"`
+	ShadowPid                int32                  `protobuf:"varint,3,opt,name=shadow_pid,json=shadowPid,proto3" json:"shadow_pid,omitempty"`
+	RemoteJobId              string                 `protobuf:"bytes,4,opt,name=remote_job_id,json=remoteJobId,proto3" json:"remote_job_id,omitempty"`
+	RemoteNodeId             string                 `protobuf:"bytes,5,opt,name=remote_node_id,json=remoteNodeId,proto3" json:"remote_node_id,omitempty"`
+	RemoteGlobalPid          uint64                 `protobuf:"varint,6,opt,name=remote_global_pid,json=remoteGlobalPid,proto3" json:"remote_global_pid,omitempty"`
+	Command                  []string               `protobuf:"bytes,7,rep,name=command,proto3" json:"command,omitempty"`
+	PlacementReason          string                 `protobuf:"bytes,8,opt,name=placement_reason,json=placementReason,proto3" json:"placement_reason,omitempty"`
+	FallbackReason           string                 `protobuf:"bytes,9,opt,name=fallback_reason,json=fallbackReason,proto3" json:"fallback_reason,omitempty"`
+	State                    string                 `protobuf:"bytes,10,opt,name=state,proto3" json:"state,omitempty"`
+	FailureReason            string                 `protobuf:"bytes,11,opt,name=failure_reason,json=failureReason,proto3" json:"failure_reason,omitempty"`
+	StartedAt                int64                  `protobuf:"varint,12,opt,name=started_at,json=startedAt,proto3" json:"started_at,omitempty"`
+	FinishedAt               int64                  `protobuf:"varint,13,opt,name=finished_at,json=finishedAt,proto3" json:"finished_at,omitempty"`
+	FallbackReasonCode       string                 `protobuf:"bytes,14,opt,name=fallback_reason_code,json=fallbackReasonCode,proto3" json:"fallback_reason_code,omitempty"`
+	ProcessGroupId           int32                  `protobuf:"varint,15,opt,name=process_group_id,json=processGroupId,proto3" json:"process_group_id,omitempty"`
+	KernelSessionId          int32                  `protobuf:"varint,16,opt,name=kernel_session_id,json=kernelSessionId,proto3" json:"kernel_session_id,omitempty"`
+	ForegroundProcessGroupId int32                  `protobuf:"varint,17,opt,name=foreground_process_group_id,json=foregroundProcessGroupId,proto3" json:"foreground_process_group_id,omitempty"`
+	unknownFields            protoimpl.UnknownFields
+	sizeCache                protoimpl.SizeCache
 }
 
 func (x *RemoteChildInfo) Reset() {
@@ -3898,29 +3973,53 @@ func (x *RemoteChildInfo) GetFallbackReasonCode() string {
 	return ""
 }
 
+func (x *RemoteChildInfo) GetProcessGroupId() int32 {
+	if x != nil {
+		return x.ProcessGroupId
+	}
+	return 0
+}
+
+func (x *RemoteChildInfo) GetKernelSessionId() int32 {
+	if x != nil {
+		return x.KernelSessionId
+	}
+	return 0
+}
+
+func (x *RemoteChildInfo) GetForegroundProcessGroupId() int32 {
+	if x != nil {
+		return x.ForegroundProcessGroupId
+	}
+	return 0
+}
+
 type RemoteChildRecord struct {
-	state              protoimpl.MessageState `protogen:"open.v1"`
-	SessionId          string                 `protobuf:"bytes,1,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
-	ParentJobId        string                 `protobuf:"bytes,2,opt,name=parent_job_id,json=parentJobId,proto3" json:"parent_job_id,omitempty"`
-	ParentPid          int32                  `protobuf:"varint,3,opt,name=parent_pid,json=parentPid,proto3" json:"parent_pid,omitempty"`
-	ShadowPid          int32                  `protobuf:"varint,4,opt,name=shadow_pid,json=shadowPid,proto3" json:"shadow_pid,omitempty"`
-	RemoteJobId        string                 `protobuf:"bytes,5,opt,name=remote_job_id,json=remoteJobId,proto3" json:"remote_job_id,omitempty"`
-	RemoteNodeId       string                 `protobuf:"bytes,6,opt,name=remote_node_id,json=remoteNodeId,proto3" json:"remote_node_id,omitempty"`
-	RemoteGlobalPid    uint64                 `protobuf:"varint,7,opt,name=remote_global_pid,json=remoteGlobalPid,proto3" json:"remote_global_pid,omitempty"`
-	Command            []string               `protobuf:"bytes,8,rep,name=command,proto3" json:"command,omitempty"`
-	State              string                 `protobuf:"bytes,9,opt,name=state,proto3" json:"state,omitempty"`
-	StartedAt          int64                  `protobuf:"varint,10,opt,name=started_at,json=startedAt,proto3" json:"started_at,omitempty"`
-	FinishedAt         int64                  `protobuf:"varint,11,opt,name=finished_at,json=finishedAt,proto3" json:"finished_at,omitempty"`
-	ExitCode           int32                  `protobuf:"varint,12,opt,name=exit_code,json=exitCode,proto3" json:"exit_code,omitempty"`
-	Signal             int32                  `protobuf:"varint,13,opt,name=signal,proto3" json:"signal,omitempty"`
-	PlacementReason    string                 `protobuf:"bytes,14,opt,name=placement_reason,json=placementReason,proto3" json:"placement_reason,omitempty"`
-	FallbackReason     string                 `protobuf:"bytes,15,opt,name=fallback_reason,json=fallbackReason,proto3" json:"fallback_reason,omitempty"`
-	FailureReason      string                 `protobuf:"bytes,16,opt,name=failure_reason,json=failureReason,proto3" json:"failure_reason,omitempty"`
-	CreatedAt          int64                  `protobuf:"varint,17,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
-	UpdatedAt          int64                  `protobuf:"varint,18,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`
-	FallbackReasonCode string                 `protobuf:"bytes,19,opt,name=fallback_reason_code,json=fallbackReasonCode,proto3" json:"fallback_reason_code,omitempty"`
-	unknownFields      protoimpl.UnknownFields
-	sizeCache          protoimpl.SizeCache
+	state                    protoimpl.MessageState `protogen:"open.v1"`
+	SessionId                string                 `protobuf:"bytes,1,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
+	ParentJobId              string                 `protobuf:"bytes,2,opt,name=parent_job_id,json=parentJobId,proto3" json:"parent_job_id,omitempty"`
+	ParentPid                int32                  `protobuf:"varint,3,opt,name=parent_pid,json=parentPid,proto3" json:"parent_pid,omitempty"`
+	ShadowPid                int32                  `protobuf:"varint,4,opt,name=shadow_pid,json=shadowPid,proto3" json:"shadow_pid,omitempty"`
+	RemoteJobId              string                 `protobuf:"bytes,5,opt,name=remote_job_id,json=remoteJobId,proto3" json:"remote_job_id,omitempty"`
+	RemoteNodeId             string                 `protobuf:"bytes,6,opt,name=remote_node_id,json=remoteNodeId,proto3" json:"remote_node_id,omitempty"`
+	RemoteGlobalPid          uint64                 `protobuf:"varint,7,opt,name=remote_global_pid,json=remoteGlobalPid,proto3" json:"remote_global_pid,omitempty"`
+	Command                  []string               `protobuf:"bytes,8,rep,name=command,proto3" json:"command,omitempty"`
+	State                    string                 `protobuf:"bytes,9,opt,name=state,proto3" json:"state,omitempty"`
+	StartedAt                int64                  `protobuf:"varint,10,opt,name=started_at,json=startedAt,proto3" json:"started_at,omitempty"`
+	FinishedAt               int64                  `protobuf:"varint,11,opt,name=finished_at,json=finishedAt,proto3" json:"finished_at,omitempty"`
+	ExitCode                 int32                  `protobuf:"varint,12,opt,name=exit_code,json=exitCode,proto3" json:"exit_code,omitempty"`
+	Signal                   int32                  `protobuf:"varint,13,opt,name=signal,proto3" json:"signal,omitempty"`
+	PlacementReason          string                 `protobuf:"bytes,14,opt,name=placement_reason,json=placementReason,proto3" json:"placement_reason,omitempty"`
+	FallbackReason           string                 `protobuf:"bytes,15,opt,name=fallback_reason,json=fallbackReason,proto3" json:"fallback_reason,omitempty"`
+	FailureReason            string                 `protobuf:"bytes,16,opt,name=failure_reason,json=failureReason,proto3" json:"failure_reason,omitempty"`
+	CreatedAt                int64                  `protobuf:"varint,17,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
+	UpdatedAt                int64                  `protobuf:"varint,18,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`
+	FallbackReasonCode       string                 `protobuf:"bytes,19,opt,name=fallback_reason_code,json=fallbackReasonCode,proto3" json:"fallback_reason_code,omitempty"`
+	ProcessGroupId           int32                  `protobuf:"varint,20,opt,name=process_group_id,json=processGroupId,proto3" json:"process_group_id,omitempty"`
+	KernelSessionId          int32                  `protobuf:"varint,21,opt,name=kernel_session_id,json=kernelSessionId,proto3" json:"kernel_session_id,omitempty"`
+	ForegroundProcessGroupId int32                  `protobuf:"varint,22,opt,name=foreground_process_group_id,json=foregroundProcessGroupId,proto3" json:"foreground_process_group_id,omitempty"`
+	unknownFields            protoimpl.UnknownFields
+	sizeCache                protoimpl.SizeCache
 }
 
 func (x *RemoteChildRecord) Reset() {
@@ -4086,6 +4185,27 @@ func (x *RemoteChildRecord) GetFallbackReasonCode() string {
 	return ""
 }
 
+func (x *RemoteChildRecord) GetProcessGroupId() int32 {
+	if x != nil {
+		return x.ProcessGroupId
+	}
+	return 0
+}
+
+func (x *RemoteChildRecord) GetKernelSessionId() int32 {
+	if x != nil {
+		return x.KernelSessionId
+	}
+	return 0
+}
+
+func (x *RemoteChildRecord) GetForegroundProcessGroupId() int32 {
+	if x != nil {
+		return x.ForegroundProcessGroupId
+	}
+	return 0
+}
+
 type CommandSpec struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Argv          []string               `protobuf:"bytes,1,rep,name=argv,proto3" json:"argv,omitempty"`
@@ -4199,13 +4319,16 @@ const file_pkg_rpc_octopos_proto_rawDesc = "" +
 	"\bpipe_map\x18\v \x03(\v2(.octopos.rpc.ExecuteRequest.PipeMapEntryR\apipeMap\x1a:\n" +
 	"\fPipeMapEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\x05R\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\x05R\x05value:\x028\x01\"z\n" +
+	"\x05value\x18\x02 \x01(\x05R\x05value:\x028\x01\"\x8f\x02\n" +
 	"\x0fExecuteResponse\x12\x15\n" +
 	"\x06job_id\x18\x01 \x01(\tR\x05jobId\x12\x1d\n" +
 	"\n" +
 	"global_pid\x18\x02 \x01(\x04R\tglobalPid\x12\x1b\n" +
 	"\texit_code\x18\x03 \x01(\x05R\bexitCode\x12\x14\n" +
-	"\x05error\x18\x04 \x01(\tR\x05error\"F\n" +
+	"\x05error\x18\x04 \x01(\tR\x05error\x12(\n" +
+	"\x10process_group_id\x18\x05 \x01(\x05R\x0eprocessGroupId\x12*\n" +
+	"\x11kernel_session_id\x18\x06 \x01(\x05R\x0fkernelSessionId\x12=\n" +
+	"\x1bforeground_process_group_id\x18\a \x01(\x05R\x18foregroundProcessGroupId\"F\n" +
 	"\rSignalRequest\x12\x1d\n" +
 	"\n" +
 	"global_pid\x18\x01 \x01(\x04R\tglobalPid\x12\x16\n" +
@@ -4405,7 +4528,7 @@ const file_pkg_rpc_octopos_proto_rawDesc = "" +
 	"\tvendor_id\x18\x01 \x01(\tR\bvendorId\x12\x1b\n" +
 	"\tdevice_id\x18\x02 \x01(\tR\bdeviceId\x12\x14\n" +
 	"\x05class\x18\x03 \x01(\tR\x05class\x12\x14\n" +
-	"\x05count\x18\x04 \x01(\x05R\x05count\"\x88\x04\n" +
+	"\x05count\x18\x04 \x01(\x05R\x05count\"\x9d\x05\n" +
 	"\vProcessInfo\x12\x1d\n" +
 	"\n" +
 	"global_pid\x18\x01 \x01(\x04R\tglobalPid\x12\x17\n" +
@@ -4430,7 +4553,10 @@ const file_pkg_rpc_octopos_proto_rawDesc = "" +
 	"\vvfio_groups\x18\x10 \x03(\tR\n" +
 	"vfioGroups\x12!\n" +
 	"\fprocess_kind\x18\x11 \x01(\tR\vprocessKind\x12?\n" +
-	"\fremote_child\x18\x12 \x01(\v2\x1c.octopos.rpc.RemoteChildInfoR\vremoteChild\"\xc9\x01\n" +
+	"\fremote_child\x18\x12 \x01(\v2\x1c.octopos.rpc.RemoteChildInfoR\vremoteChild\x12(\n" +
+	"\x10process_group_id\x18\x13 \x01(\x05R\x0eprocessGroupId\x12*\n" +
+	"\x11kernel_session_id\x18\x14 \x01(\x05R\x0fkernelSessionId\x12=\n" +
+	"\x1bforeground_process_group_id\x18\x15 \x01(\x05R\x18foregroundProcessGroupId\"\xc9\x01\n" +
 	"\x19ListRemoteChildrenRequest\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\x01 \x01(\tR\tsessionId\x12\"\n" +
@@ -4453,7 +4579,7 @@ const file_pkg_rpc_octopos_proto_rawDesc = "" +
 	"\x03cwd\x18\a \x01(\tR\x03cwd\x1a6\n" +
 	"\bEnvEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\x81\x04\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\x96\x05\n" +
 	"\aJobInfo\x12\x15\n" +
 	"\x06job_id\x18\x01 \x01(\tR\x05jobId\x12\x1d\n" +
 	"\n" +
@@ -4471,10 +4597,13 @@ const file_pkg_rpc_octopos_proto_rawDesc = "" +
 	"exit_codes\x18\t \x03(\x05R\texitCodes\x12!\n" +
 	"\fprimary_node\x18\n" +
 	" \x01(\tR\vprimaryNode\x12?\n" +
-	"\fremote_child\x18\v \x01(\v2\x1c.octopos.rpc.RemoteChildInfoR\vremoteChild\x1a:\n" +
+	"\fremote_child\x18\v \x01(\v2\x1c.octopos.rpc.RemoteChildInfoR\vremoteChild\x12(\n" +
+	"\x10process_group_id\x18\f \x01(\x05R\x0eprocessGroupId\x12*\n" +
+	"\x11kernel_session_id\x18\r \x01(\x05R\x0fkernelSessionId\x12=\n" +
+	"\x1bforeground_process_group_id\x18\x0e \x01(\x05R\x18foregroundProcessGroupId\x1a:\n" +
 	"\fPipeMapEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\x05R\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\x05R\x05value:\x028\x01\"\x86\x04\n" +
+	"\x05value\x18\x02 \x01(\x05R\x05value:\x028\x01\"\x9b\x05\n" +
 	"\x0fRemoteChildInfo\x12\"\n" +
 	"\rparent_job_id\x18\x01 \x01(\tR\vparentJobId\x12\x1d\n" +
 	"\n" +
@@ -4494,7 +4623,10 @@ const file_pkg_rpc_octopos_proto_rawDesc = "" +
 	"started_at\x18\f \x01(\x03R\tstartedAt\x12\x1f\n" +
 	"\vfinished_at\x18\r \x01(\x03R\n" +
 	"finishedAt\x120\n" +
-	"\x14fallback_reason_code\x18\x0e \x01(\tR\x12fallbackReasonCode\"\x9a\x05\n" +
+	"\x14fallback_reason_code\x18\x0e \x01(\tR\x12fallbackReasonCode\x12(\n" +
+	"\x10process_group_id\x18\x0f \x01(\x05R\x0eprocessGroupId\x12*\n" +
+	"\x11kernel_session_id\x18\x10 \x01(\x05R\x0fkernelSessionId\x12=\n" +
+	"\x1bforeground_process_group_id\x18\x11 \x01(\x05R\x18foregroundProcessGroupId\"\xaf\x06\n" +
 	"\x11RemoteChildRecord\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\x01 \x01(\tR\tsessionId\x12\"\n" +
@@ -4522,7 +4654,10 @@ const file_pkg_rpc_octopos_proto_rawDesc = "" +
 	"created_at\x18\x11 \x01(\x03R\tcreatedAt\x12\x1d\n" +
 	"\n" +
 	"updated_at\x18\x12 \x01(\x03R\tupdatedAt\x120\n" +
-	"\x14fallback_reason_code\x18\x13 \x01(\tR\x12fallbackReasonCode\"\x8d\x01\n" +
+	"\x14fallback_reason_code\x18\x13 \x01(\tR\x12fallbackReasonCode\x12(\n" +
+	"\x10process_group_id\x18\x14 \x01(\x05R\x0eprocessGroupId\x12*\n" +
+	"\x11kernel_session_id\x18\x15 \x01(\x05R\x0fkernelSessionId\x12=\n" +
+	"\x1bforeground_process_group_id\x18\x16 \x01(\x05R\x18foregroundProcessGroupId\"\x8d\x01\n" +
 	"\vCommandSpec\x12\x12\n" +
 	"\x04argv\x18\x01 \x03(\tR\x04argv\x12\x10\n" +
 	"\x03env\x18\x02 \x03(\tR\x03env\x127\n" +

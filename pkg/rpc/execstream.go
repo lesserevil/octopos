@@ -21,6 +21,7 @@ import (
 	"github.com/octopos/octopos/pkg/nvidia"
 	"github.com/octopos/octopos/pkg/remotechild"
 	"github.com/octopos/octopos/pkg/ssi"
+	"golang.org/x/sys/unix"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
@@ -131,7 +132,9 @@ func (s *ClusterServerImpl) executeRemoteBackground(ctx context.Context, req *Ex
 		return resp, nil
 	}
 	if resp.GlobalPid != 0 {
-		s.recordRemoteChildWorker(jobID, cluster.GlobalPID(resp.GlobalPid))
+		control := processControlInfoFromExecuteResponse(resp)
+		s.recordJobProcessControl(jobID, control)
+		s.recordRemoteChildWorker(jobID, cluster.GlobalPID(resp.GlobalPid), control)
 	}
 
 	go s.followRemoteJob(context.Background(), client, jobID, node.ID, reqs)
@@ -149,8 +152,9 @@ func (s *ClusterServerImpl) executeLocalBackground(req *ExecuteRequest, jobID cl
 		return &ExecuteResponse{JobId: string(jobID), ExitCode: -1, Error: fmt.Sprintf("start: %v", err)}, nil
 	}
 
-	globalPID := s.registerProcess(req, jobID, cmd.Process.Pid)
-	s.recordRemoteChildWorker(jobID, globalPID)
+	control := processControlInfoForPID(cmd.Process.Pid)
+	globalPID := s.registerProcess(req, jobID, cmd.Process.Pid, control)
+	s.recordRemoteChildWorker(jobID, globalPID, control)
 	s.markJobStarted(jobID)
 
 	go func() {
@@ -160,8 +164,11 @@ func (s *ClusterServerImpl) executeLocalBackground(req *ExecuteRequest, jobID cl
 	}()
 
 	return &ExecuteResponse{
-		JobId:     string(jobID),
-		GlobalPid: uint64(globalPID),
+		JobId:                    string(jobID),
+		GlobalPid:                uint64(globalPID),
+		ProcessGroupId:           int32(control.ProcessGroupID),
+		KernelSessionId:          int32(control.KernelSessionID),
+		ForegroundProcessGroupId: int32(control.ForegroundProcessGroupID),
 	}, nil
 }
 
@@ -236,8 +243,9 @@ func (s *ClusterServerImpl) executeLocalStream(stream execStreamServer, req *Exe
 		_ = file.Close()
 	}
 
-	globalPID := s.registerProcess(req, jobID, cmd.Process.Pid)
-	s.recordRemoteChildWorker(jobID, globalPID)
+	control := processControlInfoForPID(cmd.Process.Pid)
+	globalPID := s.registerProcess(req, jobID, cmd.Process.Pid, control)
+	s.recordRemoteChildWorker(jobID, globalPID, control)
 	s.markJobStarted(jobID)
 	defer s.tracker.Unregister(globalPID)
 
@@ -250,8 +258,11 @@ func (s *ClusterServerImpl) executeLocalStream(stream execStreamServer, req *Exe
 
 	if err := send(&ExecStreamResponse{Payload: &ExecStreamResponse_Exec{
 		Exec: &ExecuteResponse{
-			JobId:     string(jobID),
-			GlobalPid: uint64(globalPID),
+			JobId:                    string(jobID),
+			GlobalPid:                uint64(globalPID),
+			ProcessGroupId:           int32(control.ProcessGroupID),
+			KernelSessionId:          int32(control.KernelSessionID),
+			ForegroundProcessGroupId: int32(control.ForegroundProcessGroupID),
 		},
 	}}); err != nil {
 		cancel()
@@ -356,8 +367,10 @@ func (s *ClusterServerImpl) executeLocalPTYStream(stream execStreamServer, req *
 	}
 	_ = tty.Close()
 
-	globalPID := s.registerProcess(req, jobID, cmd.Process.Pid)
-	s.recordRemoteChildWorker(jobID, globalPID)
+	control := processControlInfoForPID(cmd.Process.Pid)
+	control.ForegroundProcessGroupID = foregroundProcessGroupID(ptmx)
+	globalPID := s.registerProcess(req, jobID, cmd.Process.Pid, control)
+	s.recordRemoteChildWorker(jobID, globalPID, control)
 	s.markJobStarted(jobID)
 	defer s.tracker.Unregister(globalPID)
 
@@ -370,8 +383,11 @@ func (s *ClusterServerImpl) executeLocalPTYStream(stream execStreamServer, req *
 
 	if err := send(&ExecStreamResponse{Payload: &ExecStreamResponse_Exec{
 		Exec: &ExecuteResponse{
-			JobId:     string(jobID),
-			GlobalPid: uint64(globalPID),
+			JobId:                    string(jobID),
+			GlobalPid:                uint64(globalPID),
+			ProcessGroupId:           int32(control.ProcessGroupID),
+			KernelSessionId:          int32(control.KernelSessionID),
+			ForegroundProcessGroupId: int32(control.ForegroundProcessGroupID),
 		},
 	}}); err != nil {
 		cancel()
@@ -491,7 +507,9 @@ func (s *ClusterServerImpl) proxyExecStream(stream execStreamServer, req *Execut
 		switch payload := resp.Payload.(type) {
 		case *ExecStreamResponse_Exec:
 			if payload.Exec != nil && payload.Exec.GlobalPid != 0 {
-				s.recordRemoteChildWorker(jobID, cluster.GlobalPID(payload.Exec.GlobalPid))
+				control := processControlInfoFromExecuteResponse(payload.Exec)
+				s.recordJobProcessControl(jobID, control)
+				s.recordRemoteChildWorker(jobID, cluster.GlobalPID(payload.Exec.GlobalPid), control)
 			}
 		case *ExecStreamResponse_ExitCode:
 			s.finishJob(jobID, node.ID, reqs, payload.ExitCode)
@@ -636,21 +654,99 @@ func (s *ClusterServerImpl) applyPipePlacementAffinity(req *ExecuteRequest, pipe
 	}
 }
 
-func (s *ClusterServerImpl) registerProcess(req *ExecuteRequest, jobID cluster.JobID, localPID int) cluster.GlobalPID {
+type processControlInfo struct {
+	ProcessGroupID           int
+	KernelSessionID          int
+	ForegroundProcessGroupID int
+}
+
+func processControlInfoFromExecuteResponse(resp *ExecuteResponse) processControlInfo {
+	if resp == nil {
+		return processControlInfo{}
+	}
+	return processControlInfo{
+		ProcessGroupID:           int(resp.ProcessGroupId),
+		KernelSessionID:          int(resp.KernelSessionId),
+		ForegroundProcessGroupID: int(resp.ForegroundProcessGroupId),
+	}
+}
+
+func processControlInfoForPID(pid int) processControlInfo {
+	var info processControlInfo
+	if pid <= 0 {
+		return info
+	}
+	if pgid, err := syscall.Getpgid(pid); err == nil {
+		info.ProcessGroupID = pgid
+	}
+	if sid, err := unix.Getsid(pid); err == nil {
+		info.KernelSessionID = sid
+	}
+	return info
+}
+
+func foregroundProcessGroupID(file *os.File) int {
+	if file == nil {
+		return 0
+	}
+	pgid, err := unix.IoctlGetInt(int(file.Fd()), unix.TIOCGPGRP)
+	if err != nil {
+		return 0
+	}
+	return pgid
+}
+
+func (s *ClusterServerImpl) registerProcess(req *ExecuteRequest, jobID cluster.JobID, localPID int, control processControlInfo) cluster.GlobalPID {
 	localSeq := atomic.AddUint64(&s.localPIDCounter, 1)
 	globalPID := cluster.GlobalPID(localSeq)
 	s.tracker.Register(&cluster.ProcessInfo{
-		GlobalPID: globalPID,
-		NodeID:    s.nodeID,
-		LocalPID:  localPID,
-		SessionID: cluster.SessionID(req.SessionId),
-		JobID:     jobID,
-		Comm:      req.Command[0],
-		Cmdline:   fmt.Sprintf("%v", req.Command),
-		CWD:       req.Cwd,
-		StartTime: time.Now(),
+		GlobalPID:                globalPID,
+		NodeID:                   s.nodeID,
+		LocalPID:                 localPID,
+		SessionID:                cluster.SessionID(req.SessionId),
+		JobID:                    jobID,
+		Comm:                     req.Command[0],
+		Cmdline:                  fmt.Sprintf("%v", req.Command),
+		CWD:                      req.Cwd,
+		StartTime:                time.Now(),
+		ProcessGroupID:           control.ProcessGroupID,
+		KernelSessionID:          control.KernelSessionID,
+		ForegroundProcessGroupID: control.ForegroundProcessGroupID,
 	})
+	s.recordJobProcessControl(jobID, control)
 	return globalPID
+}
+
+func (s *ClusterServerImpl) recordJobProcessControl(jobID cluster.JobID, control processControlInfo) {
+	if control.ProcessGroupID == 0 && control.KernelSessionID == 0 && control.ForegroundProcessGroupID == 0 {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	job, exists := s.cluster.jobs[jobID]
+	if !exists {
+		return
+	}
+	if control.ProcessGroupID > 0 {
+		job.ProcessGroupID = control.ProcessGroupID
+	}
+	if control.KernelSessionID > 0 {
+		job.KernelSessionID = control.KernelSessionID
+	}
+	if control.ForegroundProcessGroupID > 0 {
+		job.ForegroundProcessGroupID = control.ForegroundProcessGroupID
+	}
+	if job.RemoteChild != nil {
+		if control.ProcessGroupID > 0 {
+			job.RemoteChild.ProcessGroupID = control.ProcessGroupID
+		}
+		if control.KernelSessionID > 0 {
+			job.RemoteChild.KernelSessionID = control.KernelSessionID
+		}
+		if control.ForegroundProcessGroupID > 0 {
+			job.RemoteChild.ForegroundProcessGroupID = control.ForegroundProcessGroupID
+		}
+	}
 }
 
 func (s *ClusterServerImpl) markJobStarted(jobID cluster.JobID) {
@@ -670,7 +766,7 @@ func (s *ClusterServerImpl) markJobStarted(jobID cluster.JobID) {
 	}
 }
 
-func (s *ClusterServerImpl) recordRemoteChildWorker(jobID cluster.JobID, globalPID cluster.GlobalPID) {
+func (s *ClusterServerImpl) recordRemoteChildWorker(jobID cluster.JobID, globalPID cluster.GlobalPID, control processControlInfo) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if job, exists := s.cluster.jobs[jobID]; exists && job.RemoteChild != nil {
@@ -686,11 +782,24 @@ func (s *ClusterServerImpl) recordRemoteChildWorker(jobID cluster.JobID, globalP
 		if localPID > 0 {
 			job.RemoteChild.RemoteLocalPID = localPID
 		}
+		if control.ProcessGroupID > 0 {
+			job.ProcessGroupID = control.ProcessGroupID
+			job.RemoteChild.ProcessGroupID = control.ProcessGroupID
+		}
+		if control.KernelSessionID > 0 {
+			job.KernelSessionID = control.KernelSessionID
+			job.RemoteChild.KernelSessionID = control.KernelSessionID
+		}
+		if control.ForegroundProcessGroupID > 0 {
+			job.ForegroundProcessGroupID = control.ForegroundProcessGroupID
+			job.RemoteChild.ForegroundProcessGroupID = control.ForegroundProcessGroupID
+		}
 		job.RemoteChild.State = remotechild.StateRunning
 		if job.RemoteChild.StartedAt.IsZero() {
 			job.RemoteChild.StartedAt = now
 		}
 		s.remoteChildren.MarkRunningWithLocalPID(string(jobID), uint64(globalPID), localPID, now)
+		s.remoteChildren.MarkProcessControl(string(jobID), control.ProcessGroupID, control.KernelSessionID, control.ForegroundProcessGroupID, now)
 	}
 }
 
@@ -1179,22 +1288,25 @@ func remoteChildRecordFromInfo(req *ExecuteRequest, info *cluster.RemoteChildInf
 		return remotechild.ShadowRecord{}
 	}
 	return remotechild.ShadowRecord{
-		SessionID:          req.SessionId,
-		ParentJobID:        string(info.ParentJobID),
-		ParentPID:          info.ParentPID,
-		ShadowPID:          info.ShadowPID,
-		RemoteJobID:        string(info.RemoteJobID),
-		RemoteNodeID:       string(info.RemoteNodeID),
-		RemoteGlobalPID:    info.RemoteGlobalPID,
-		RemoteLocalPID:     info.RemoteLocalPID,
-		Command:            append([]string{}, info.Command...),
-		State:              remotechild.ShadowState(info.State),
-		StartedAt:          info.StartedAt,
-		FinishedAt:         info.FinishedAt,
-		PlacementReason:    info.PlacementReason,
-		FallbackReason:     info.FallbackReason,
-		FallbackReasonCode: info.FallbackReasonCode,
-		FailureReason:      info.FailureReason,
+		SessionID:                req.SessionId,
+		ParentJobID:              string(info.ParentJobID),
+		ParentPID:                info.ParentPID,
+		ShadowPID:                info.ShadowPID,
+		RemoteJobID:              string(info.RemoteJobID),
+		RemoteNodeID:             string(info.RemoteNodeID),
+		RemoteGlobalPID:          info.RemoteGlobalPID,
+		RemoteLocalPID:           info.RemoteLocalPID,
+		Command:                  append([]string{}, info.Command...),
+		State:                    remotechild.ShadowState(info.State),
+		StartedAt:                info.StartedAt,
+		FinishedAt:               info.FinishedAt,
+		PlacementReason:          info.PlacementReason,
+		FallbackReason:           info.FallbackReason,
+		FallbackReasonCode:       info.FallbackReasonCode,
+		FailureReason:            info.FailureReason,
+		ProcessGroupID:           info.ProcessGroupID,
+		KernelSessionID:          info.KernelSessionID,
+		ForegroundProcessGroupID: info.ForegroundProcessGroupID,
 	}
 }
 

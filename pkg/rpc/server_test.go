@@ -583,6 +583,7 @@ func TestExecStreamTTYAllocatesPTY(t *testing.T) {
 
 	var output strings.Builder
 	var exitCode int32
+	var execResp *ExecuteResponse
 	for {
 		resp, err := stream.Recv()
 		if err == io.EOF {
@@ -592,6 +593,8 @@ func TestExecStreamTTYAllocatesPTY(t *testing.T) {
 			t.Fatalf("recv: %v", err)
 		}
 		switch payload := resp.Payload.(type) {
+		case *ExecStreamResponse_Exec:
+			execResp = payload.Exec
 		case *ExecStreamResponse_StdoutData:
 			output.Write(payload.StdoutData)
 		case *ExecStreamResponse_StderrData:
@@ -608,6 +611,24 @@ func TestExecStreamTTYAllocatesPTY(t *testing.T) {
 	}
 	if exitCode != 0 {
 		t.Fatalf("exit code = %d, want 0", exitCode)
+	}
+	if execResp == nil {
+		t.Fatal("missing exec response")
+	}
+	if execResp.ProcessGroupId <= 0 || execResp.KernelSessionId <= 0 || execResp.ForegroundProcessGroupId <= 0 {
+		t.Fatalf("exec process-control metadata = pgid:%d sid:%d fg:%d", execResp.ProcessGroupId, execResp.KernelSessionId, execResp.ForegroundProcessGroupId)
+	}
+	jobResp, err := client.GetJobStatus(ctx, &GetJobStatusRequest{JobId: "job-tty"})
+	if err != nil {
+		t.Fatalf("GetJobStatus: %v", err)
+	}
+	if !jobResp.Found || jobResp.Job == nil {
+		t.Fatal("job status missing for PTY exec")
+	}
+	if jobResp.Job.ProcessGroupId != execResp.ProcessGroupId || jobResp.Job.KernelSessionId != execResp.KernelSessionId || jobResp.Job.ForegroundProcessGroupId != execResp.ForegroundProcessGroupId {
+		t.Fatalf("job process-control metadata = pgid:%d sid:%d fg:%d, exec = pgid:%d sid:%d fg:%d",
+			jobResp.Job.ProcessGroupId, jobResp.Job.KernelSessionId, jobResp.Job.ForegroundProcessGroupId,
+			execResp.ProcessGroupId, execResp.KernelSessionId, execResp.ForegroundProcessGroupId)
 	}
 }
 
@@ -1080,7 +1101,8 @@ func TestRemoteChildLifecycleStateTransitions(t *testing.T) {
 		t.Fatalf("record state = %q, want %q", record.State, remotechild.StateScheduled)
 	}
 
-	server.recordRemoteChildWorker(jobID, cluster.GlobalPID(42))
+	control := processControlInfo{ProcessGroupID: 4200, KernelSessionID: 4300, ForegroundProcessGroupID: 4200}
+	server.recordRemoteChildWorker(jobID, cluster.GlobalPID(42), control)
 	if got := job.RemoteChild.State; got != remotechild.StateRunning {
 		t.Fatalf("state after worker = %q, want %q", got, remotechild.StateRunning)
 	}
@@ -1090,9 +1112,15 @@ func TestRemoteChildLifecycleStateTransitions(t *testing.T) {
 	if job.RemoteChild.StartedAt.IsZero() {
 		t.Fatal("started_at not set after worker registration")
 	}
+	if job.ProcessGroupID != control.ProcessGroupID || job.KernelSessionID != control.KernelSessionID || job.ForegroundProcessGroupID != control.ForegroundProcessGroupID {
+		t.Fatalf("job control metadata = pgid:%d sid:%d fg:%d", job.ProcessGroupID, job.KernelSessionID, job.ForegroundProcessGroupID)
+	}
 	record, _ = server.remoteChildren.Get(string(jobID))
 	if record.State != remotechild.StateRunning || record.RemoteGlobalPID != 42 {
 		t.Fatalf("record after worker = %#v", record)
+	}
+	if record.ProcessGroupID != control.ProcessGroupID || record.KernelSessionID != control.KernelSessionID || record.ForegroundProcessGroupID != control.ForegroundProcessGroupID {
+		t.Fatalf("record control metadata = %#v", record)
 	}
 
 	server.finishJob(jobID, node.ID, reqs, 0)

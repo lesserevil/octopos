@@ -38,6 +38,9 @@ Implemented and live-tested on `shedwards-octo1`, `shedwards-octo2`, and
 - Foreground stdout/stderr/stdin forwarding and remote exit-code propagation.
 - Signal-caused foreground exits now return shell-compatible statuses
   (`128+signal`) while preserving the raw signal in recovered worker records.
+- Process group ID, kernel session ID, and PTY foreground process group ID are
+  recorded for exec processes, exposed through `job status`/`ps`, and retained
+  in remote-child lifecycle records.
 - TTY-capable explicit remote-child execution via the existing ExecStream PTY
   path.
 - Resource and placement flags on `octopos-remote-child`:

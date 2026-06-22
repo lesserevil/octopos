@@ -240,6 +240,15 @@ func mergeRecoveredRemoteChildRecord(record remotechild.ShadowRecord, job *JobIn
 	if len(record.Command) == 0 && len(job.Commands) > 0 {
 		record.Command = append([]string{}, job.Commands[0].Argv...)
 	}
+	if record.ProcessGroupID == 0 {
+		record.ProcessGroupID = int(job.ProcessGroupId)
+	}
+	if record.KernelSessionID == 0 {
+		record.KernelSessionID = int(job.KernelSessionId)
+	}
+	if record.ForegroundProcessGroupID == 0 {
+		record.ForegroundProcessGroupID = int(job.ForegroundProcessGroupId)
+	}
 	if job.RemoteChild != nil {
 		child := job.RemoteChild
 		if record.ParentJobID == "" {
@@ -256,6 +265,15 @@ func mergeRecoveredRemoteChildRecord(record remotechild.ShadowRecord, job *JobIn
 		}
 		if child.RemoteGlobalPid != 0 {
 			record.RemoteGlobalPID = child.RemoteGlobalPid
+		}
+		if record.ProcessGroupID == 0 {
+			record.ProcessGroupID = int(child.ProcessGroupId)
+		}
+		if record.KernelSessionID == 0 {
+			record.KernelSessionID = int(child.KernelSessionId)
+		}
+		if record.ForegroundProcessGroupID == 0 {
+			record.ForegroundProcessGroupID = int(child.ForegroundProcessGroupId)
 		}
 		if len(record.Command) == 0 {
 			record.Command = append([]string{}, child.Command...)
@@ -432,30 +450,36 @@ func processAlive(pid int) bool {
 
 func processInfoFromRecoveredRecord(nodeID cluster.NodeID, record remotechild.ShadowRecord) *cluster.ProcessInfo {
 	return &cluster.ProcessInfo{
-		GlobalPID:   cluster.GlobalPID(record.RemoteGlobalPID),
-		NodeID:      nodeID,
-		LocalPID:    record.RemoteLocalPID,
-		PPID:        record.ParentPID,
-		SessionID:   cluster.SessionID(record.SessionID),
-		JobID:       cluster.JobID(record.RemoteJobID),
-		Comm:        firstArg(record.Command),
-		Cmdline:     strings.Join(record.Command, " "),
-		StartTime:   record.StartedAt,
-		State:       string(remotechild.StateRunning),
-		ProcessKind: "remote-child",
-		RemoteChild: remoteChildInfoFromRecord(record),
+		GlobalPID:                cluster.GlobalPID(record.RemoteGlobalPID),
+		NodeID:                   nodeID,
+		LocalPID:                 record.RemoteLocalPID,
+		PPID:                     record.ParentPID,
+		SessionID:                cluster.SessionID(record.SessionID),
+		JobID:                    cluster.JobID(record.RemoteJobID),
+		Comm:                     firstArg(record.Command),
+		Cmdline:                  strings.Join(record.Command, " "),
+		StartTime:                record.StartedAt,
+		State:                    string(remotechild.StateRunning),
+		ProcessKind:              "remote-child",
+		RemoteChild:              remoteChildInfoFromRecord(record),
+		ProcessGroupID:           record.ProcessGroupID,
+		KernelSessionID:          record.KernelSessionID,
+		ForegroundProcessGroupID: record.ForegroundProcessGroupID,
 	}
 }
 
 func recoveredJobInfoFromRecord(record remotechild.ShadowRecord, status JobStatus, now time.Time) *JobInfo {
 	job := &JobInfo{
-		JobId:       record.RemoteJobID,
-		SessionId:   record.SessionID,
-		Status:      status,
-		CreatedAt:   unixTimeOrZero(nonZeroTime(record.CreatedAt, now)),
-		StartedAt:   unixTimeOrZero(nonZeroTime(record.StartedAt, now)),
-		PrimaryNode: record.RemoteNodeID,
-		RemoteChild: remoteChildInfoToProto(remoteChildInfoFromRecord(record)),
+		JobId:                    record.RemoteJobID,
+		SessionId:                record.SessionID,
+		Status:                   status,
+		CreatedAt:                unixTimeOrZero(nonZeroTime(record.CreatedAt, now)),
+		StartedAt:                unixTimeOrZero(nonZeroTime(record.StartedAt, now)),
+		PrimaryNode:              record.RemoteNodeID,
+		RemoteChild:              remoteChildInfoToProto(remoteChildInfoFromRecord(record)),
+		ProcessGroupId:           int32(record.ProcessGroupID),
+		KernelSessionId:          int32(record.KernelSessionID),
+		ForegroundProcessGroupId: int32(record.ForegroundProcessGroupID),
 	}
 	if len(record.Command) > 0 {
 		job.Commands = []*CommandSpec{{Argv: append([]string{}, record.Command...)}}

@@ -804,7 +804,7 @@ var psCmd = &cobra.Command{
 			return fmt.Errorf("ListProcesses failed: %w", err)
 		}
 
-		fmt.Printf("%-20s %-15s %-8s %-14s %-10s %-10s %-24s %s\n", "GLOBAL PID", "NODE", "LOCAL PID", "KIND", "SESSION", "JOB", "REMOTE", "COMMAND")
+		fmt.Printf("%-20s %-15s %-8s %-8s %-8s %-8s %-14s %-10s %-10s %-24s %s\n", "GLOBAL PID", "NODE", "LOCAL", "PGID", "SID", "FGPGID", "KIND", "SESSION", "JOB", "REMOTE", "COMMAND")
 		for _, p := range resp.Processes {
 			kind := p.ProcessKind
 			if kind == "" {
@@ -814,8 +814,8 @@ var psCmd = &cobra.Command{
 			if child := p.RemoteChild; child != nil {
 				remote = fmt.Sprintf("%d->%s/%d", child.ShadowPid, child.RemoteNodeId, child.RemoteGlobalPid)
 			}
-			fmt.Printf("%-20d %-15s %-8d %-14s %-10s %-10s %-24s %s\n",
-				p.GlobalPid, p.NodeId, p.LocalPid, kind, p.SessionId, p.JobId, remote, p.Cmdline)
+			fmt.Printf("%-20d %-15s %-8d %-8d %-8d %-8d %-14s %-10s %-10s %-24s %s\n",
+				p.GlobalPid, p.NodeId, p.LocalPid, p.ProcessGroupId, p.KernelSessionId, p.ForegroundProcessGroupId, kind, p.SessionId, p.JobId, remote, p.Cmdline)
 		}
 		return nil
 	},
