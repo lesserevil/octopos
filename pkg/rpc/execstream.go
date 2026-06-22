@@ -672,17 +672,13 @@ func (s *ClusterServerImpl) scheduleJob(req *ExecuteRequest) (*cluster.NodeInfo,
 			return nil, reqs, jobID, fmt.Errorf("remote child limit exceeded for node %s: %d active, limit %d", node.ID, activeOnNode, s.maxRemoteChildrenPerNode)
 		}
 	}
-	childToken, err := generateChildToken()
+	now := time.Now()
+	childToken, childTokenExpiresAt, err := s.issueChildToken(now)
 	if err != nil {
 		s.scheduler.Release(node.ID, reqs)
 		return nil, reqs, jobID, err
 	}
 	s.applyScheduledEnv(req, node.ID, childToken)
-	now := time.Now()
-	childTokenExpiresAt := time.Time{}
-	if s.remoteChildTokenTTL > 0 {
-		childTokenExpiresAt = now.Add(s.remoteChildTokenTTL)
-	}
 
 	s.cluster.jobs[jobID] = &cluster.JobInfo{
 		ID:                  jobID,
@@ -703,6 +699,29 @@ func (s *ClusterServerImpl) scheduleJob(req *ExecuteRequest) (*cluster.NodeInfo,
 	s.pipes.recordPlacement(pipeKeys, node.ID)
 
 	return node, reqs, jobID, nil
+}
+
+func (s *ClusterServerImpl) issueChildToken(now time.Time) (string, time.Time, error) {
+	if now.IsZero() {
+		now = time.Now()
+	}
+	token, err := generateChildToken()
+	if err != nil {
+		return "", time.Time{}, err
+	}
+	expiresAt := time.Time{}
+	if s.remoteChildTokenTTL > 0 {
+		expiresAt = now.Add(s.remoteChildTokenTTL)
+	}
+	return token, expiresAt, nil
+}
+
+func clearJobChildToken(job *cluster.JobInfo) {
+	if job == nil {
+		return
+	}
+	job.ChildToken = ""
+	job.ChildTokenExpiresAt = time.Time{}
 }
 
 func (s *ClusterServerImpl) applyPipePlacementAffinity(req *ExecuteRequest, pipeKeys map[int]string) {
@@ -1069,6 +1088,7 @@ func (s *ClusterServerImpl) finishJob(jobID cluster.JobID, nodeID cluster.NodeID
 		job.Status = cluster.JobStatusCompleted
 		job.ExitCodes = []int{int(exitCode)}
 		job.FinishedAt = now
+		clearJobChildToken(job)
 		if job.RemoteChild != nil {
 			job.RemoteChild.State = remotechild.StateCompleted
 			job.RemoteChild.FinishedAt = now
@@ -1093,6 +1113,7 @@ func (s *ClusterServerImpl) failJob(jobID cluster.JobID, nodeID cluster.NodeID, 
 		job.Status = cluster.JobStatusFailed
 		job.ExitCodes = []int{-1}
 		job.FinishedAt = now
+		clearJobChildToken(job)
 		if job.RemoteChild != nil {
 			job.RemoteChild.State = remotechild.StateFailed
 			job.RemoteChild.FailureReason = reason

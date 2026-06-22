@@ -1826,6 +1826,137 @@ func TestScheduleJobSetsChildTokenExpiry(t *testing.T) {
 	}
 }
 
+func TestScheduleJobRotatesChildTokenOnJobIDReuse(t *testing.T) {
+	root := t.TempDir()
+	server := NewClusterServerImplWithOptions(
+		cluster.NodeID("node-1"),
+		scheduler.NewScheduler(&scheduler.BinPackPolicy{}),
+		tracker.NewTracker(),
+		nil,
+		ServerOptions{
+			RemoteChildTokenTTL: time.Minute,
+			SSI: ssi.Config{
+				ClusterRoot:  root,
+				RootFS:       root,
+				RequireMount: false,
+				Required:     true,
+			},
+		},
+	)
+	if _, err := server.RegisterNode(context.Background(), &RegisterNodeRequest{
+		NodeId:  "node-1",
+		Address: "10.0.0.1",
+		Resources: &NodeResources{
+			CpuMillicores: 4000,
+			MemoryBytes:   4 * 1024 * 1024 * 1024,
+		},
+	}); err != nil {
+		t.Fatalf("RegisterNode: %v", err)
+	}
+	req1 := &ExecuteRequest{
+		SessionId: "session-1",
+		JobId:     "job-parent",
+		Command:   []string{"true"},
+		Resources: &Requirements{
+			CpuMillicores: 1000,
+			MemoryBytes:   1024 * 1024 * 1024,
+		},
+	}
+	if _, _, _, err := server.scheduleJob(req1); err != nil {
+		t.Fatalf("schedule first job: %v", err)
+	}
+	firstToken := server.cluster.jobs["job-parent"].ChildToken
+	if firstToken == "" {
+		t.Fatal("first token missing")
+	}
+
+	req2 := &ExecuteRequest{
+		SessionId: "session-1",
+		JobId:     "job-parent",
+		Command:   []string{"true"},
+		Resources: &Requirements{
+			CpuMillicores: 1000,
+			MemoryBytes:   1024 * 1024 * 1024,
+		},
+	}
+	if _, _, _, err := server.scheduleJob(req2); err != nil {
+		t.Fatalf("schedule restarted job: %v", err)
+	}
+	restarted := server.cluster.jobs["job-parent"]
+	if restarted.ChildToken == "" || restarted.ChildToken == firstToken {
+		t.Fatalf("token was not rotated: first=%q restarted=%q", firstToken, restarted.ChildToken)
+	}
+	if got := requestEnvValue(req2.Env, remotechild.EnvChildToken); got != restarted.ChildToken {
+		t.Fatalf("scheduled env token = %q, want current token %q", got, restarted.ChildToken)
+	}
+
+	oldTokenReq := &ExecuteRequest{
+		SessionId: "session-1",
+		Command:   []string{"true"},
+		RemoteChild: &RemoteChildLaunch{
+			ParentJobId: "job-parent",
+			ChildToken:  firstToken,
+		},
+	}
+	if err := server.authorizeRemoteChildRequest(context.Background(), oldTokenReq); err == nil {
+		t.Fatal("old child token accepted after parent job reschedule")
+	}
+
+	newTokenReq := &ExecuteRequest{
+		SessionId: "session-1",
+		Command:   []string{"true"},
+		RemoteChild: &RemoteChildLaunch{
+			ParentJobId: "job-parent",
+			ChildToken:  restarted.ChildToken,
+		},
+	}
+	if err := server.authorizeRemoteChildRequest(context.Background(), newTokenReq); err != nil {
+		t.Fatalf("current child token rejected: %v", err)
+	}
+}
+
+func TestFinishJobClearsChildToken(t *testing.T) {
+	server := NewClusterServerImplWithOptions(
+		cluster.NodeID("node-1"),
+		scheduler.NewScheduler(&scheduler.BinPackPolicy{}),
+		tracker.NewTracker(),
+		nil,
+		ServerOptions{RemoteChildTokenTTL: time.Minute},
+	)
+	if _, err := server.RegisterNode(context.Background(), &RegisterNodeRequest{
+		NodeId:  "node-1",
+		Address: "10.0.0.1",
+		Resources: &NodeResources{
+			CpuMillicores: 2000,
+			MemoryBytes:   2 * 1024 * 1024 * 1024,
+		},
+	}); err != nil {
+		t.Fatalf("RegisterNode: %v", err)
+	}
+	req := &ExecuteRequest{
+		SessionId: "session-1",
+		JobId:     "job-parent",
+		Command:   []string{"true"},
+		Resources: &Requirements{
+			CpuMillicores: 1000,
+			MemoryBytes:   1024 * 1024 * 1024,
+		},
+	}
+	node, reqs, jobID, err := server.scheduleJob(req)
+	if err != nil {
+		t.Fatalf("scheduleJob: %v", err)
+	}
+	if server.cluster.jobs[jobID].ChildToken == "" {
+		t.Fatal("token missing before finish")
+	}
+
+	server.finishJob(jobID, node.ID, reqs, 0)
+	job := server.cluster.jobs[jobID]
+	if job.ChildToken != "" || !job.ChildTokenExpiresAt.IsZero() {
+		t.Fatalf("terminal job kept child token: token=%q expires=%s", job.ChildToken, job.ChildTokenExpiresAt)
+	}
+}
+
 func TestListRemoteChildrenUsesLifecycleStore(t *testing.T) {
 	server := NewClusterServerImpl(
 		cluster.NodeID("node-1"),

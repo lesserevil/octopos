@@ -275,7 +275,12 @@ Current status:
 - Implemented: parent job/session/token/status/expiry checks, per-parent and
   per-session child limits, and audit records for accepted/rejected
   authorization decisions.
-- Remaining: rotate child tokens across any future parent exec restart flow.
+- Implemented: child tokens rotate whenever a parent job ID is scheduled again,
+  so stale tokens from a previous parent exec are rejected; terminal jobs clear
+  their child token and expiry.
+- Remaining: a daemon-restart live-process token refresh would require a
+  parent re-exec or explicit handoff mechanism, because octoposd cannot update
+  an already-running process environment in place.
 
 Tasks:
 
