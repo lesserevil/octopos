@@ -758,6 +758,7 @@ func TestStrictSSIEnvIsAuthoritativePerExecutingNode(t *testing.T) {
 	req := &ExecuteRequest{
 		Command: []string{"env"},
 		Env: []string{
+			"OCTOPOS_BROKER_ADDR=user-supplied:1",
 			"OCTOPOS_NODE_ID=ingress-node",
 			"OCTOPOS_SSI=0",
 			"USER_VALUE=preserved",
@@ -772,6 +773,9 @@ func TestStrictSSIEnvIsAuthoritativePerExecutingNode(t *testing.T) {
 	}
 	if got, want := envValue(req.Env, "OCTOPOS_SSI"), "1"; got != want {
 		t.Fatalf("OCTOPOS_SSI = %q, want %q; env=%v", got, want, req.Env)
+	}
+	if got, want := envValue(req.Env, remotechild.EnvBrokerAddr), "127.0.0.1:50051"; got != want {
+		t.Fatalf("%s = %q, want %q; env=%v", remotechild.EnvBrokerAddr, got, want, req.Env)
 	}
 	if got, want := envValue(req.Env, "USER_VALUE"), "preserved"; got != want {
 		t.Fatalf("USER_VALUE = %q, want %q; env=%v", got, want, req.Env)

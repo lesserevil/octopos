@@ -200,6 +200,9 @@ octopos-unixsock-proxy --addr 10.0.0.1:50051 --unregister --path /cluster/run/ap
 Broker v1 intentionally supports only pathname `AF_UNIX`/`SOCK_STREAM` byte
 streams under the configured SSI root. Abstract sockets, descriptor passing,
 and credential-sensitive socket semantics are not distributed.
+For remote children, the preload runtime blocks unsupported Unix socket
+operations after launch with `ENOTSUP`; eligible pathname stream `connect`
+calls are attached to the `octoposd` broker through `octopos-unixsock-proxy`.
 
 Run the bounded remote-child IPC validation matrix against a live cluster with:
 

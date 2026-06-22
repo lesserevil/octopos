@@ -98,6 +98,36 @@ func TestPreloadWrapsSystem(t *testing.T) {
 	}
 }
 
+func TestPreloadBlocksUnsupportedUnixSocketOperations(t *testing.T) {
+	so := buildTestPreload(t)
+	probe := buildUnixSocketPolicyProbe(t)
+	path := filepath.Join(t.TempDir(), "blocked.sock")
+
+	cmd := exec.Command(probe, path)
+	cmd.Env = append(os.Environ(),
+		"LD_PRELOAD="+so,
+		EnvRemoteChild+"=1",
+	)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("unix socket policy probe failed: %v\n%s", err, output)
+	}
+	got := string(output)
+	for _, want := range []string{
+		"unix_dgram blocked",
+		"socketpair blocked",
+		"bind blocked",
+		"listen blocked",
+		"scm_rights blocked",
+		"so_peercred blocked",
+		"so_passcred blocked",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("probe output missing %q:\n%s", want, got)
+		}
+	}
+}
+
 func buildTestPreload(t *testing.T) string {
 	t.Helper()
 	if goruntime.GOOS != "linux" {
@@ -148,6 +178,25 @@ func testCCompiler(t *testing.T) string {
 		t.Skipf("C compiler %q unavailable: %v", cc, err)
 	}
 	return path
+}
+
+func buildUnixSocketPolicyProbe(t *testing.T) string {
+	t.Helper()
+	if goruntime.GOOS != "linux" {
+		t.Skip("remote child preload is Linux-only")
+	}
+	cc := testCCompiler(t)
+	dir := t.TempDir()
+	src := filepath.Join(dir, "unix_socket_policy_probe.c")
+	bin := filepath.Join(dir, "unix_socket_policy_probe")
+	if err := os.WriteFile(src, []byte(unixSocketPolicyProbeSource), 0600); err != nil {
+		t.Fatalf("write unix socket policy probe: %v", err)
+	}
+	cmd := exec.Command(cc, "-O2", "-Wall", "-Wextra", "-o", bin, src)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("build unix socket policy probe: %v\n%s", err, output)
+	}
+	return bin
 }
 
 func buildSystemProbe(t *testing.T) string {
@@ -274,5 +323,92 @@ int main(void) {
         return 3;
     }
     return 0;
+}
+`
+
+const unixSocketPolicyProbeSource = `
+#define _GNU_SOURCE
+#include <errno.h>
+#include <stddef.h>
+#include <stdio.h>
+#include <string.h>
+#include <sys/socket.h>
+#include <sys/un.h>
+#include <unistd.h>
+
+static int expect_enotsup(const char *name, int rc) {
+    if (rc == -1 && errno == ENOTSUP) {
+        printf("%s blocked\n", name);
+        return 0;
+    }
+    fprintf(stderr, "%s: rc=%d errno=%d\n", name, rc, errno);
+    return 1;
+}
+
+int main(int argc, char **argv) {
+    if (argc != 2) {
+        return 2;
+    }
+    int failures = 0;
+
+    errno = 0;
+    int dgram = socket(AF_UNIX, SOCK_DGRAM, 0);
+    failures += expect_enotsup("unix_dgram", dgram);
+    if (dgram >= 0) {
+        close(dgram);
+    }
+
+    int sv[2] = {-1, -1};
+    errno = 0;
+    failures += expect_enotsup("socketpair", socketpair(AF_UNIX, SOCK_STREAM, 0, sv));
+    if (sv[0] >= 0) {
+        close(sv[0]);
+    }
+    if (sv[1] >= 0) {
+        close(sv[1]);
+    }
+
+    int stream = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (stream < 0) {
+        perror("stream socket");
+        return 1;
+    }
+
+    struct sockaddr_un addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sun_family = AF_UNIX;
+    snprintf(addr.sun_path, sizeof(addr.sun_path), "%s", argv[1]);
+    unlink(addr.sun_path);
+    errno = 0;
+    failures += expect_enotsup("bind", bind(stream, (struct sockaddr *)&addr, sizeof(addr)));
+
+    errno = 0;
+    failures += expect_enotsup("listen", listen(stream, 1));
+
+    char control[CMSG_SPACE(sizeof(int))];
+    memset(control, 0, sizeof(control));
+    struct msghdr msg;
+    memset(&msg, 0, sizeof(msg));
+    msg.msg_control = control;
+    msg.msg_controllen = sizeof(control);
+    struct cmsghdr *cmsg = CMSG_FIRSTHDR(&msg);
+    cmsg->cmsg_level = SOL_SOCKET;
+    cmsg->cmsg_type = SCM_RIGHTS;
+    cmsg->cmsg_len = CMSG_LEN(sizeof(int));
+    memcpy(CMSG_DATA(cmsg), &stream, sizeof(int));
+    errno = 0;
+    failures += expect_enotsup("scm_rights", (int)sendmsg(stream, &msg, 0));
+
+    struct ucred cred;
+    socklen_t cred_len = sizeof(cred);
+    errno = 0;
+    failures += expect_enotsup("so_peercred", getsockopt(stream, SOL_SOCKET, SO_PEERCRED, &cred, &cred_len));
+
+    int one = 1;
+    errno = 0;
+    failures += expect_enotsup("so_passcred", setsockopt(stream, SOL_SOCKET, SO_PASSCRED, &one, sizeof(one)));
+
+    close(stream);
+    return failures == 0 ? 0 : 1;
 }
 `

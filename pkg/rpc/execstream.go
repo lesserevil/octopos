@@ -1058,11 +1058,16 @@ func (s *ClusterServerImpl) applyScheduledEnv(req *ExecuteRequest, nodeID cluste
 		return
 	}
 	cfg := s.ssiConfig.WithDefaults()
+	brokerPort := s.grpcPort
+	if brokerPort <= 0 {
+		brokerPort = 50051
+	}
 	values := []string{
 		"OCTOPOS_SSI=1",
 		"OCTOPOS_CLUSTER_ROOT=/",
 		"OCTOPOS_CLUSTER_HOSTNAME=" + ssi.DefaultHostname,
 		"OCTOPOS_HOST_CLUSTER_ROOT=" + cfg.ClusterRoot,
+		remotechild.EnvBrokerAddr + "=" + fmt.Sprintf("127.0.0.1:%d", brokerPort),
 		"OCTOPOS_NODE_ID=" + string(nodeID),
 		"OCTOPOS_SESSION_ID=" + req.SessionId,
 		"OCTOPOS_JOB_ID=" + req.JobId,

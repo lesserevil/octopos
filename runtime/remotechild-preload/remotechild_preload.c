@@ -4,12 +4,15 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <spawn.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
+#include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/un.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -30,14 +33,21 @@
 #define MAP_SHARED_VALIDATE MAP_SHARED
 #endif
 
+#ifndef SOCK_TYPE_MASK
+#define SOCK_TYPE_MASK 0xf
+#endif
+
 extern char **environ;
 
 static const char *remote_child_path = "/usr/local/bin/octopos-remote-child";
 static const char *remote_child_path_env = "OCTOPOS_REMOTE_CHILD_PATH";
+static const char *unixsock_proxy_path = "/usr/local/bin/octopos-unixsock-proxy";
+static const char *unixsock_proxy_path_env = "OCTOPOS_UNIXSOCK_PROXY_PATH";
 static const char *active_env = "OCTOPOS_REMOTE_CHILD_PRELOAD_ACTIVE=1";
 static const char *ipc_compat_env = "OCTOPOS_REMOTE_IPC_COMPAT";
 static const char *ipc_compat_warned_env = "OCTOPOS_REMOTE_IPC_COMPAT_WARNED";
 static const char *ipc_compat_block_warned_env = "OCTOPOS_REMOTE_IPC_BLOCK_WARNED";
+static const char *unixsock_warned_env = "OCTOPOS_REMOTE_UNIXSOCK_WARNED";
 static const char *mode_env = "OCTOPOS_REMOTE_CHILDREN";
 
 static int has_prefix(const char *s, const char *prefix) {
@@ -88,6 +98,22 @@ static const char *remote_child_binary(void) {
         return override;
     }
     return remote_child_path;
+}
+
+static const char *unixsock_proxy_binary(void) {
+    const char *override = getenv(unixsock_proxy_path_env);
+    if (override != NULL && override[0] != '\0') {
+        return override;
+    }
+    return unixsock_proxy_path;
+}
+
+static const char *broker_addr(void) {
+    const char *addr = getenv("OCTOPOS_BROKER_ADDR");
+    if (addr != NULL && addr[0] != '\0') {
+        return addr;
+    }
+    return "127.0.0.1:50051";
 }
 
 static int shared_mapping(int flags) {
@@ -188,6 +214,209 @@ static void warn_once(const char *env_key, const char *message, const char *deta
     }
 }
 
+static int unsupported_unix_socket(const char *detail) {
+    warn_once(unixsock_warned_env,
+              "octopos-remote-child: unsupported Unix socket operation blocked in remote child",
+              detail);
+    errno = ENOTSUP;
+    return -1;
+}
+
+static int socket_type_value(int type) {
+    return type & SOCK_TYPE_MASK;
+}
+
+static int fd_socket_type(int fd) {
+    int value = 0;
+    socklen_t len = sizeof(value);
+    if (getsockopt(fd, SOL_SOCKET, SO_TYPE, &value, &len) != 0) {
+        return -1;
+    }
+    return socket_type_value(value);
+}
+
+static int fd_socket_domain(int fd) {
+    int value = 0;
+    socklen_t len = sizeof(value);
+    if (getsockopt(fd, SOL_SOCKET, SO_DOMAIN, &value, &len) != 0) {
+        return -1;
+    }
+    return value;
+}
+
+static int unix_sockaddr_path(const struct sockaddr *addr, socklen_t addrlen, char *path, size_t path_len, int *abstract) {
+    if (addr == NULL || addrlen < offsetof(struct sockaddr_un, sun_path) || path == NULL || path_len == 0) {
+        return -1;
+    }
+    const struct sockaddr_un *un = (const struct sockaddr_un *)addr;
+    if (un->sun_family != AF_UNIX) {
+        return -1;
+    }
+    size_t base = offsetof(struct sockaddr_un, sun_path);
+    size_t raw_len = addrlen > base ? (size_t)(addrlen - base) : 0;
+    if (raw_len == 0) {
+        return -1;
+    }
+    if (un->sun_path[0] == '\0') {
+        if (abstract != NULL) {
+            *abstract = 1;
+        }
+        return -1;
+    }
+    if (abstract != NULL) {
+        *abstract = 0;
+    }
+    size_t n = strnlen(un->sun_path, raw_len);
+    if (n == 0 || n >= path_len) {
+        return -1;
+    }
+    memcpy(path, un->sun_path, n);
+    path[n] = '\0';
+    return 0;
+}
+
+static int path_under_root(const char *path, const char *root) {
+    if (path == NULL || root == NULL || path[0] == '\0' || root[0] == '\0') {
+        return 0;
+    }
+    size_t root_len = strlen(root);
+    if (strncmp(path, root, root_len) != 0) {
+        return 0;
+    }
+    return path[root_len] == '\0' || path[root_len] == '/';
+}
+
+static int broker_path_for_unix_socket(const char *path, char *out, size_t out_len) {
+    if (path == NULL || path[0] != '/' || out == NULL || out_len == 0) {
+        return -1;
+    }
+    const char *host_root = getenv("OCTOPOS_HOST_CLUSTER_ROOT");
+    if (host_root == NULL || host_root[0] == '\0') {
+        host_root = "/cluster";
+    }
+    if (path_under_root(path, host_root)) {
+        if (snprintf(out, out_len, "%s", path) >= (int)out_len) {
+            return -1;
+        }
+        return 0;
+    }
+    if (snprintf(out, out_len, "%s%s", host_root, path) >= (int)out_len) {
+        return -1;
+    }
+    return 0;
+}
+
+static void write_errno_status(int fd, int value) {
+    ssize_t written = write(fd, &value, sizeof(value));
+    (void)written;
+}
+
+static int spawn_unixsock_proxy(int app_fd, const char *path) {
+    int (*real_socketpair)(int, int, int, int[2]) = dlsym(RTLD_NEXT, "socketpair");
+    if (real_socketpair == NULL) {
+        errno = ENOSYS;
+        return -1;
+    }
+
+    int pair[2] = {-1, -1};
+    if (real_socketpair(AF_UNIX, SOCK_STREAM, 0, pair) != 0) {
+        return -1;
+    }
+
+    int exec_pipe[2] = {-1, -1};
+    if (pipe(exec_pipe) != 0) {
+        int saved = errno;
+        close(pair[0]);
+        close(pair[1]);
+        errno = saved;
+        return -1;
+    }
+    (void)fcntl(exec_pipe[1], F_SETFD, FD_CLOEXEC);
+
+    pid_t pid = fork();
+    if (pid < 0) {
+        int saved = errno;
+        close(pair[0]);
+        close(pair[1]);
+        close(exec_pipe[0]);
+        close(exec_pipe[1]);
+        errno = saved;
+        return -1;
+    }
+    if (pid == 0) {
+        close(exec_pipe[0]);
+        pid_t grandchild = fork();
+        if (grandchild < 0) {
+            int saved = errno;
+            write_errno_status(exec_pipe[1], saved);
+            _exit(127);
+        }
+        if (grandchild > 0) {
+            _exit(0);
+        }
+
+        close(pair[0]);
+        if (dup2(pair[1], STDIN_FILENO) < 0 || dup2(pair[1], STDOUT_FILENO) < 0) {
+            int saved = errno;
+            write_errno_status(exec_pipe[1], saved);
+            _exit(127);
+        }
+        if (pair[1] != STDIN_FILENO && pair[1] != STDOUT_FILENO) {
+            close(pair[1]);
+        }
+        setenv("OCTOPOS_REMOTE_CHILD_PRELOAD_ACTIVE", "1", 1);
+        execlp(unixsock_proxy_binary(), unixsock_proxy_binary(),
+               "--addr", broker_addr(),
+               "--stdio",
+               "--path", path,
+               (char *)NULL);
+        int saved = errno;
+        write_errno_status(exec_pipe[1], saved);
+        _exit(127);
+    }
+
+    close(exec_pipe[1]);
+    int status = 0;
+    while (waitpid(pid, &status, 0) < 0) {
+        if (errno != EINTR) {
+            break;
+        }
+    }
+    int exec_errno = 0;
+    ssize_t exec_status = read(exec_pipe[0], &exec_errno, sizeof(exec_errno));
+    close(exec_pipe[0]);
+    if (exec_status > 0) {
+        close(pair[0]);
+        close(pair[1]);
+        errno = exec_errno != 0 ? exec_errno : ECHILD;
+        return -1;
+    }
+
+    close(pair[1]);
+    if (dup2(pair[0], app_fd) < 0) {
+        int saved = errno;
+        close(pair[0]);
+        errno = saved;
+        return -1;
+    }
+    close(pair[0]);
+    return 0;
+}
+
+static int contains_scm_rights(const struct msghdr *msg) {
+    if (msg == NULL || msg->msg_control == NULL || msg->msg_controllen == 0) {
+        return 0;
+    }
+    for (struct cmsghdr *cmsg = CMSG_FIRSTHDR((struct msghdr *)msg);
+         cmsg != NULL;
+         cmsg = CMSG_NXTHDR((struct msghdr *)msg, cmsg)) {
+        if (cmsg->cmsg_level == SOL_SOCKET && cmsg->cmsg_type == SCM_RIGHTS) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
 static int apply_mmap_policy(int prot, int *flags, int fd) {
     if (!remote_child_process() || !shared_mapping(*flags)) {
         return 0;
@@ -284,6 +513,15 @@ typedef void *(*mmap_fn)(void *, size_t, int, int, int, off_t);
 typedef void *(*mmap64_fn)(void *, size_t, int, int, int, off64_t);
 typedef int (*posix_spawn_fn)(pid_t *, const char *, const posix_spawn_file_actions_t *, const posix_spawnattr_t *, char *const [], char *const []);
 typedef int (*system_fn)(const char *);
+typedef int (*socket_fn)(int, int, int);
+typedef int (*socketpair_fn)(int, int, int, int[2]);
+typedef int (*connect_fn)(int, const struct sockaddr *, socklen_t);
+typedef int (*bind_fn)(int, const struct sockaddr *, socklen_t);
+typedef int (*listen_fn)(int, int);
+typedef ssize_t (*sendmsg_fn)(int, const struct msghdr *, int);
+typedef ssize_t (*recvmsg_fn)(int, struct msghdr *, int);
+typedef int (*getsockopt_fn)(int, int, int, void *, socklen_t *);
+typedef int (*setsockopt_fn)(int, int, int, const void *, socklen_t);
 
 int execve(const char *pathname, char *const argv[], char *const envp[]) {
     execve_fn real_execve = (execve_fn)dlsym(RTLD_NEXT, "execve");
@@ -466,4 +704,135 @@ void *mmap64(void *addr, size_t length, int prot, int flags, int fd, off64_t off
         return MAP_FAILED;
     }
     return real_mmap64(addr, length, prot, adjusted_flags, fd, offset);
+}
+
+int socket(int domain, int type, int protocol) {
+    socket_fn real_socket = (socket_fn)dlsym(RTLD_NEXT, "socket");
+    if (real_socket == NULL) {
+        errno = ENOSYS;
+        return -1;
+    }
+    if (remote_child_process() && domain == AF_UNIX && socket_type_value(type) != SOCK_STREAM) {
+        return unsupported_unix_socket("only AF_UNIX/SOCK_STREAM is brokerable");
+    }
+    return real_socket(domain, type, protocol);
+}
+
+int socketpair(int domain, int type, int protocol, int sv[2]) {
+    socketpair_fn real_socketpair = (socketpair_fn)dlsym(RTLD_NEXT, "socketpair");
+    if (real_socketpair == NULL) {
+        errno = ENOSYS;
+        return -1;
+    }
+    if (remote_child_process() && domain == AF_UNIX) {
+        return unsupported_unix_socket("socketpair(AF_UNIX) requires local kernel peer state");
+    }
+    return real_socketpair(domain, type, protocol, sv);
+}
+
+int connect(int sockfd, const struct sockaddr *addr, socklen_t addrlen) {
+    connect_fn real_connect = (connect_fn)dlsym(RTLD_NEXT, "connect");
+    if (real_connect == NULL) {
+        errno = ENOSYS;
+        return -1;
+    }
+    if (!remote_child_process() || addr == NULL || addr->sa_family != AF_UNIX) {
+        return real_connect(sockfd, addr, addrlen);
+    }
+    if (fd_socket_type(sockfd) != SOCK_STREAM) {
+        return unsupported_unix_socket("only AF_UNIX/SOCK_STREAM connect is brokerable");
+    }
+
+    char path[sizeof(((struct sockaddr_un *)0)->sun_path) + 1];
+    int abstract = 0;
+    if (unix_sockaddr_path(addr, addrlen, path, sizeof(path), &abstract) != 0) {
+        if (abstract) {
+            return unsupported_unix_socket("abstract Unix sockets are not distributed");
+        }
+        return unsupported_unix_socket("Unix socket connect requires an absolute filesystem path");
+    }
+    if (path[0] != '/') {
+        return unsupported_unix_socket("relative Unix socket paths are not distributed");
+    }
+
+    char broker_path[4096];
+    if (broker_path_for_unix_socket(path, broker_path, sizeof(broker_path)) != 0) {
+        return unsupported_unix_socket("Unix socket path is outside the SSI root");
+    }
+    if (spawn_unixsock_proxy(sockfd, broker_path) != 0) {
+        return -1;
+    }
+    return 0;
+}
+
+int bind(int sockfd, const struct sockaddr *addr, socklen_t addrlen) {
+    bind_fn real_bind = (bind_fn)dlsym(RTLD_NEXT, "bind");
+    if (real_bind == NULL) {
+        errno = ENOSYS;
+        return -1;
+    }
+    if (remote_child_process() && addr != NULL && addr->sa_family == AF_UNIX) {
+        return unsupported_unix_socket("server-side AF_UNIX bind/listen is not brokered in remote children");
+    }
+    return real_bind(sockfd, addr, addrlen);
+}
+
+int listen(int sockfd, int backlog) {
+    listen_fn real_listen = (listen_fn)dlsym(RTLD_NEXT, "listen");
+    if (real_listen == NULL) {
+        errno = ENOSYS;
+        return -1;
+    }
+    if (remote_child_process() && fd_socket_domain(sockfd) == AF_UNIX) {
+        return unsupported_unix_socket("server-side listen is not brokered in remote children");
+    }
+    return real_listen(sockfd, backlog);
+}
+
+ssize_t sendmsg(int sockfd, const struct msghdr *msg, int flags) {
+    sendmsg_fn real_sendmsg = (sendmsg_fn)dlsym(RTLD_NEXT, "sendmsg");
+    if (real_sendmsg == NULL) {
+        errno = ENOSYS;
+        return -1;
+    }
+    if (remote_child_process() && contains_scm_rights(msg)) {
+        return unsupported_unix_socket("SCM_RIGHTS file descriptor passing is not distributed");
+    }
+    return real_sendmsg(sockfd, msg, flags);
+}
+
+ssize_t recvmsg(int sockfd, struct msghdr *msg, int flags) {
+    recvmsg_fn real_recvmsg = (recvmsg_fn)dlsym(RTLD_NEXT, "recvmsg");
+    if (real_recvmsg == NULL) {
+        errno = ENOSYS;
+        return -1;
+    }
+    if (remote_child_process() && msg != NULL && msg->msg_control != NULL && msg->msg_controllen > 0) {
+        return unsupported_unix_socket("ancillary Unix socket data is not distributed");
+    }
+    return real_recvmsg(sockfd, msg, flags);
+}
+
+int getsockopt(int sockfd, int level, int optname, void *optval, socklen_t *optlen) {
+    getsockopt_fn real_getsockopt = (getsockopt_fn)dlsym(RTLD_NEXT, "getsockopt");
+    if (real_getsockopt == NULL) {
+        errno = ENOSYS;
+        return -1;
+    }
+    if (remote_child_process() && level == SOL_SOCKET && optname == SO_PEERCRED) {
+        return unsupported_unix_socket("SO_PEERCRED is not meaningful across the Unix socket broker");
+    }
+    return real_getsockopt(sockfd, level, optname, optval, optlen);
+}
+
+int setsockopt(int sockfd, int level, int optname, const void *optval, socklen_t optlen) {
+    setsockopt_fn real_setsockopt = (setsockopt_fn)dlsym(RTLD_NEXT, "setsockopt");
+    if (real_setsockopt == NULL) {
+        errno = ENOSYS;
+        return -1;
+    }
+    if (remote_child_process() && level == SOL_SOCKET && optname == SO_PASSCRED) {
+        return unsupported_unix_socket("SO_PASSCRED is not meaningful across the Unix socket broker");
+    }
+    return real_setsockopt(sockfd, level, optname, optval, optlen);
 }
