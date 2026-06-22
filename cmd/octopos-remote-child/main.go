@@ -71,13 +71,18 @@ func main() {
 	}
 	defer conn.Close()
 
-	req := buildRequestWithFDPlan(cfg, command, os.Environ(), os.Getpid(), os.Getppid(), fdPlan, pipeEnv...)
+	shadowPID := os.Getpid()
+	parentPID := os.Getppid()
+	req := buildRequestWithFDPlan(cfg, command, os.Environ(), shadowPID, parentPID, fdPlan, pipeEnv...)
 	client := octopospb.NewClusterClient(conn)
-	err = execclient.RunForeground(context.Background(), client, req, execclient.Options{
-		TTY:            cfg.TTY,
-		RawTerminal:    cfg.TTY,
-		TerminalFD:     os.Stdin.Fd(),
-		ForwardSignals: true,
+	runCtx, stopParentWatch := contextWithParentDeath(context.Background(), parentPID, 500*time.Millisecond)
+	defer stopParentWatch()
+	err = execclient.RunForeground(runCtx, client, req, execclient.Options{
+		TTY:                      cfg.TTY,
+		RawTerminal:              cfg.TTY,
+		TerminalFD:               os.Stdin.Fd(),
+		ForwardSignals:           true,
+		TerminateOnContextCancel: true,
 		OpenStream: func(ctx context.Context) (execclient.Stream, error) {
 			stream, err := client.RemoteChildLaunchStream(ctx)
 			if err != nil {
@@ -94,6 +99,52 @@ func main() {
 		fmt.Fprintf(os.Stderr, "octopos-remote-child: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+func contextWithParentDeath(ctx context.Context, parentPID int, interval time.Duration) (context.Context, context.CancelFunc) {
+	runCtx, cancel := context.WithCancel(ctx)
+	if parentPID <= 1 {
+		return runCtx, cancel
+	}
+	if interval <= 0 {
+		interval = time.Second
+	}
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-runCtx.Done():
+				return
+			case <-ticker.C:
+				if shadowParentAlive(parentPID, os.Getppid(), pidAlive(parentPID)) {
+					continue
+				}
+				cancel()
+				return
+			}
+		}
+	}()
+	return runCtx, cancel
+}
+
+func shadowParentAlive(parentPID int, currentPPID int, parentPIDAlive bool) bool {
+	if parentPID <= 1 {
+		return true
+	}
+	return currentPPID == parentPID && parentPIDAlive
+}
+
+func pidAlive(pid int) bool {
+	if pid <= 0 {
+		return false
+	}
+	if err := syscall.Kill(pid, 0); err == nil {
+		return true
+	} else if errors.Is(err, syscall.EPERM) {
+		return true
+	}
+	return false
 }
 
 type remoteChildLaunchStreamClient struct {

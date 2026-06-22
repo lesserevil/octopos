@@ -34,6 +34,10 @@ type Options struct {
 	ForwardSignals bool
 	SignalSet      []os.Signal
 	OpenStream     StreamOpener
+	// TerminateOnContextCancel sends SIGTERM to the remote process before
+	// closing the stream when ctx is canceled. It is intended for local shadow
+	// processes that must clean up their worker when their parent disappears.
+	TerminateOnContextCancel bool
 }
 
 type StreamOpener func(context.Context) (Stream, error)
@@ -109,7 +113,14 @@ func RunForeground(ctx context.Context, client rpc.ClusterClient, req *rpc.Execu
 			return client.ExecStream(ctx)
 		}
 	}
-	stream, err := openStream(ctx)
+	streamCtx := ctx
+	if opts.TerminateOnContextCancel {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		streamCtx = context.Background()
+	}
+	stream, err := openStream(streamCtx)
 	if err != nil {
 		return fmt.Errorf("open exec stream: %w", err)
 	}
@@ -125,6 +136,10 @@ func RunForeground(ctx context.Context, client rpc.ClusterClient, req *rpc.Execu
 		Payload: &rpc.ExecStreamRequest_Exec{Exec: req},
 	}); err != nil {
 		return fmt.Errorf("send exec request: %w", err)
+	}
+	if opts.TerminateOnContextCancel {
+		stopContextWatcher := terminateStreamOnContextDone(ctx, send, stream)
+		defer stopContextWatcher()
 	}
 
 	if tty {
@@ -185,6 +200,23 @@ func RunForeground(ctx context.Context, client rpc.ClusterClient, req *rpc.Execu
 func terminateStream(send func(*rpc.ExecStreamRequest) error, stream Stream) {
 	_ = sendSignal(send, syscall.SIGTERM)
 	_ = stream.CloseSend()
+}
+
+func terminateStreamOnContextDone(ctx context.Context, send func(*rpc.ExecStreamRequest) error, stream Stream) func() {
+	done := make(chan struct{})
+	var stopOnce sync.Once
+	go func() {
+		select {
+		case <-ctx.Done():
+			terminateStream(send, stream)
+		case <-done:
+		}
+	}()
+	return func() {
+		stopOnce.Do(func() {
+			close(done)
+		})
+	}
 }
 
 func copyStdin(stdin io.Reader, stream Stream, send func(*rpc.ExecStreamRequest) error, sendMu *sync.Mutex) {

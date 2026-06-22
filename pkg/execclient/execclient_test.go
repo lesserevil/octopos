@@ -1,10 +1,12 @@
 package execclient
 
 import (
+	"context"
 	"io"
 	"reflect"
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/octopos/octopos/pkg/rpc"
 )
@@ -67,9 +69,35 @@ func TestTerminateStreamSendsSIGTERMAndCloses(t *testing.T) {
 	}
 }
 
+func TestTerminateStreamOnContextDone(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	stream := &recordingStream{closedCh: make(chan struct{})}
+	var signals []syscall.Signal
+	send := func(req *rpc.ExecStreamRequest) error {
+		signals = append(signals, syscall.Signal(req.GetSignal().Signal))
+		return stream.Send(req)
+	}
+
+	stop := terminateStreamOnContextDone(ctx, send, stream)
+	defer stop()
+	cancel()
+
+	select {
+	case <-stream.closedCh:
+	case <-time.After(time.Second):
+		t.Fatal("stream was not closed after context cancellation")
+	}
+	if !reflect.DeepEqual(signals, []syscall.Signal{syscall.SIGTERM}) {
+		t.Fatalf("signals = %v, want [SIGTERM]", signals)
+	}
+}
+
 type recordingStream struct {
-	closed bool
-	sent   []*rpc.ExecStreamRequest
+	closed   bool
+	closedCh chan struct{}
+	sent     []*rpc.ExecStreamRequest
 }
 
 func (s *recordingStream) Send(req *rpc.ExecStreamRequest) error {
@@ -82,7 +110,12 @@ func (s *recordingStream) Recv() (*rpc.ExecStreamResponse, error) {
 }
 
 func (s *recordingStream) CloseSend() error {
-	s.closed = true
+	if !s.closed {
+		s.closed = true
+		if s.closedCh != nil {
+			close(s.closedCh)
+		}
+	}
 	return nil
 }
 

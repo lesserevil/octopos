@@ -341,9 +341,13 @@ Current status:
 - Implemented: remote-worker exit, stopped/continued job-control state, local
   restart recovery, and durable SSI worker exit status are reflected in the
   lifecycle store.
-- Remaining: an explicit shadow-death policy hook is still needed for detached
-  or abnormal local shadow exits that happen outside the existing stream/worker
-  follow path.
+- Implemented: the explicit shadow helper watches its original parent and
+  requests remote worker termination if it is reparented or the parent
+  disappears; the daemon still keeps workers alive across plain gRPC disconnects
+  so transient transport loss does not kill active work.
+- Remaining: SIGKILL or host failure of the shadow process cannot be handled
+  inside the shadow itself; stronger coverage would require a daemon-side shadow
+  PID lease monitor.
 
 Tasks:
 

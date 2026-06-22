@@ -125,6 +125,27 @@ func TestAutoTTYForPreloadRequiresGuardAndTerminal(t *testing.T) {
 	}
 }
 
+func TestShadowParentAlive(t *testing.T) {
+	if !shadowParentAlive(1, 1, false) {
+		t.Fatal("init parent should be treated as alive")
+	}
+	if !shadowParentAlive(100, 100, true) {
+		t.Fatal("matching live parent was not alive")
+	}
+	if shadowParentAlive(100, 1, true) {
+		t.Fatal("reparented shadow treated original parent as alive")
+	}
+	if shadowParentAlive(100, 100, false) {
+		t.Fatal("dead parent treated as alive")
+	}
+}
+
+func TestPIDAliveForCurrentProcess(t *testing.T) {
+	if !pidAlive(os.Getpid()) {
+		t.Fatal("current process should be alive")
+	}
+}
+
 func TestFDPlanOptionsAllowsFileLocksOnlyWhenExplicit(t *testing.T) {
 	env := []string{"OCTOPOS_SSI=1"}
 	opts := fdPlanOptions(env)
