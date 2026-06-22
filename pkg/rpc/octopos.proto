@@ -43,6 +43,13 @@ service Cluster {
   // Internal pipe graph transport for distributed child endpoints.
   rpc PipeStream(stream PipeFrame) returns (stream PipeFrame);
   rpc GetPipeStats(GetPipeStatsRequest) returns (GetPipeStatsResponse);
+
+  // Cluster-wide pathname Unix socket byte-stream broker. V1 only supports
+  // filesystem AF_UNIX/SOCK_STREAM sockets under the configured SSI root.
+  rpc RegisterUnixSocket(RegisterUnixSocketRequest) returns (RegisterUnixSocketResponse);
+  rpc UnregisterUnixSocket(UnregisterUnixSocketRequest) returns (UnregisterUnixSocketResponse);
+  rpc ListUnixSockets(ListUnixSocketsRequest) returns (ListUnixSocketsResponse);
+  rpc UnixSocketStream(stream UnixSocketFrame) returns (stream UnixSocketFrame);
 }
 
 // Node registration
@@ -253,6 +260,47 @@ message GetPipeStatsResponse {
   uint64 bytes_from_writers = 3;
   uint64 bytes_to_readers = 4;
   uint64 broken_pipes = 5;
+}
+
+message RegisterUnixSocketRequest {
+  string path = 1;
+  string node_id = 2;
+  string target_path = 3;
+}
+
+message RegisterUnixSocketResponse {
+  bool success = 1;
+  string error = 2;
+}
+
+message UnregisterUnixSocketRequest {
+  string path = 1;
+  string node_id = 2;
+}
+
+message UnregisterUnixSocketResponse {
+  bool success = 1;
+  string error = 2;
+}
+
+message ListUnixSocketsRequest {}
+
+message ListUnixSocketsResponse {
+  repeated UnixSocketInfo sockets = 1;
+}
+
+message UnixSocketInfo {
+  string path = 1;
+  string node_id = 2;
+  string target_path = 3;
+  int64 created_at = 4;
+}
+
+message UnixSocketFrame {
+  string path = 1;
+  bytes data = 2;
+  bool close = 3;
+  string error = 4;
 }
 
 // Data structures

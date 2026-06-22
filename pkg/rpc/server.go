@@ -41,6 +41,7 @@ type ClusterServerImpl struct {
 	remoteChildren              *remotechild.Store
 	vfioAllocationStorePath     string
 	pipes                       *pipeCoordinator
+	unixSockets                 *unixSocketCoordinator
 	localPIDCounter             uint64
 	mu                          sync.RWMutex
 }
@@ -130,6 +131,7 @@ func NewClusterServerImplWithOptions(nodeID cluster.NodeID, sched *scheduler.Sch
 		remoteChildren:              remoteChildren,
 		vfioAllocationStorePath:     opts.VFIOAllocationStorePath,
 		pipes:                       newPipeCoordinator(),
+		unixSockets:                 newUnixSocketCoordinator(),
 		localPIDCounter:             0,
 	}
 	if sched != nil {

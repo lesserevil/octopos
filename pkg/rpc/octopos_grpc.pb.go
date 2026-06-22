@@ -19,27 +19,31 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	Cluster_RegisterNode_FullMethodName       = "/octopos.rpc.Cluster/RegisterNode"
-	Cluster_Heartbeat_FullMethodName          = "/octopos.rpc.Cluster/Heartbeat"
-	Cluster_GetClusterState_FullMethodName    = "/octopos.rpc.Cluster/GetClusterState"
-	Cluster_Execute_FullMethodName            = "/octopos.rpc.Cluster/Execute"
-	Cluster_Signal_FullMethodName             = "/octopos.rpc.Cluster/Signal"
-	Cluster_Wait_FullMethodName               = "/octopos.rpc.Cluster/Wait"
-	Cluster_GetJobStatus_FullMethodName       = "/octopos.rpc.Cluster/GetJobStatus"
-	Cluster_ListProcesses_FullMethodName      = "/octopos.rpc.Cluster/ListProcesses"
-	Cluster_GetProcess_FullMethodName         = "/octopos.rpc.Cluster/GetProcess"
-	Cluster_ListRemoteChildren_FullMethodName = "/octopos.rpc.Cluster/ListRemoteChildren"
-	Cluster_AllocateVFIO_FullMethodName       = "/octopos.rpc.Cluster/AllocateVFIO"
-	Cluster_ReleaseVFIO_FullMethodName        = "/octopos.rpc.Cluster/ReleaseVFIO"
-	Cluster_GetVFIODevices_FullMethodName     = "/octopos.rpc.Cluster/GetVFIODevices"
-	Cluster_CreateSession_FullMethodName      = "/octopos.rpc.Cluster/CreateSession"
-	Cluster_DestroySession_FullMethodName     = "/octopos.rpc.Cluster/DestroySession"
-	Cluster_ListSessions_FullMethodName       = "/octopos.rpc.Cluster/ListSessions"
-	Cluster_ExecStream_FullMethodName         = "/octopos.rpc.Cluster/ExecStream"
-	Cluster_RemoteChildExecute_FullMethodName = "/octopos.rpc.Cluster/RemoteChildExecute"
-	Cluster_RemoteChildStream_FullMethodName  = "/octopos.rpc.Cluster/RemoteChildStream"
-	Cluster_PipeStream_FullMethodName         = "/octopos.rpc.Cluster/PipeStream"
-	Cluster_GetPipeStats_FullMethodName       = "/octopos.rpc.Cluster/GetPipeStats"
+	Cluster_RegisterNode_FullMethodName         = "/octopos.rpc.Cluster/RegisterNode"
+	Cluster_Heartbeat_FullMethodName            = "/octopos.rpc.Cluster/Heartbeat"
+	Cluster_GetClusterState_FullMethodName      = "/octopos.rpc.Cluster/GetClusterState"
+	Cluster_Execute_FullMethodName              = "/octopos.rpc.Cluster/Execute"
+	Cluster_Signal_FullMethodName               = "/octopos.rpc.Cluster/Signal"
+	Cluster_Wait_FullMethodName                 = "/octopos.rpc.Cluster/Wait"
+	Cluster_GetJobStatus_FullMethodName         = "/octopos.rpc.Cluster/GetJobStatus"
+	Cluster_ListProcesses_FullMethodName        = "/octopos.rpc.Cluster/ListProcesses"
+	Cluster_GetProcess_FullMethodName           = "/octopos.rpc.Cluster/GetProcess"
+	Cluster_ListRemoteChildren_FullMethodName   = "/octopos.rpc.Cluster/ListRemoteChildren"
+	Cluster_AllocateVFIO_FullMethodName         = "/octopos.rpc.Cluster/AllocateVFIO"
+	Cluster_ReleaseVFIO_FullMethodName          = "/octopos.rpc.Cluster/ReleaseVFIO"
+	Cluster_GetVFIODevices_FullMethodName       = "/octopos.rpc.Cluster/GetVFIODevices"
+	Cluster_CreateSession_FullMethodName        = "/octopos.rpc.Cluster/CreateSession"
+	Cluster_DestroySession_FullMethodName       = "/octopos.rpc.Cluster/DestroySession"
+	Cluster_ListSessions_FullMethodName         = "/octopos.rpc.Cluster/ListSessions"
+	Cluster_ExecStream_FullMethodName           = "/octopos.rpc.Cluster/ExecStream"
+	Cluster_RemoteChildExecute_FullMethodName   = "/octopos.rpc.Cluster/RemoteChildExecute"
+	Cluster_RemoteChildStream_FullMethodName    = "/octopos.rpc.Cluster/RemoteChildStream"
+	Cluster_PipeStream_FullMethodName           = "/octopos.rpc.Cluster/PipeStream"
+	Cluster_GetPipeStats_FullMethodName         = "/octopos.rpc.Cluster/GetPipeStats"
+	Cluster_RegisterUnixSocket_FullMethodName   = "/octopos.rpc.Cluster/RegisterUnixSocket"
+	Cluster_UnregisterUnixSocket_FullMethodName = "/octopos.rpc.Cluster/UnregisterUnixSocket"
+	Cluster_ListUnixSockets_FullMethodName      = "/octopos.rpc.Cluster/ListUnixSockets"
+	Cluster_UnixSocketStream_FullMethodName     = "/octopos.rpc.Cluster/UnixSocketStream"
 )
 
 // ClusterClient is the client API for Cluster service.
@@ -78,6 +82,12 @@ type ClusterClient interface {
 	// Internal pipe graph transport for distributed child endpoints.
 	PipeStream(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[PipeFrame, PipeFrame], error)
 	GetPipeStats(ctx context.Context, in *GetPipeStatsRequest, opts ...grpc.CallOption) (*GetPipeStatsResponse, error)
+	// Cluster-wide pathname Unix socket byte-stream broker. V1 only supports
+	// filesystem AF_UNIX/SOCK_STREAM sockets under the configured SSI root.
+	RegisterUnixSocket(ctx context.Context, in *RegisterUnixSocketRequest, opts ...grpc.CallOption) (*RegisterUnixSocketResponse, error)
+	UnregisterUnixSocket(ctx context.Context, in *UnregisterUnixSocketRequest, opts ...grpc.CallOption) (*UnregisterUnixSocketResponse, error)
+	ListUnixSockets(ctx context.Context, in *ListUnixSocketsRequest, opts ...grpc.CallOption) (*ListUnixSocketsResponse, error)
+	UnixSocketStream(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[UnixSocketFrame, UnixSocketFrame], error)
 }
 
 type clusterClient struct {
@@ -307,6 +317,49 @@ func (c *clusterClient) GetPipeStats(ctx context.Context, in *GetPipeStatsReques
 	return out, nil
 }
 
+func (c *clusterClient) RegisterUnixSocket(ctx context.Context, in *RegisterUnixSocketRequest, opts ...grpc.CallOption) (*RegisterUnixSocketResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(RegisterUnixSocketResponse)
+	err := c.cc.Invoke(ctx, Cluster_RegisterUnixSocket_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *clusterClient) UnregisterUnixSocket(ctx context.Context, in *UnregisterUnixSocketRequest, opts ...grpc.CallOption) (*UnregisterUnixSocketResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(UnregisterUnixSocketResponse)
+	err := c.cc.Invoke(ctx, Cluster_UnregisterUnixSocket_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *clusterClient) ListUnixSockets(ctx context.Context, in *ListUnixSocketsRequest, opts ...grpc.CallOption) (*ListUnixSocketsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListUnixSocketsResponse)
+	err := c.cc.Invoke(ctx, Cluster_ListUnixSockets_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *clusterClient) UnixSocketStream(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[UnixSocketFrame, UnixSocketFrame], error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	stream, err := c.cc.NewStream(ctx, &Cluster_ServiceDesc.Streams[3], Cluster_UnixSocketStream_FullMethodName, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	x := &grpc.GenericClientStream[UnixSocketFrame, UnixSocketFrame]{ClientStream: stream}
+	return x, nil
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type Cluster_UnixSocketStreamClient = grpc.BidiStreamingClient[UnixSocketFrame, UnixSocketFrame]
+
 // ClusterServer is the server API for Cluster service.
 // All implementations must embed UnimplementedClusterServer
 // for forward compatibility.
@@ -343,6 +396,12 @@ type ClusterServer interface {
 	// Internal pipe graph transport for distributed child endpoints.
 	PipeStream(grpc.BidiStreamingServer[PipeFrame, PipeFrame]) error
 	GetPipeStats(context.Context, *GetPipeStatsRequest) (*GetPipeStatsResponse, error)
+	// Cluster-wide pathname Unix socket byte-stream broker. V1 only supports
+	// filesystem AF_UNIX/SOCK_STREAM sockets under the configured SSI root.
+	RegisterUnixSocket(context.Context, *RegisterUnixSocketRequest) (*RegisterUnixSocketResponse, error)
+	UnregisterUnixSocket(context.Context, *UnregisterUnixSocketRequest) (*UnregisterUnixSocketResponse, error)
+	ListUnixSockets(context.Context, *ListUnixSocketsRequest) (*ListUnixSocketsResponse, error)
+	UnixSocketStream(grpc.BidiStreamingServer[UnixSocketFrame, UnixSocketFrame]) error
 	mustEmbedUnimplementedClusterServer()
 }
 
@@ -415,6 +474,18 @@ func (UnimplementedClusterServer) PipeStream(grpc.BidiStreamingServer[PipeFrame,
 }
 func (UnimplementedClusterServer) GetPipeStats(context.Context, *GetPipeStatsRequest) (*GetPipeStatsResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetPipeStats not implemented")
+}
+func (UnimplementedClusterServer) RegisterUnixSocket(context.Context, *RegisterUnixSocketRequest) (*RegisterUnixSocketResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method RegisterUnixSocket not implemented")
+}
+func (UnimplementedClusterServer) UnregisterUnixSocket(context.Context, *UnregisterUnixSocketRequest) (*UnregisterUnixSocketResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method UnregisterUnixSocket not implemented")
+}
+func (UnimplementedClusterServer) ListUnixSockets(context.Context, *ListUnixSocketsRequest) (*ListUnixSocketsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListUnixSockets not implemented")
+}
+func (UnimplementedClusterServer) UnixSocketStream(grpc.BidiStreamingServer[UnixSocketFrame, UnixSocketFrame]) error {
+	return status.Error(codes.Unimplemented, "method UnixSocketStream not implemented")
 }
 func (UnimplementedClusterServer) mustEmbedUnimplementedClusterServer() {}
 func (UnimplementedClusterServer) testEmbeddedByValue()                 {}
@@ -782,6 +853,67 @@ func _Cluster_GetPipeStats_Handler(srv interface{}, ctx context.Context, dec fun
 	return interceptor(ctx, in, info, handler)
 }
 
+func _Cluster_RegisterUnixSocket_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RegisterUnixSocketRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ClusterServer).RegisterUnixSocket(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Cluster_RegisterUnixSocket_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ClusterServer).RegisterUnixSocket(ctx, req.(*RegisterUnixSocketRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Cluster_UnregisterUnixSocket_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(UnregisterUnixSocketRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ClusterServer).UnregisterUnixSocket(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Cluster_UnregisterUnixSocket_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ClusterServer).UnregisterUnixSocket(ctx, req.(*UnregisterUnixSocketRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Cluster_ListUnixSockets_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListUnixSocketsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ClusterServer).ListUnixSockets(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Cluster_ListUnixSockets_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ClusterServer).ListUnixSockets(ctx, req.(*ListUnixSocketsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Cluster_UnixSocketStream_Handler(srv interface{}, stream grpc.ServerStream) error {
+	return srv.(ClusterServer).UnixSocketStream(&grpc.GenericServerStream[UnixSocketFrame, UnixSocketFrame]{ServerStream: stream})
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type Cluster_UnixSocketStreamServer = grpc.BidiStreamingServer[UnixSocketFrame, UnixSocketFrame]
+
 // Cluster_ServiceDesc is the grpc.ServiceDesc for Cluster service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -861,6 +993,18 @@ var Cluster_ServiceDesc = grpc.ServiceDesc{
 			MethodName: "GetPipeStats",
 			Handler:    _Cluster_GetPipeStats_Handler,
 		},
+		{
+			MethodName: "RegisterUnixSocket",
+			Handler:    _Cluster_RegisterUnixSocket_Handler,
+		},
+		{
+			MethodName: "UnregisterUnixSocket",
+			Handler:    _Cluster_UnregisterUnixSocket_Handler,
+		},
+		{
+			MethodName: "ListUnixSockets",
+			Handler:    _Cluster_ListUnixSockets_Handler,
+		},
 	},
 	Streams: []grpc.StreamDesc{
 		{
@@ -878,6 +1022,12 @@ var Cluster_ServiceDesc = grpc.ServiceDesc{
 		{
 			StreamName:    "PipeStream",
 			Handler:       _Cluster_PipeStream_Handler,
+			ServerStreams: true,
+			ClientStreams: true,
+		},
+		{
+			StreamName:    "UnixSocketStream",
+			Handler:       _Cluster_UnixSocketStream_Handler,
 			ServerStreams: true,
 			ClientStreams: true,
 		},

@@ -186,6 +186,21 @@ octopos-unixsock-proxy --listen /tmp/proxy.sock --target /cluster/run/app.sock
 octopos-unixsock-proxy --stdio --target /cluster/run/app.sock
 ```
 
+The `octoposd` broker can register an SSI-root pathname socket on the node that
+owns the real local socket, list the cluster registry, and bridge stdio through
+the owning daemon:
+
+```bash
+octopos-unixsock-proxy --addr 10.0.0.1:50051 --register --path /cluster/run/app.sock
+octopos-unixsock-proxy --addr 10.0.0.1:50051 --list
+octopos-unixsock-proxy --addr 10.0.0.1:50051 --stdio --path /cluster/run/app.sock
+octopos-unixsock-proxy --addr 10.0.0.1:50051 --unregister --path /cluster/run/app.sock
+```
+
+Broker v1 intentionally supports only pathname `AF_UNIX`/`SOCK_STREAM` byte
+streams under the configured SSI root. Abstract sockets, descriptor passing,
+and credential-sensitive socket semantics are not distributed.
+
 Run the bounded remote-child IPC validation matrix against a live cluster with:
 
 ```bash
