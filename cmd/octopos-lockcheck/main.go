@@ -12,6 +12,8 @@ import (
 	"github.com/octopos/octopos/pkg/lockcheck"
 )
 
+var osExecutable = os.Executable
+
 func main() {
 	if err := run(os.Args[1:]); err != nil {
 		if errors.Is(err, lockcheck.ErrLocked) {
@@ -100,7 +102,7 @@ func selfTest(basePath string) error {
 }
 
 func selfTestKind(path string, kind lockcheck.Kind, holderMode lockcheck.Mode, contenderMode lockcheck.Mode, wantLocked bool) error {
-	exe, err := os.Executable()
+	exe, err := executablePath()
 	if err != nil {
 		return err
 	}
@@ -137,6 +139,17 @@ func selfTestKind(path string, kind lockcheck.Kind, holderMode lockcheck.Mode, c
 		return fmt.Errorf("%s %s contender should share %s holder: %w", kind, contenderMode, holderMode, err)
 	}
 	return nil
+}
+
+func executablePath() (string, error) {
+	exe, err := osExecutable()
+	if err == nil && exe != "" {
+		return exe, nil
+	}
+	if os.Args[0] != "" {
+		return os.Args[0], nil
+	}
+	return "", err
 }
 
 func waitReady(path string, timeout time.Duration) error {

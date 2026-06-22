@@ -218,7 +218,11 @@ func (d *procDir) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (
 	switch name {
 	case "status", "comm", "cmdline", "cwd", "exe", "mounts", "mountinfo", "mountstats", "octopos":
 		child := &procFile{name: name, info: d.info}
-		return d.NewInode(ctx, child, fs.StableAttr{Mode: syscall.S_IFREG}), 0
+		mode := uint32(syscall.S_IFREG)
+		if name == "cwd" || name == "exe" {
+			mode = syscall.S_IFLNK
+		}
+		return d.NewInode(ctx, child, fs.StableAttr{Mode: mode}), 0
 	case "fd", "fdinfo", "ns":
 		child := &procDir{info: d.info}
 		return d.NewInode(ctx, child, fs.StableAttr{Mode: syscall.S_IFDIR}), 0
@@ -244,6 +248,11 @@ func (d *procDir) Readdir(ctx context.Context) (fs.DirStream, syscall.Errno) {
 }
 
 func (f *procFile) Getattr(ctx context.Context, fh fs.FileHandle, out *fuse.AttrOut) syscall.Errno {
+	if f.name == "cwd" || f.name == "exe" {
+		out.Mode = syscall.S_IFLNK | 0777
+		out.Size = uint64(len(f.linkTarget()))
+		return 0
+	}
 	out.Mode = syscall.S_IFREG | 0444
 	out.Size = uint64(len(f.content()))
 	return 0
@@ -263,6 +272,38 @@ func (f *procFile) Read(ctx context.Context, fh fs.FileHandle, dest []byte, off 
 		return fuse.ReadResultData(nil), 0
 	}
 	return fuse.ReadResultData(data[off:end]), 0
+}
+
+func (f *procFile) Readlink(ctx context.Context) ([]byte, syscall.Errno) {
+	switch f.name {
+	case "cwd", "exe":
+		return []byte(f.linkTarget()), 0
+	default:
+		return nil, syscall.EINVAL
+	}
+}
+
+func (f *procFile) linkTarget() string {
+	switch f.name {
+	case "cwd":
+		if f.info.cwd != "" {
+			return f.info.cwd
+		}
+		return "/"
+	case "exe":
+		if f.info.cmdline != "" {
+			fields := strings.Fields(f.info.cmdline)
+			if len(fields) > 0 {
+				return fields[0]
+			}
+		}
+		if f.info.comm != "" {
+			return f.info.comm
+		}
+		return "/proc/self/exe"
+	default:
+		return ""
+	}
 }
 
 func (f *procFile) content() []byte {

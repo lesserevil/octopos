@@ -105,6 +105,33 @@ func TestProcFileReadAndAttributes(t *testing.T) {
 	}
 }
 
+func TestProcFileSymlinkAttributesAndReadlink(t *testing.T) {
+	cwd := &procFile{name: "cwd", info: procInfo{cwd: "/work"}}
+	var attrs fuse.AttrOut
+	if errno := cwd.Getattr(context.Background(), nil, &attrs); errno != 0 {
+		t.Fatalf("cwd Getattr errno = %v", errno)
+	}
+	if attrs.Mode != syscall.S_IFLNK|0777 {
+		t.Fatalf("cwd mode = %#o, want symlink", attrs.Mode)
+	}
+	target, errno := cwd.Readlink(context.Background())
+	if errno != 0 {
+		t.Fatalf("cwd Readlink errno = %v", errno)
+	}
+	if string(target) != "/work" {
+		t.Fatalf("cwd target = %q", target)
+	}
+
+	exe := &procFile{name: "exe", info: procInfo{cmdline: "/usr/bin/python app.py"}}
+	target, errno = exe.Readlink(context.Background())
+	if errno != 0 {
+		t.Fatalf("exe Readlink errno = %v", errno)
+	}
+	if string(target) != "/usr/bin/python" {
+		t.Fatalf("exe target = %q", target)
+	}
+}
+
 func TestProcessToProcInfoUsesShadowPIDForRemoteChild(t *testing.T) {
 	info := processToProcInfo(&octopospb.ProcessInfo{
 		GlobalPid:   9001,
