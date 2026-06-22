@@ -205,6 +205,9 @@ operations after launch with `ENOTSUP`; eligible pathname stream `connect`
 calls are attached to the `octoposd` broker through `octopos-unixsock-proxy`.
 Named FIFO endpoints are only distributed when inherited on stdin/stdout/stderr;
 FIFO creation or open calls after remote-child launch return `ENOTSUP`.
+Other local-kernel IPC objects such as eventfd, signalfd, timerfd, memfd,
+POSIX/SysV shared memory, SysV semaphores/message queues, inotify/fanotify,
+netlink sockets, and ptrace are also blocked after launch in remote children.
 
 Run the bounded remote-child IPC validation matrix against a live cluster with:
 

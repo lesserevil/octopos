@@ -160,6 +160,39 @@ func TestPreloadBlocksUnsupportedFIFOOperations(t *testing.T) {
 	}
 }
 
+func TestPreloadBlocksUnsupportedKernelIPCOperations(t *testing.T) {
+	so := buildTestPreload(t)
+	probe := buildKernelIPCPolicyProbe(t)
+
+	cmd := exec.Command(probe)
+	cmd.Env = append(os.Environ(),
+		"LD_PRELOAD="+so,
+		EnvRemoteChild+"=1",
+	)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("kernel IPC policy probe failed: %v\n%s", err, output)
+	}
+	got := string(output)
+	for _, want := range []string{
+		"eventfd blocked",
+		"timerfd blocked",
+		"memfd blocked",
+		"posix_shm blocked",
+		"sysv_shm blocked",
+		"sysv_sem blocked",
+		"sysv_msg blocked",
+		"inotify blocked",
+		"fanotify blocked",
+		"netlink blocked",
+		"ptrace blocked",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("probe output missing %q:\n%s", want, got)
+		}
+	}
+}
+
 func buildTestPreload(t *testing.T) string {
 	t.Helper()
 	if goruntime.GOOS != "linux" {
@@ -246,6 +279,25 @@ func buildFIFOPolicyProbe(t *testing.T) string {
 	cmd := exec.Command(cc, "-O2", "-Wall", "-Wextra", "-o", bin, src)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("build fifo policy probe: %v\n%s", err, output)
+	}
+	return bin
+}
+
+func buildKernelIPCPolicyProbe(t *testing.T) string {
+	t.Helper()
+	if goruntime.GOOS != "linux" {
+		t.Skip("remote child preload is Linux-only")
+	}
+	cc := testCCompiler(t)
+	dir := t.TempDir()
+	src := filepath.Join(dir, "kernel_ipc_policy_probe.c")
+	bin := filepath.Join(dir, "kernel_ipc_policy_probe")
+	if err := os.WriteFile(src, []byte(kernelIPCPolicyProbeSource), 0600); err != nil {
+		t.Fatalf("write kernel IPC policy probe: %v", err)
+	}
+	cmd := exec.Command(cc, "-O2", "-Wall", "-Wextra", "-o", bin, src)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("build kernel IPC policy probe: %v\n%s", err, output)
 	}
 	return bin
 }
@@ -503,6 +555,77 @@ int main(int argc, char **argv) {
 
     errno = 0;
     failures += expect_enotsup("mkfifo", mkfifo(argv[2], 0600));
+
+    return failures == 0 ? 0 : 1;
+}
+`
+
+const kernelIPCPolicyProbeSource = `
+#define _GNU_SOURCE
+#include <errno.h>
+#include <fcntl.h>
+#include <linux/netlink.h>
+#include <signal.h>
+#include <stdio.h>
+#include <string.h>
+#include <sys/eventfd.h>
+#include <sys/fanotify.h>
+#include <sys/inotify.h>
+#include <sys/ipc.h>
+#include <sys/mman.h>
+#include <sys/msg.h>
+#include <sys/ptrace.h>
+#include <sys/sem.h>
+#include <sys/shm.h>
+#include <sys/signalfd.h>
+#include <sys/socket.h>
+#include <sys/timerfd.h>
+#include <unistd.h>
+
+static int expect_enotsup(const char *name, long rc) {
+    if (rc == -1 && errno == ENOTSUP) {
+        printf("%s blocked\n", name);
+        return 0;
+    }
+    fprintf(stderr, "%s: rc=%ld errno=%d\n", name, rc, errno);
+    return 1;
+}
+
+int main(void) {
+    int failures = 0;
+
+    errno = 0;
+    failures += expect_enotsup("eventfd", eventfd(0, 0));
+
+    errno = 0;
+    failures += expect_enotsup("timerfd", timerfd_create(CLOCK_MONOTONIC, 0));
+
+    errno = 0;
+    failures += expect_enotsup("memfd", memfd_create("octopos-probe", 0));
+
+    errno = 0;
+    failures += expect_enotsup("posix_shm", shm_open("/octopos-probe", O_CREAT | O_RDWR, 0600));
+
+    errno = 0;
+    failures += expect_enotsup("sysv_shm", shmget(IPC_PRIVATE, 4096, IPC_CREAT | 0600));
+
+    errno = 0;
+    failures += expect_enotsup("sysv_sem", semget(IPC_PRIVATE, 1, IPC_CREAT | 0600));
+
+    errno = 0;
+    failures += expect_enotsup("sysv_msg", msgget(IPC_PRIVATE, IPC_CREAT | 0600));
+
+    errno = 0;
+    failures += expect_enotsup("inotify", inotify_init1(0));
+
+    errno = 0;
+    failures += expect_enotsup("fanotify", fanotify_init(0, 0));
+
+    errno = 0;
+    failures += expect_enotsup("netlink", socket(AF_NETLINK, SOCK_RAW, NETLINK_ROUTE));
+
+    errno = 0;
+    failures += expect_enotsup("ptrace", ptrace(PTRACE_TRACEME, 0, NULL, NULL));
 
     return failures == 0 ? 0 : 1;
 }

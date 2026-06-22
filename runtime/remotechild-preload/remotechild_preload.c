@@ -10,9 +10,20 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdarg.h>
+#include <signal.h>
+#include <sys/eventfd.h>
+#include <sys/fanotify.h>
+#include <sys/inotify.h>
+#include <sys/ipc.h>
+#include <sys/msg.h>
 #include <sys/mman.h>
+#include <sys/ptrace.h>
+#include <sys/sem.h>
+#include <sys/shm.h>
+#include <sys/signalfd.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/timerfd.h>
 #include <sys/un.h>
 #include <sys/types.h>
 #include <sys/wait.h>
@@ -49,6 +60,7 @@ static const char *ipc_compat_env = "OCTOPOS_REMOTE_IPC_COMPAT";
 static const char *ipc_compat_warned_env = "OCTOPOS_REMOTE_IPC_COMPAT_WARNED";
 static const char *ipc_compat_block_warned_env = "OCTOPOS_REMOTE_IPC_BLOCK_WARNED";
 static const char *fifo_warned_env = "OCTOPOS_REMOTE_FIFO_WARNED";
+static const char *kernel_ipc_warned_env = "OCTOPOS_REMOTE_KERNEL_IPC_WARNED";
 static const char *unixsock_warned_env = "OCTOPOS_REMOTE_UNIXSOCK_WARNED";
 static const char *mode_env = "OCTOPOS_REMOTE_CHILDREN";
 
@@ -230,6 +242,22 @@ static int unsupported_fifo(const char *detail) {
               detail);
     errno = ENOTSUP;
     return -1;
+}
+
+static int unsupported_kernel_ipc(const char *detail) {
+    warn_once(kernel_ipc_warned_env,
+              "octopos-remote-child: unsupported local-kernel IPC blocked in remote child",
+              detail);
+    errno = ENOTSUP;
+    return -1;
+}
+
+static void *unsupported_kernel_ipc_ptr(const char *detail) {
+    warn_once(kernel_ipc_warned_env,
+              "octopos-remote-child: unsupported local-kernel IPC blocked in remote child",
+              detail);
+    errno = ENOTSUP;
+    return (void *)-1;
 }
 
 static int socket_type_value(int type) {
@@ -547,6 +575,20 @@ typedef int (*open_fn)(const char *, int, ...);
 typedef int (*openat_fn)(int, const char *, int, ...);
 typedef int (*mkfifo_fn)(const char *, mode_t);
 typedef int (*mkfifoat_fn)(int, const char *, mode_t);
+typedef int (*eventfd_fn)(unsigned int, int);
+typedef int (*eventfd2_fn)(unsigned int, int);
+typedef int (*signalfd_fn)(int, const sigset_t *, int);
+typedef int (*timerfd_create_fn)(int, int);
+typedef int (*memfd_create_fn)(const char *, unsigned int);
+typedef int (*shm_open_fn)(const char *, int, mode_t);
+typedef int (*shmget_fn)(key_t, size_t, int);
+typedef void *(*shmat_fn)(int, const void *, int);
+typedef int (*semget_fn)(key_t, int, int);
+typedef int (*msgget_fn)(key_t, int);
+typedef int (*inotify_init_fn)(void);
+typedef int (*inotify_init1_fn)(int);
+typedef int (*fanotify_init_fn)(unsigned int, unsigned int);
+typedef long (*ptrace_fn)(enum __ptrace_request, ...);
 
 int execve(const char *pathname, char *const argv[], char *const envp[]) {
     execve_fn real_execve = (execve_fn)dlsym(RTLD_NEXT, "execve");
@@ -736,6 +778,9 @@ int socket(int domain, int type, int protocol) {
     if (real_socket == NULL) {
         errno = ENOSYS;
         return -1;
+    }
+    if (remote_child_process() && domain == AF_NETLINK) {
+        return unsupported_kernel_ipc("netlink sockets refer to node-local kernel state");
     }
     if (remote_child_process() && domain == AF_UNIX && socket_type_value(type) != SOCK_STREAM) {
         return unsupported_unix_socket("only AF_UNIX/SOCK_STREAM is brokerable");
@@ -972,4 +1017,178 @@ int mkfifoat(int dirfd, const char *pathname, mode_t mode) {
         return unsupported_fifo("creating FIFO paths after launch is not distributed");
     }
     return real_mkfifoat(dirfd, pathname, mode);
+}
+
+int eventfd(unsigned int initval, int flags) {
+    eventfd_fn real_eventfd = (eventfd_fn)dlsym(RTLD_NEXT, "eventfd");
+    if (real_eventfd == NULL) {
+        errno = ENOSYS;
+        return -1;
+    }
+    if (remote_child_process()) {
+        return unsupported_kernel_ipc("eventfd counters are local kernel state");
+    }
+    return real_eventfd(initval, flags);
+}
+
+int eventfd2(unsigned int initval, int flags) {
+    eventfd2_fn real_eventfd2 = (eventfd2_fn)dlsym(RTLD_NEXT, "eventfd2");
+    if (real_eventfd2 == NULL) {
+        errno = ENOSYS;
+        return -1;
+    }
+    if (remote_child_process()) {
+        return unsupported_kernel_ipc("eventfd counters are local kernel state");
+    }
+    return real_eventfd2(initval, flags);
+}
+
+int signalfd(int fd, const sigset_t *mask, int flags) {
+    signalfd_fn real_signalfd = (signalfd_fn)dlsym(RTLD_NEXT, "signalfd");
+    if (real_signalfd == NULL) {
+        errno = ENOSYS;
+        return -1;
+    }
+    if (remote_child_process()) {
+        return unsupported_kernel_ipc("signalfd depends on node-local signal delivery state");
+    }
+    return real_signalfd(fd, mask, flags);
+}
+
+int timerfd_create(int clockid, int flags) {
+    timerfd_create_fn real_timerfd_create = (timerfd_create_fn)dlsym(RTLD_NEXT, "timerfd_create");
+    if (real_timerfd_create == NULL) {
+        errno = ENOSYS;
+        return -1;
+    }
+    if (remote_child_process()) {
+        return unsupported_kernel_ipc("timerfd state is not distributed");
+    }
+    return real_timerfd_create(clockid, flags);
+}
+
+int memfd_create(const char *name, unsigned int flags) {
+    memfd_create_fn real_memfd_create = (memfd_create_fn)dlsym(RTLD_NEXT, "memfd_create");
+    if (real_memfd_create == NULL) {
+        errno = ENOSYS;
+        return -1;
+    }
+    if (remote_child_process()) {
+        return unsupported_kernel_ipc("memfd shared-memory objects are local kernel state");
+    }
+    return real_memfd_create(name, flags);
+}
+
+int shm_open(const char *name, int oflag, mode_t mode) {
+    shm_open_fn real_shm_open = (shm_open_fn)dlsym(RTLD_NEXT, "shm_open");
+    if (real_shm_open == NULL) {
+        errno = ENOSYS;
+        return -1;
+    }
+    if (remote_child_process()) {
+        return unsupported_kernel_ipc("POSIX shared memory is not distributed");
+    }
+    return real_shm_open(name, oflag, mode);
+}
+
+int shmget(key_t key, size_t size, int shmflg) {
+    shmget_fn real_shmget = (shmget_fn)dlsym(RTLD_NEXT, "shmget");
+    if (real_shmget == NULL) {
+        errno = ENOSYS;
+        return -1;
+    }
+    if (remote_child_process()) {
+        return unsupported_kernel_ipc("SysV shared memory is not distributed");
+    }
+    return real_shmget(key, size, shmflg);
+}
+
+void *shmat(int shmid, const void *shmaddr, int shmflg) {
+    shmat_fn real_shmat = (shmat_fn)dlsym(RTLD_NEXT, "shmat");
+    if (real_shmat == NULL) {
+        errno = ENOSYS;
+        return (void *)-1;
+    }
+    if (remote_child_process()) {
+        return unsupported_kernel_ipc_ptr("SysV shared memory attach is not distributed");
+    }
+    return real_shmat(shmid, shmaddr, shmflg);
+}
+
+int semget(key_t key, int nsems, int semflg) {
+    semget_fn real_semget = (semget_fn)dlsym(RTLD_NEXT, "semget");
+    if (real_semget == NULL) {
+        errno = ENOSYS;
+        return -1;
+    }
+    if (remote_child_process()) {
+        return unsupported_kernel_ipc("SysV semaphores are not distributed");
+    }
+    return real_semget(key, nsems, semflg);
+}
+
+int msgget(key_t key, int msgflg) {
+    msgget_fn real_msgget = (msgget_fn)dlsym(RTLD_NEXT, "msgget");
+    if (real_msgget == NULL) {
+        errno = ENOSYS;
+        return -1;
+    }
+    if (remote_child_process()) {
+        return unsupported_kernel_ipc("SysV message queues are not distributed");
+    }
+    return real_msgget(key, msgflg);
+}
+
+int inotify_init(void) {
+    inotify_init_fn real_inotify_init = (inotify_init_fn)dlsym(RTLD_NEXT, "inotify_init");
+    if (real_inotify_init == NULL) {
+        errno = ENOSYS;
+        return -1;
+    }
+    if (remote_child_process()) {
+        return unsupported_kernel_ipc("inotify state is node-local");
+    }
+    return real_inotify_init();
+}
+
+int inotify_init1(int flags) {
+    inotify_init1_fn real_inotify_init1 = (inotify_init1_fn)dlsym(RTLD_NEXT, "inotify_init1");
+    if (real_inotify_init1 == NULL) {
+        errno = ENOSYS;
+        return -1;
+    }
+    if (remote_child_process()) {
+        return unsupported_kernel_ipc("inotify state is node-local");
+    }
+    return real_inotify_init1(flags);
+}
+
+int fanotify_init(unsigned int flags, unsigned int event_f_flags) {
+    fanotify_init_fn real_fanotify_init = (fanotify_init_fn)dlsym(RTLD_NEXT, "fanotify_init");
+    if (real_fanotify_init == NULL) {
+        errno = ENOSYS;
+        return -1;
+    }
+    if (remote_child_process()) {
+        return unsupported_kernel_ipc("fanotify state is node-local");
+    }
+    return real_fanotify_init(flags, event_f_flags);
+}
+
+long ptrace(enum __ptrace_request request, ...) {
+    ptrace_fn real_ptrace = (ptrace_fn)dlsym(RTLD_NEXT, "ptrace");
+    if (real_ptrace == NULL) {
+        errno = ENOSYS;
+        return -1;
+    }
+    va_list ap;
+    va_start(ap, request);
+    pid_t pid = va_arg(ap, pid_t);
+    void *addr = va_arg(ap, void *);
+    void *data = va_arg(ap, void *);
+    va_end(ap);
+    if (remote_child_process()) {
+        return unsupported_kernel_ipc("ptrace is not distributed");
+    }
+    return real_ptrace(request, pid, addr, data);
 }
