@@ -191,7 +191,7 @@ func enterSSI(root, base, workdir string, strictVFS bool, gpu nvidiaRuntimeConfi
 		return err
 	}
 	parentStdioPipeEnv := parentStdioPipeEnvFromCurrentProcess()
-	if err := closeInheritedNonStdioFDs(); err != nil {
+	if err := markInheritedNonStdioFDsCloseOnExec(); err != nil {
 		return err
 	}
 
@@ -269,7 +269,7 @@ func applyFDReopenPlan(env []string) error {
 	return nil
 }
 
-func closeInheritedNonStdioFDs() error {
+func markInheritedNonStdioFDsCloseOnExec() error {
 	entries, err := os.ReadDir("/proc/self/fd")
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -277,13 +277,25 @@ func closeInheritedNonStdioFDs() error {
 		}
 		return fmt.Errorf("read inherited fds: %w", err)
 	}
-	for _, fd := range fdNamesToClose(entries) {
-		_ = unix.Close(fd)
+	for _, fd := range fdNamesToMarkCloseOnExec(entries) {
+		flags, err := unix.FcntlInt(uintptr(fd), unix.F_GETFD, 0)
+		if err != nil {
+			if errors.Is(err, unix.EBADF) {
+				continue
+			}
+			return fmt.Errorf("read fd %d close-on-exec flags: %w", fd, err)
+		}
+		if _, err := unix.FcntlInt(uintptr(fd), unix.F_SETFD, flags|unix.FD_CLOEXEC); err != nil {
+			if errors.Is(err, unix.EBADF) {
+				continue
+			}
+			return fmt.Errorf("set fd %d close-on-exec: %w", fd, err)
+		}
 	}
 	return nil
 }
 
-func fdNamesToClose(entries []os.DirEntry) []int {
+func fdNamesToMarkCloseOnExec(entries []os.DirEntry) []int {
 	fds := make([]int, 0, len(entries))
 	for _, entry := range entries {
 		fd, err := strconv.Atoi(entry.Name())
