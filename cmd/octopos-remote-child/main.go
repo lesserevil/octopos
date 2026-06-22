@@ -19,6 +19,7 @@ import (
 	"github.com/octopos/octopos/pkg/termio"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/protobuf/proto"
 )
 
 type config struct {
@@ -78,7 +79,11 @@ func main() {
 		TerminalFD:     os.Stdin.Fd(),
 		ForwardSignals: true,
 		OpenStream: func(ctx context.Context) (execclient.Stream, error) {
-			return client.RemoteChildStream(ctx)
+			stream, err := client.RemoteChildLaunchStream(ctx)
+			if err != nil {
+				return nil, err
+			}
+			return remoteChildLaunchStreamClient{stream: stream}, nil
 		},
 	})
 	if err != nil {
@@ -88,6 +93,66 @@ func main() {
 		}
 		fmt.Fprintf(os.Stderr, "octopos-remote-child: %v\n", err)
 		os.Exit(1)
+	}
+}
+
+type remoteChildLaunchStreamClient struct {
+	stream octopospb.Cluster_RemoteChildLaunchStreamClient
+}
+
+func (c remoteChildLaunchStreamClient) Send(req *octopospb.ExecStreamRequest) error {
+	msg, err := remoteChildStreamRequestFromExecStreamRequest(req)
+	if err != nil {
+		return err
+	}
+	return c.stream.Send(msg)
+}
+
+func (c remoteChildLaunchStreamClient) Recv() (*octopospb.ExecStreamResponse, error) {
+	return c.stream.Recv()
+}
+
+func (c remoteChildLaunchStreamClient) CloseSend() error {
+	return c.stream.CloseSend()
+}
+
+func remoteChildStreamRequestFromExecStreamRequest(req *octopospb.ExecStreamRequest) (*octopospb.RemoteChildStreamRequest, error) {
+	if req == nil {
+		return nil, errors.New("nil exec stream request")
+	}
+	switch payload := req.Payload.(type) {
+	case *octopospb.ExecStreamRequest_Exec:
+		if payload.Exec == nil {
+			return nil, errors.New("nil exec request")
+		}
+		launch := payload.Exec.RemoteChild
+		if launch == nil {
+			return nil, errors.New("remote child launch metadata missing")
+		}
+		execReq := proto.Clone(payload.Exec).(*octopospb.ExecuteRequest)
+		execReq.RemoteChild = nil
+		return &octopospb.RemoteChildStreamRequest{
+			Payload: &octopospb.RemoteChildStreamRequest_Exec{
+				Exec: &octopospb.RemoteChildExecuteRequest{
+					Exec:   execReq,
+					Launch: proto.Clone(launch).(*octopospb.RemoteChildLaunch),
+				},
+			},
+		}, nil
+	case *octopospb.ExecStreamRequest_StdinData:
+		return &octopospb.RemoteChildStreamRequest{
+			Payload: &octopospb.RemoteChildStreamRequest_StdinData{StdinData: payload.StdinData},
+		}, nil
+	case *octopospb.ExecStreamRequest_Signal:
+		return &octopospb.RemoteChildStreamRequest{
+			Payload: &octopospb.RemoteChildStreamRequest_Signal{Signal: payload.Signal},
+		}, nil
+	case *octopospb.ExecStreamRequest_CloseStdin:
+		return &octopospb.RemoteChildStreamRequest{
+			Payload: &octopospb.RemoteChildStreamRequest_CloseStdin{CloseStdin: payload.CloseStdin},
+		}, nil
+	default:
+		return nil, errors.New("exec stream request missing payload")
 	}
 }
 

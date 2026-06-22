@@ -262,17 +262,20 @@ Current status:
 - Implemented: remote-child requests can carry typed launch metadata on
   `ExecuteRequest.remote_child`, including parent job ID, parent/shadow PIDs,
   placement/fallback details, FD reopen plan, and parent child-token.
+- Implemented: dedicated `SpawnRemoteChild` and `RemoteChildLaunchStream` RPCs
+  carry the child launch envelope separately from the generic execute request.
+  Legacy `RemoteChildExecute` and `RemoteChildStream` remain available for
+  compatibility.
 - Implemented: `octopos-remote-child` sends the typed launch block and filters
-  the parent child-token out of the worker environment; `octoposd` normalizes
-  only non-secret metadata back into the worker environment.
+  the parent child-token out of the worker environment; it now uses
+  `RemoteChildLaunchStream` for foreground child execution, and `octoposd`
+  normalizes only non-secret metadata back into the worker environment.
 - Implemented: local child socket serving captures Unix peer credentials and
   restricts the socket to remote-child RPCs from uid 0.
 - Implemented: parent job/session/token/status/expiry checks, per-parent and
   per-session child limits, and audit records for accepted/rejected
   authorization decisions.
-- Remaining: split the streaming child entrypoint into a fully dedicated
-  child-spawn API instead of using typed metadata on the existing execute
-  request, and rotate child tokens across any future parent exec restart flow.
+- Remaining: rotate child tokens across any future parent exec restart flow.
 
 Tasks:
 

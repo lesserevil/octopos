@@ -510,7 +510,10 @@ func authorizeLocalSocketRPC(ctx context.Context, method string) error {
 		return nil
 	}
 	switch method {
-	case rpc.Cluster_RemoteChildExecute_FullMethodName, rpc.Cluster_RemoteChildStream_FullMethodName:
+	case rpc.Cluster_SpawnRemoteChild_FullMethodName,
+		rpc.Cluster_RemoteChildLaunchStream_FullMethodName,
+		rpc.Cluster_RemoteChildExecute_FullMethodName,
+		rpc.Cluster_RemoteChildStream_FullMethodName:
 	default:
 		return status.Errorf(codes.PermissionDenied, "method %s is not available on the local child socket", method)
 	}

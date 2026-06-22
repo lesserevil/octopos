@@ -259,6 +259,20 @@ func (s *ClusterServerImpl) Execute(ctx context.Context, req *ExecuteRequest) (*
 	return s.executeBackground(ctx, req)
 }
 
+// SpawnRemoteChild submits a detached distributed-child execution request using
+// the dedicated remote-child launch envelope.
+func (s *ClusterServerImpl) SpawnRemoteChild(ctx context.Context, req *RemoteChildExecuteRequest) (*ExecuteResponse, error) {
+	execReq, err := remoteChildExecuteRequestToExecuteRequest(req)
+	if err != nil {
+		jobID := ""
+		if req != nil && req.Exec != nil {
+			jobID = req.Exec.GetJobId()
+		}
+		return &ExecuteResponse{JobId: jobID, ExitCode: -1, Error: err.Error()}, nil
+	}
+	return s.executeBackground(ctx, execReq)
+}
+
 // RemoteChildExecute submits a detached distributed-child execution request.
 func (s *ClusterServerImpl) RemoteChildExecute(ctx context.Context, req *ExecuteRequest) (*ExecuteResponse, error) {
 	if !isRemoteChildRequest(req) {

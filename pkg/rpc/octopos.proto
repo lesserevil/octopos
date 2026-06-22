@@ -35,8 +35,12 @@ service Cluster {
   // Streaming for pipes/stdin/stdout
   rpc ExecStream(stream ExecStreamRequest) returns (stream ExecStreamResponse);
 
-  // Distributed child execution. These entrypoints use the same execution
-  // payloads as normal jobs, but require authenticated remote-child metadata.
+  // Distributed child execution. SpawnRemoteChild and RemoteChildLaunchStream
+  // use a dedicated child launch envelope. RemoteChildExecute and
+  // RemoteChildStream are legacy compatibility entrypoints that use
+  // ExecuteRequest.remote_child or legacy environment metadata.
+  rpc SpawnRemoteChild(RemoteChildExecuteRequest) returns (ExecuteResponse);
+  rpc RemoteChildLaunchStream(stream RemoteChildStreamRequest) returns (stream ExecStreamResponse);
   rpc RemoteChildExecute(ExecuteRequest) returns (ExecuteResponse);
   rpc RemoteChildStream(stream ExecStreamRequest) returns (stream ExecStreamResponse);
 
@@ -120,6 +124,20 @@ message RemoteChildLaunch {
   string fallback_reason_code = 6;
   string child_token = 7;
   string fd_plan = 8;
+}
+
+message RemoteChildExecuteRequest {
+  ExecuteRequest exec = 1;
+  RemoteChildLaunch launch = 2;
+}
+
+message RemoteChildStreamRequest {
+  oneof payload {
+    RemoteChildExecuteRequest exec = 1;
+    bytes stdin_data = 2;
+    SignalRequest signal = 3;
+    bool close_stdin = 4;
+  }
 }
 
 message SignalRequest {

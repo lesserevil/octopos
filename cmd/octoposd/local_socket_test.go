@@ -24,6 +24,12 @@ func TestAuthorizeLocalSocketRPCRestrictsMethodsAndUID(t *testing.T) {
 		},
 	})
 
+	if err := authorizeLocalSocketRPC(ctx, orpc.Cluster_SpawnRemoteChild_FullMethodName); err != nil {
+		t.Fatalf("SpawnRemoteChild rejected: %v", err)
+	}
+	if err := authorizeLocalSocketRPC(ctx, orpc.Cluster_RemoteChildLaunchStream_FullMethodName); err != nil {
+		t.Fatalf("RemoteChildLaunchStream rejected: %v", err)
+	}
 	if err := authorizeLocalSocketRPC(ctx, orpc.Cluster_RemoteChildStream_FullMethodName); err != nil {
 		t.Fatalf("RemoteChildStream rejected: %v", err)
 	}
@@ -37,8 +43,8 @@ func TestAuthorizeLocalSocketRPCRestrictsMethodsAndUID(t *testing.T) {
 			cred: unixPeerCred{pid: 1235, uid: 1000, gid: 1000},
 		},
 	})
-	if err := authorizeLocalSocketRPC(userCtx, orpc.Cluster_RemoteChildStream_FullMethodName); status.Code(err) != codes.PermissionDenied {
-		t.Fatalf("non-root RemoteChildStream error = %v, want permission denied", err)
+	if err := authorizeLocalSocketRPC(userCtx, orpc.Cluster_RemoteChildLaunchStream_FullMethodName); status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("non-root RemoteChildLaunchStream error = %v, want permission denied", err)
 	}
 }
 

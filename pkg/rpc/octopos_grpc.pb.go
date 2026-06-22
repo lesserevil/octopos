@@ -19,31 +19,33 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	Cluster_RegisterNode_FullMethodName         = "/octopos.rpc.Cluster/RegisterNode"
-	Cluster_Heartbeat_FullMethodName            = "/octopos.rpc.Cluster/Heartbeat"
-	Cluster_GetClusterState_FullMethodName      = "/octopos.rpc.Cluster/GetClusterState"
-	Cluster_Execute_FullMethodName              = "/octopos.rpc.Cluster/Execute"
-	Cluster_Signal_FullMethodName               = "/octopos.rpc.Cluster/Signal"
-	Cluster_Wait_FullMethodName                 = "/octopos.rpc.Cluster/Wait"
-	Cluster_GetJobStatus_FullMethodName         = "/octopos.rpc.Cluster/GetJobStatus"
-	Cluster_ListProcesses_FullMethodName        = "/octopos.rpc.Cluster/ListProcesses"
-	Cluster_GetProcess_FullMethodName           = "/octopos.rpc.Cluster/GetProcess"
-	Cluster_ListRemoteChildren_FullMethodName   = "/octopos.rpc.Cluster/ListRemoteChildren"
-	Cluster_AllocateVFIO_FullMethodName         = "/octopos.rpc.Cluster/AllocateVFIO"
-	Cluster_ReleaseVFIO_FullMethodName          = "/octopos.rpc.Cluster/ReleaseVFIO"
-	Cluster_GetVFIODevices_FullMethodName       = "/octopos.rpc.Cluster/GetVFIODevices"
-	Cluster_CreateSession_FullMethodName        = "/octopos.rpc.Cluster/CreateSession"
-	Cluster_DestroySession_FullMethodName       = "/octopos.rpc.Cluster/DestroySession"
-	Cluster_ListSessions_FullMethodName         = "/octopos.rpc.Cluster/ListSessions"
-	Cluster_ExecStream_FullMethodName           = "/octopos.rpc.Cluster/ExecStream"
-	Cluster_RemoteChildExecute_FullMethodName   = "/octopos.rpc.Cluster/RemoteChildExecute"
-	Cluster_RemoteChildStream_FullMethodName    = "/octopos.rpc.Cluster/RemoteChildStream"
-	Cluster_PipeStream_FullMethodName           = "/octopos.rpc.Cluster/PipeStream"
-	Cluster_GetPipeStats_FullMethodName         = "/octopos.rpc.Cluster/GetPipeStats"
-	Cluster_RegisterUnixSocket_FullMethodName   = "/octopos.rpc.Cluster/RegisterUnixSocket"
-	Cluster_UnregisterUnixSocket_FullMethodName = "/octopos.rpc.Cluster/UnregisterUnixSocket"
-	Cluster_ListUnixSockets_FullMethodName      = "/octopos.rpc.Cluster/ListUnixSockets"
-	Cluster_UnixSocketStream_FullMethodName     = "/octopos.rpc.Cluster/UnixSocketStream"
+	Cluster_RegisterNode_FullMethodName            = "/octopos.rpc.Cluster/RegisterNode"
+	Cluster_Heartbeat_FullMethodName               = "/octopos.rpc.Cluster/Heartbeat"
+	Cluster_GetClusterState_FullMethodName         = "/octopos.rpc.Cluster/GetClusterState"
+	Cluster_Execute_FullMethodName                 = "/octopos.rpc.Cluster/Execute"
+	Cluster_Signal_FullMethodName                  = "/octopos.rpc.Cluster/Signal"
+	Cluster_Wait_FullMethodName                    = "/octopos.rpc.Cluster/Wait"
+	Cluster_GetJobStatus_FullMethodName            = "/octopos.rpc.Cluster/GetJobStatus"
+	Cluster_ListProcesses_FullMethodName           = "/octopos.rpc.Cluster/ListProcesses"
+	Cluster_GetProcess_FullMethodName              = "/octopos.rpc.Cluster/GetProcess"
+	Cluster_ListRemoteChildren_FullMethodName      = "/octopos.rpc.Cluster/ListRemoteChildren"
+	Cluster_AllocateVFIO_FullMethodName            = "/octopos.rpc.Cluster/AllocateVFIO"
+	Cluster_ReleaseVFIO_FullMethodName             = "/octopos.rpc.Cluster/ReleaseVFIO"
+	Cluster_GetVFIODevices_FullMethodName          = "/octopos.rpc.Cluster/GetVFIODevices"
+	Cluster_CreateSession_FullMethodName           = "/octopos.rpc.Cluster/CreateSession"
+	Cluster_DestroySession_FullMethodName          = "/octopos.rpc.Cluster/DestroySession"
+	Cluster_ListSessions_FullMethodName            = "/octopos.rpc.Cluster/ListSessions"
+	Cluster_ExecStream_FullMethodName              = "/octopos.rpc.Cluster/ExecStream"
+	Cluster_SpawnRemoteChild_FullMethodName        = "/octopos.rpc.Cluster/SpawnRemoteChild"
+	Cluster_RemoteChildLaunchStream_FullMethodName = "/octopos.rpc.Cluster/RemoteChildLaunchStream"
+	Cluster_RemoteChildExecute_FullMethodName      = "/octopos.rpc.Cluster/RemoteChildExecute"
+	Cluster_RemoteChildStream_FullMethodName       = "/octopos.rpc.Cluster/RemoteChildStream"
+	Cluster_PipeStream_FullMethodName              = "/octopos.rpc.Cluster/PipeStream"
+	Cluster_GetPipeStats_FullMethodName            = "/octopos.rpc.Cluster/GetPipeStats"
+	Cluster_RegisterUnixSocket_FullMethodName      = "/octopos.rpc.Cluster/RegisterUnixSocket"
+	Cluster_UnregisterUnixSocket_FullMethodName    = "/octopos.rpc.Cluster/UnregisterUnixSocket"
+	Cluster_ListUnixSockets_FullMethodName         = "/octopos.rpc.Cluster/ListUnixSockets"
+	Cluster_UnixSocketStream_FullMethodName        = "/octopos.rpc.Cluster/UnixSocketStream"
 )
 
 // ClusterClient is the client API for Cluster service.
@@ -75,8 +77,12 @@ type ClusterClient interface {
 	ListSessions(ctx context.Context, in *ListSessionsRequest, opts ...grpc.CallOption) (*ListSessionsResponse, error)
 	// Streaming for pipes/stdin/stdout
 	ExecStream(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[ExecStreamRequest, ExecStreamResponse], error)
-	// Distributed child execution. These entrypoints use the same execution
-	// payloads as normal jobs, but require authenticated remote-child metadata.
+	// Distributed child execution. SpawnRemoteChild and RemoteChildLaunchStream
+	// use a dedicated child launch envelope. RemoteChildExecute and
+	// RemoteChildStream are legacy compatibility entrypoints that use
+	// ExecuteRequest.remote_child or legacy environment metadata.
+	SpawnRemoteChild(ctx context.Context, in *RemoteChildExecuteRequest, opts ...grpc.CallOption) (*ExecuteResponse, error)
+	RemoteChildLaunchStream(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[RemoteChildStreamRequest, ExecStreamResponse], error)
 	RemoteChildExecute(ctx context.Context, in *ExecuteRequest, opts ...grpc.CallOption) (*ExecuteResponse, error)
 	RemoteChildStream(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[ExecStreamRequest, ExecStreamResponse], error)
 	// Internal pipe graph transport for distributed child endpoints.
@@ -271,6 +277,29 @@ func (c *clusterClient) ExecStream(ctx context.Context, opts ...grpc.CallOption)
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type Cluster_ExecStreamClient = grpc.BidiStreamingClient[ExecStreamRequest, ExecStreamResponse]
 
+func (c *clusterClient) SpawnRemoteChild(ctx context.Context, in *RemoteChildExecuteRequest, opts ...grpc.CallOption) (*ExecuteResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ExecuteResponse)
+	err := c.cc.Invoke(ctx, Cluster_SpawnRemoteChild_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *clusterClient) RemoteChildLaunchStream(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[RemoteChildStreamRequest, ExecStreamResponse], error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	stream, err := c.cc.NewStream(ctx, &Cluster_ServiceDesc.Streams[1], Cluster_RemoteChildLaunchStream_FullMethodName, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	x := &grpc.GenericClientStream[RemoteChildStreamRequest, ExecStreamResponse]{ClientStream: stream}
+	return x, nil
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type Cluster_RemoteChildLaunchStreamClient = grpc.BidiStreamingClient[RemoteChildStreamRequest, ExecStreamResponse]
+
 func (c *clusterClient) RemoteChildExecute(ctx context.Context, in *ExecuteRequest, opts ...grpc.CallOption) (*ExecuteResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(ExecuteResponse)
@@ -283,7 +312,7 @@ func (c *clusterClient) RemoteChildExecute(ctx context.Context, in *ExecuteReque
 
 func (c *clusterClient) RemoteChildStream(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[ExecStreamRequest, ExecStreamResponse], error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	stream, err := c.cc.NewStream(ctx, &Cluster_ServiceDesc.Streams[1], Cluster_RemoteChildStream_FullMethodName, cOpts...)
+	stream, err := c.cc.NewStream(ctx, &Cluster_ServiceDesc.Streams[2], Cluster_RemoteChildStream_FullMethodName, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -296,7 +325,7 @@ type Cluster_RemoteChildStreamClient = grpc.BidiStreamingClient[ExecStreamReques
 
 func (c *clusterClient) PipeStream(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[PipeFrame, PipeFrame], error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	stream, err := c.cc.NewStream(ctx, &Cluster_ServiceDesc.Streams[2], Cluster_PipeStream_FullMethodName, cOpts...)
+	stream, err := c.cc.NewStream(ctx, &Cluster_ServiceDesc.Streams[3], Cluster_PipeStream_FullMethodName, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -349,7 +378,7 @@ func (c *clusterClient) ListUnixSockets(ctx context.Context, in *ListUnixSockets
 
 func (c *clusterClient) UnixSocketStream(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[UnixSocketFrame, UnixSocketFrame], error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	stream, err := c.cc.NewStream(ctx, &Cluster_ServiceDesc.Streams[3], Cluster_UnixSocketStream_FullMethodName, cOpts...)
+	stream, err := c.cc.NewStream(ctx, &Cluster_ServiceDesc.Streams[4], Cluster_UnixSocketStream_FullMethodName, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -389,8 +418,12 @@ type ClusterServer interface {
 	ListSessions(context.Context, *ListSessionsRequest) (*ListSessionsResponse, error)
 	// Streaming for pipes/stdin/stdout
 	ExecStream(grpc.BidiStreamingServer[ExecStreamRequest, ExecStreamResponse]) error
-	// Distributed child execution. These entrypoints use the same execution
-	// payloads as normal jobs, but require authenticated remote-child metadata.
+	// Distributed child execution. SpawnRemoteChild and RemoteChildLaunchStream
+	// use a dedicated child launch envelope. RemoteChildExecute and
+	// RemoteChildStream are legacy compatibility entrypoints that use
+	// ExecuteRequest.remote_child or legacy environment metadata.
+	SpawnRemoteChild(context.Context, *RemoteChildExecuteRequest) (*ExecuteResponse, error)
+	RemoteChildLaunchStream(grpc.BidiStreamingServer[RemoteChildStreamRequest, ExecStreamResponse]) error
 	RemoteChildExecute(context.Context, *ExecuteRequest) (*ExecuteResponse, error)
 	RemoteChildStream(grpc.BidiStreamingServer[ExecStreamRequest, ExecStreamResponse]) error
 	// Internal pipe graph transport for distributed child endpoints.
@@ -462,6 +495,12 @@ func (UnimplementedClusterServer) ListSessions(context.Context, *ListSessionsReq
 }
 func (UnimplementedClusterServer) ExecStream(grpc.BidiStreamingServer[ExecStreamRequest, ExecStreamResponse]) error {
 	return status.Error(codes.Unimplemented, "method ExecStream not implemented")
+}
+func (UnimplementedClusterServer) SpawnRemoteChild(context.Context, *RemoteChildExecuteRequest) (*ExecuteResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method SpawnRemoteChild not implemented")
+}
+func (UnimplementedClusterServer) RemoteChildLaunchStream(grpc.BidiStreamingServer[RemoteChildStreamRequest, ExecStreamResponse]) error {
+	return status.Error(codes.Unimplemented, "method RemoteChildLaunchStream not implemented")
 }
 func (UnimplementedClusterServer) RemoteChildExecute(context.Context, *ExecuteRequest) (*ExecuteResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method RemoteChildExecute not implemented")
@@ -803,6 +842,31 @@ func _Cluster_ExecStream_Handler(srv interface{}, stream grpc.ServerStream) erro
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type Cluster_ExecStreamServer = grpc.BidiStreamingServer[ExecStreamRequest, ExecStreamResponse]
 
+func _Cluster_SpawnRemoteChild_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RemoteChildExecuteRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ClusterServer).SpawnRemoteChild(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Cluster_SpawnRemoteChild_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ClusterServer).SpawnRemoteChild(ctx, req.(*RemoteChildExecuteRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Cluster_RemoteChildLaunchStream_Handler(srv interface{}, stream grpc.ServerStream) error {
+	return srv.(ClusterServer).RemoteChildLaunchStream(&grpc.GenericServerStream[RemoteChildStreamRequest, ExecStreamResponse]{ServerStream: stream})
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type Cluster_RemoteChildLaunchStreamServer = grpc.BidiStreamingServer[RemoteChildStreamRequest, ExecStreamResponse]
+
 func _Cluster_RemoteChildExecute_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(ExecuteRequest)
 	if err := dec(in); err != nil {
@@ -986,6 +1050,10 @@ var Cluster_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _Cluster_ListSessions_Handler,
 		},
 		{
+			MethodName: "SpawnRemoteChild",
+			Handler:    _Cluster_SpawnRemoteChild_Handler,
+		},
+		{
 			MethodName: "RemoteChildExecute",
 			Handler:    _Cluster_RemoteChildExecute_Handler,
 		},
@@ -1010,6 +1078,12 @@ var Cluster_ServiceDesc = grpc.ServiceDesc{
 		{
 			StreamName:    "ExecStream",
 			Handler:       _Cluster_ExecStream_Handler,
+			ServerStreams: true,
+			ClientStreams: true,
+		},
+		{
+			StreamName:    "RemoteChildLaunchStream",
+			Handler:       _Cluster_RemoteChildLaunchStream_Handler,
 			ServerStreams: true,
 			ClientStreams: true,
 		},

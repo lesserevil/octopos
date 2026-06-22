@@ -43,9 +43,35 @@ type execStreamClient interface {
 	CloseSend() error
 }
 
+type remoteChildLaunchStreamAdapter struct {
+	stream Cluster_RemoteChildLaunchStreamServer
+}
+
+func (a remoteChildLaunchStreamAdapter) Send(resp *ExecStreamResponse) error {
+	return a.stream.Send(resp)
+}
+
+func (a remoteChildLaunchStreamAdapter) Recv() (*ExecStreamRequest, error) {
+	msg, err := a.stream.Recv()
+	if err != nil {
+		return nil, err
+	}
+	return remoteChildStreamRequestToExecStreamRequest(msg)
+}
+
+func (a remoteChildLaunchStreamAdapter) Context() context.Context {
+	return a.stream.Context()
+}
+
 // ExecStream handles foreground execution with stdin/stdout/stderr attached.
 func (s *ClusterServerImpl) ExecStream(stream Cluster_ExecStreamServer) error {
 	return s.execStream(stream, false)
+}
+
+// RemoteChildLaunchStream handles foreground distributed-child execution using
+// the dedicated remote-child launch envelope.
+func (s *ClusterServerImpl) RemoteChildLaunchStream(stream Cluster_RemoteChildLaunchStreamServer) error {
+	return s.execStream(remoteChildLaunchStreamAdapter{stream: stream}, true)
 }
 
 // RemoteChildStream handles foreground distributed-child execution. It requires
@@ -107,6 +133,46 @@ func (s *ClusterServerImpl) executeBackground(ctx context.Context, req *ExecuteR
 		return s.executeRemoteBackground(ctx, req, jobID, node, reqs)
 	}
 	return s.executeLocalBackground(req, jobID, node, reqs)
+}
+
+func remoteChildExecuteRequestToExecuteRequest(req *RemoteChildExecuteRequest) (*ExecuteRequest, error) {
+	if req == nil {
+		return nil, fmt.Errorf("remote child execute request is required")
+	}
+	if req.Exec == nil {
+		return nil, fmt.Errorf("remote child execute request missing exec")
+	}
+	if req.Launch == nil {
+		return nil, fmt.Errorf("remote child launch metadata is required")
+	}
+	execReq := proto.Clone(req.Exec).(*ExecuteRequest)
+	if execReq.RemoteChild != nil {
+		return nil, fmt.Errorf("remote child launch metadata must be supplied on the dedicated request envelope")
+	}
+	execReq.RemoteChild = proto.Clone(req.Launch).(*RemoteChildLaunch)
+	return execReq, nil
+}
+
+func remoteChildStreamRequestToExecStreamRequest(req *RemoteChildStreamRequest) (*ExecStreamRequest, error) {
+	if req == nil {
+		return nil, fmt.Errorf("remote child stream request is required")
+	}
+	switch payload := req.Payload.(type) {
+	case *RemoteChildStreamRequest_Exec:
+		execReq, err := remoteChildExecuteRequestToExecuteRequest(payload.Exec)
+		if err != nil {
+			return nil, status.Error(codes.InvalidArgument, err.Error())
+		}
+		return &ExecStreamRequest{Payload: &ExecStreamRequest_Exec{Exec: execReq}}, nil
+	case *RemoteChildStreamRequest_StdinData:
+		return &ExecStreamRequest{Payload: &ExecStreamRequest_StdinData{StdinData: payload.StdinData}}, nil
+	case *RemoteChildStreamRequest_Signal:
+		return &ExecStreamRequest{Payload: &ExecStreamRequest_Signal{Signal: payload.Signal}}, nil
+	case *RemoteChildStreamRequest_CloseStdin:
+		return &ExecStreamRequest{Payload: &ExecStreamRequest_CloseStdin{CloseStdin: payload.CloseStdin}}, nil
+	default:
+		return nil, status.Error(codes.InvalidArgument, "remote child stream request missing payload")
+	}
 }
 
 func (s *ClusterServerImpl) executeRemoteBackground(ctx context.Context, req *ExecuteRequest, jobID cluster.JobID, node *cluster.NodeInfo, reqs cluster.Requirements) (*ExecuteResponse, error) {

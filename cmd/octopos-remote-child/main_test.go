@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/octopos/octopos/pkg/remotechild"
+	octopospb "github.com/octopos/octopos/pkg/rpc"
 	"golang.org/x/sys/unix"
 )
 
@@ -240,6 +241,41 @@ func TestBuildRequestIncludesFDPlan(t *testing.T) {
 	}
 	assertNoEnv(t, req.Env, remotechild.EnvFDPlan)
 	assertEnv(t, req.Env, remotechild.EnvPipeFD(1)+"=12345")
+}
+
+func TestRemoteChildStreamRequestFromExecStreamRequest(t *testing.T) {
+	execReq := &octopospb.ExecuteRequest{
+		SessionId: "session-a",
+		JobId:     "job-child",
+		Command:   []string{"hostname"},
+		RemoteChild: &octopospb.RemoteChildLaunch{
+			ParentJobId: "job-parent",
+			ChildToken:  "parent-token",
+		},
+	}
+	msg, err := remoteChildStreamRequestFromExecStreamRequest(&octopospb.ExecStreamRequest{
+		Payload: &octopospb.ExecStreamRequest_Exec{Exec: execReq},
+	})
+	if err != nil {
+		t.Fatalf("remoteChildStreamRequestFromExecStreamRequest: %v", err)
+	}
+	launch := msg.GetExec().GetLaunch()
+	if launch == nil || launch.ParentJobId != "job-parent" || launch.ChildToken != "parent-token" {
+		t.Fatalf("launch metadata = %#v", launch)
+	}
+	if nested := msg.GetExec().GetExec().GetRemoteChild(); nested != nil {
+		t.Fatalf("nested remote child metadata should be stripped: %#v", nested)
+	}
+
+	stdin, err := remoteChildStreamRequestFromExecStreamRequest(&octopospb.ExecStreamRequest{
+		Payload: &octopospb.ExecStreamRequest_StdinData{StdinData: []byte("hi")},
+	})
+	if err != nil {
+		t.Fatalf("stdin conversion: %v", err)
+	}
+	if string(stdin.GetStdinData()) != "hi" {
+		t.Fatalf("stdin data = %q", string(stdin.GetStdinData()))
+	}
 }
 
 func TestRemotePipeEnvFromCurrentProcess(t *testing.T) {

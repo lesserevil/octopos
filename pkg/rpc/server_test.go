@@ -888,6 +888,72 @@ func TestRemoteChildInfoFromTypedLaunch(t *testing.T) {
 	}
 }
 
+func TestRemoteChildExecuteRequestToExecuteRequest(t *testing.T) {
+	req := &RemoteChildExecuteRequest{
+		Exec: &ExecuteRequest{
+			SessionId: "session-1",
+			JobId:     "job-child",
+			Command:   []string{"hostname"},
+			Env:       []string{"USER_VALUE=preserved"},
+		},
+		Launch: &RemoteChildLaunch{
+			ParentJobId: "job-parent",
+			ParentPid:   100,
+			ShadowPid:   101,
+			ChildToken:  "parent-token",
+		},
+	}
+
+	execReq, err := remoteChildExecuteRequestToExecuteRequest(req)
+	if err != nil {
+		t.Fatalf("remoteChildExecuteRequestToExecuteRequest: %v", err)
+	}
+	if execReq.RemoteChild == nil || execReq.RemoteChild.ParentJobId != "job-parent" || execReq.RemoteChild.ChildToken != "parent-token" {
+		t.Fatalf("remote child launch = %#v", execReq.RemoteChild)
+	}
+	if req.Exec.RemoteChild != nil {
+		t.Fatalf("source exec request mutated: %#v", req.Exec.RemoteChild)
+	}
+
+	_, err = remoteChildExecuteRequestToExecuteRequest(&RemoteChildExecuteRequest{
+		Exec: &ExecuteRequest{
+			Command:     []string{"hostname"},
+			RemoteChild: &RemoteChildLaunch{ParentJobId: "nested"},
+		},
+		Launch: &RemoteChildLaunch{ParentJobId: "job-parent"},
+	})
+	if err == nil || !strings.Contains(err.Error(), "dedicated request envelope") {
+		t.Fatalf("nested metadata error = %v, want dedicated envelope rejection", err)
+	}
+}
+
+func TestRemoteChildStreamRequestToExecStreamRequest(t *testing.T) {
+	msg, err := remoteChildStreamRequestToExecStreamRequest(&RemoteChildStreamRequest{
+		Payload: &RemoteChildStreamRequest_Exec{Exec: &RemoteChildExecuteRequest{
+			Exec:   &ExecuteRequest{Command: []string{"hostname"}},
+			Launch: &RemoteChildLaunch{ParentJobId: "job-parent", ChildToken: "parent-token"},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("remoteChildStreamRequestToExecStreamRequest: %v", err)
+	}
+	execReq := msg.GetExec()
+	if execReq == nil || execReq.RemoteChild == nil || execReq.RemoteChild.ParentJobId != "job-parent" {
+		t.Fatalf("converted exec request = %#v", execReq)
+	}
+
+	signal := &SignalRequest{Signal: int32(syscall.SIGTERM)}
+	msg, err = remoteChildStreamRequestToExecStreamRequest(&RemoteChildStreamRequest{
+		Payload: &RemoteChildStreamRequest_Signal{Signal: signal},
+	})
+	if err != nil {
+		t.Fatalf("signal conversion: %v", err)
+	}
+	if msg.GetSignal() == nil || msg.GetSignal().Signal != int32(syscall.SIGTERM) {
+		t.Fatalf("converted signal = %#v", msg.GetSignal())
+	}
+}
+
 func TestScheduleJobAppliesSelectedNodeEnv(t *testing.T) {
 	root := t.TempDir()
 	server := NewClusterServerImplWithOptions(
