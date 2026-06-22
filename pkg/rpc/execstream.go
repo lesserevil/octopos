@@ -73,6 +73,7 @@ func (s *ClusterServerImpl) execStream(stream execStreamServer, requireRemoteChi
 	if err := s.authorizeRemoteChildRequest(stream.Context(), req); err != nil {
 		return sendStreamError(stream, err.Error())
 	}
+	normalizeRemoteChildRequest(req)
 
 	node, reqs, jobID, err := s.scheduleJob(req)
 	if err != nil {
@@ -95,6 +96,7 @@ func (s *ClusterServerImpl) executeBackground(ctx context.Context, req *ExecuteR
 	if err := s.authorizeRemoteChildRequest(ctx, req); err != nil {
 		return &ExecuteResponse{JobId: req.GetJobId(), ExitCode: -1, Error: err.Error()}, nil
 	}
+	normalizeRemoteChildRequest(req)
 
 	node, reqs, jobID, err := s.scheduleJob(req)
 	if err != nil {
@@ -853,8 +855,8 @@ func (s *ClusterServerImpl) authorizeRemoteChildRequest(ctx context.Context, req
 		return nil
 	}
 
-	parentJobID := cluster.JobID(requestEnvValue(req.Env, remotechild.EnvParentJobID))
-	token := requestEnvValue(req.Env, remotechild.EnvChildToken)
+	parentJobID := cluster.JobID(remoteChildParentJobID(req))
+	token := remoteChildToken(req)
 	if parentJobID == "" {
 		err := fmt.Errorf("remote child request missing %s", remotechild.EnvParentJobID)
 		s.recordRemoteChildAudit(req, "authorize", "rejected", err.Error(), nil)
@@ -919,7 +921,52 @@ func (s *ClusterServerImpl) authorizeRemoteChildRequest(ctx context.Context, req
 }
 
 func isRemoteChildRequest(req *ExecuteRequest) bool {
-	return req != nil && requestEnvValue(req.Env, remotechild.EnvRemoteChild) == "1"
+	return req != nil && (req.GetRemoteChild() != nil || requestEnvValue(req.Env, remotechild.EnvRemoteChild) == "1")
+}
+
+func remoteChildParentJobID(req *ExecuteRequest) string {
+	if launch := req.GetRemoteChild(); launch != nil && launch.ParentJobId != "" {
+		return launch.ParentJobId
+	}
+	return requestEnvValue(req.GetEnv(), remotechild.EnvParentJobID)
+}
+
+func remoteChildToken(req *ExecuteRequest) string {
+	if launch := req.GetRemoteChild(); launch != nil && launch.ChildToken != "" {
+		return launch.ChildToken
+	}
+	return requestEnvValue(req.GetEnv(), remotechild.EnvChildToken)
+}
+
+func normalizeRemoteChildRequest(req *ExecuteRequest) {
+	if req == nil || req.GetRemoteChild() == nil {
+		return
+	}
+	launch := req.GetRemoteChild()
+	values := []string{remotechild.EnvRemoteChild + "=1"}
+	if launch.ParentJobId != "" {
+		values = append(values, remotechild.EnvParentJobID+"="+launch.ParentJobId)
+	}
+	if launch.ParentPid != 0 {
+		values = append(values, remotechild.EnvParentPID+"="+strconv.Itoa(int(launch.ParentPid)))
+	}
+	if launch.ShadowPid != 0 {
+		values = append(values, remotechild.EnvShadowPID+"="+strconv.Itoa(int(launch.ShadowPid)))
+	}
+	if launch.PlacementReason != "" {
+		values = append(values, remotechild.EnvPlacementReason+"="+launch.PlacementReason)
+	}
+	if launch.FallbackReason != "" {
+		values = append(values, remotechild.EnvFallbackReason+"="+launch.FallbackReason)
+	}
+	if launch.FallbackReasonCode != "" {
+		values = append(values, remotechild.EnvFallbackCode+"="+launch.FallbackReasonCode)
+	}
+	if launch.FdPlan != "" {
+		values = append(values, remotechild.EnvFDPlan+"="+launch.FdPlan)
+	}
+	req.Env = dropRequestEnvKeys(req.Env, remotechild.EnvChildToken)
+	req.Env = upsertEnv(req.Env, values...)
 }
 
 func isTerminalJobStatus(status cluster.JobStatus) bool {
@@ -1250,6 +1297,27 @@ func upsertEnv(env []string, values ...string) []string {
 	return out
 }
 
+func dropRequestEnvKeys(env []string, keys ...string) []string {
+	if len(keys) == 0 {
+		return append([]string{}, env...)
+	}
+	drop := make(map[string]struct{}, len(keys))
+	for _, key := range keys {
+		drop[key] = struct{}{}
+	}
+	out := make([]string, 0, len(env))
+	for _, entry := range env {
+		key, _, ok := strings.Cut(entry, "=")
+		if ok {
+			if _, shouldDrop := drop[key]; shouldDrop {
+				continue
+			}
+		}
+		out = append(out, entry)
+	}
+	return out
+}
+
 func generateChildToken() (string, error) {
 	var raw [32]byte
 	if _, err := rand.Read(raw[:]); err != nil {
@@ -1262,8 +1330,9 @@ func remoteChildInfoFromEnv(req *ExecuteRequest, jobID cluster.JobID, nodeID clu
 	if !isRemoteChildRequest(req) {
 		return nil
 	}
+	launch := req.GetRemoteChild()
 	info := &cluster.RemoteChildInfo{
-		ParentJobID:        cluster.JobID(requestEnvValue(req.Env, remotechild.EnvParentJobID)),
+		ParentJobID:        cluster.JobID(remoteChildParentJobID(req)),
 		RemoteJobID:        jobID,
 		RemoteNodeID:       nodeID,
 		Command:            append([]string{}, req.Command...),
@@ -1272,14 +1341,31 @@ func remoteChildInfoFromEnv(req *ExecuteRequest, jobID cluster.JobID, nodeID clu
 		FallbackReasonCode: requestEnvValue(req.Env, remotechild.EnvFallbackCode),
 		State:              remotechild.StateScheduled,
 	}
+	if launch != nil {
+		info.ParentPID = int(launch.ParentPid)
+		info.ShadowPID = int(launch.ShadowPid)
+		if launch.PlacementReason != "" {
+			info.PlacementReason = launch.PlacementReason
+		}
+		if launch.FallbackReason != "" {
+			info.FallbackReason = launch.FallbackReason
+		}
+		if launch.FallbackReasonCode != "" {
+			info.FallbackReasonCode = launch.FallbackReasonCode
+		}
+	}
 	if info.PlacementReason == "" {
 		info.PlacementReason = "explicit"
 	}
-	if pid, err := strconv.Atoi(requestEnvValue(req.Env, remotechild.EnvParentPID)); err == nil {
-		info.ParentPID = pid
+	if info.ParentPID == 0 {
+		if pid, err := strconv.Atoi(requestEnvValue(req.Env, remotechild.EnvParentPID)); err == nil {
+			info.ParentPID = pid
+		}
 	}
-	if pid, err := strconv.Atoi(requestEnvValue(req.Env, remotechild.EnvShadowPID)); err == nil {
-		info.ShadowPID = pid
+	if info.ShadowPID == 0 {
+		if pid, err := strconv.Atoi(requestEnvValue(req.Env, remotechild.EnvShadowPID)); err == nil {
+			info.ShadowPID = pid
+		}
 	}
 	return info
 }

@@ -356,19 +356,24 @@ func buildRequestWithFDPlan(cfg config, command []string, env []string, pid int,
 	if lookupEnv(env, remotechild.EnvPreloadActive) == "1" {
 		reason = "transparent"
 	}
-	reqEnv := filterEnv(env, remotechild.EnvPreloadActive)
+	parentJobID := lookupEnv(env, "OCTOPOS_JOB_ID")
+	childToken := lookupEnv(env, remotechild.EnvChildToken)
+	reqEnv := filterEnv(
+		env,
+		remotechild.EnvPreloadActive,
+		remotechild.EnvRemoteChild,
+		remotechild.EnvPlacementReason,
+		remotechild.EnvFallbackReason,
+		remotechild.EnvFallbackCode,
+		remotechild.EnvParentJobID,
+		remotechild.EnvParentPID,
+		remotechild.EnvShadowPID,
+		remotechild.EnvChildToken,
+		remotechild.EnvFDPlan,
+	)
 	reqEnv = append(reqEnv,
 		remotechild.EnvRemoteChild+"=1",
-		remotechild.EnvPlacementReason+"="+reason,
-		remotechild.EnvShadowPID+"="+strconv.Itoa(pid),
-		remotechild.EnvParentPID+"="+strconv.Itoa(ppid),
 	)
-	if parentJobID := lookupEnv(env, "OCTOPOS_JOB_ID"); parentJobID != "" {
-		reqEnv = append(reqEnv, remotechild.EnvParentJobID+"="+parentJobID)
-	}
-	if fdPlan != "" {
-		reqEnv = append(reqEnv, remotechild.EnvFDPlan+"="+fdPlan)
-	}
 	for _, entry := range extraEnv {
 		if entry != "" {
 			reqEnv = append(reqEnv, entry)
@@ -385,6 +390,14 @@ func buildRequestWithFDPlan(cfg config, command []string, env []string, pid int,
 		Stdout:    true,
 		Stderr:    true,
 		Tty:       cfg.TTY,
+		RemoteChild: &octopospb.RemoteChildLaunch{
+			ParentJobId:     parentJobID,
+			ParentPid:       int32(ppid),
+			ShadowPid:       int32(pid),
+			PlacementReason: reason,
+			ChildToken:      childToken,
+			FdPlan:          fdPlan,
+		},
 		Resources: &octopospb.Requirements{
 			CpuMillicores: int64(cfg.CPU * 1000),
 			MemoryBytes:   int64(cfg.MemoryGB * 1024 * 1024 * 1024),

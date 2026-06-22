@@ -834,6 +834,60 @@ func TestRemoteChildInfoFromEnv(t *testing.T) {
 	}
 }
 
+func TestRemoteChildInfoFromTypedLaunch(t *testing.T) {
+	req := &ExecuteRequest{
+		Command: []string{"/bin/sh", "-c", "echo child"},
+		RemoteChild: &RemoteChildLaunch{
+			ParentJobId:        "job-parent",
+			ParentPid:          100,
+			ShadowPid:          101,
+			PlacementReason:    "transparent",
+			FallbackReason:     "local fallback reason",
+			FallbackReasonCode: "ipc.memfd",
+			ChildToken:         "parent-token",
+			FdPlan:             `[{"fd":9}]`,
+		},
+		Env: []string{
+			remotechild.EnvChildToken + "=legacy-token",
+			"USER_VALUE=preserved",
+		},
+	}
+
+	if !isRemoteChildRequest(req) {
+		t.Fatal("typed remote child request was not recognized")
+	}
+	info := remoteChildInfoFromEnv(req, cluster.JobID("job-child"), cluster.NodeID("node-2"))
+	if info == nil {
+		t.Fatal("remoteChildInfoFromEnv returned nil")
+	}
+	if info.ParentJobID != "job-parent" || info.ParentPID != 100 || info.ShadowPID != 101 {
+		t.Fatalf("typed parent metadata = %#v", info)
+	}
+	if info.PlacementReason != "transparent" || info.FallbackReason != "local fallback reason" || info.FallbackReasonCode != "ipc.memfd" {
+		t.Fatalf("typed reason metadata = %#v", info)
+	}
+
+	normalizeRemoteChildRequest(req)
+	if got := requestEnvValue(req.Env, remotechild.EnvChildToken); got != "" {
+		t.Fatalf("parent token remained in env as %q", got)
+	}
+	for key, want := range map[string]string{
+		remotechild.EnvRemoteChild:     "1",
+		remotechild.EnvParentJobID:     "job-parent",
+		remotechild.EnvParentPID:       "100",
+		remotechild.EnvShadowPID:       "101",
+		remotechild.EnvPlacementReason: "transparent",
+		remotechild.EnvFallbackReason:  "local fallback reason",
+		remotechild.EnvFallbackCode:    "ipc.memfd",
+		remotechild.EnvFDPlan:          `[{"fd":9}]`,
+		"USER_VALUE":                   "preserved",
+	} {
+		if got := requestEnvValue(req.Env, key); got != want {
+			t.Fatalf("%s = %q, want %q; env=%v", key, got, want, req.Env)
+		}
+	}
+}
+
 func TestScheduleJobAppliesSelectedNodeEnv(t *testing.T) {
 	root := t.TempDir()
 	server := NewClusterServerImplWithOptions(
@@ -921,6 +975,21 @@ func TestAuthorizeRemoteChildRequestRequiresParentToken(t *testing.T) {
 		t.Fatalf("valid remote child rejected: %v", err)
 	}
 
+	typedReq := &ExecuteRequest{
+		SessionId: "session-1",
+		Command:   []string{"true"},
+		RemoteChild: &RemoteChildLaunch{
+			ParentJobId: "job-parent",
+			ParentPid:   100,
+			ShadowPid:   101,
+			ChildToken:  "parent-token",
+		},
+		Env: []string{"USER_VALUE=preserved"},
+	}
+	if err := server.authorizeRemoteChildRequest(context.Background(), typedReq); err != nil {
+		t.Fatalf("typed remote child rejected: %v", err)
+	}
+
 	missingToken := cloneExecuteRequestForTest(validReq)
 	missingToken.Env = []string{
 		remotechild.EnvRemoteChild + "=1",
@@ -952,8 +1021,8 @@ func TestAuthorizeRemoteChildRequestRequiresParentToken(t *testing.T) {
 	}
 
 	events := server.remoteChildren.AuditEvents()
-	if len(events) < 4 {
-		t.Fatalf("audit events = %d, want at least 4", len(events))
+	if len(events) < 5 {
+		t.Fatalf("audit events = %d, want at least 5", len(events))
 	}
 	if events[0].Decision != "accepted" || events[0].ParentJobID != "job-parent" {
 		t.Fatalf("first audit event = %#v", events[0])

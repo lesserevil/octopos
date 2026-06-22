@@ -191,11 +191,20 @@ func TestBuildRequestPreservesParentMetadata(t *testing.T) {
 		t.Fatalf("node affinity = %#v", req.Resources.NodeAffinity)
 	}
 	assertEnv(t, req.Env, "OCTOPOS_REMOTE_CHILD=1")
-	assertEnv(t, req.Env, "OCTOPOS_REMOTE_CHILD_REASON=explicit")
-	assertEnv(t, req.Env, "OCTOPOS_SHADOW_PID=123")
-	assertEnv(t, req.Env, "OCTOPOS_PARENT_PID=45")
-	assertEnv(t, req.Env, "OCTOPOS_PARENT_JOB_ID=job-parent")
-	assertEnv(t, req.Env, remotechild.EnvChildToken+"=parent-token")
+	assertNoEnv(t, req.Env, "OCTOPOS_REMOTE_CHILD_REASON")
+	assertNoEnv(t, req.Env, "OCTOPOS_SHADOW_PID")
+	assertNoEnv(t, req.Env, "OCTOPOS_PARENT_PID")
+	assertNoEnv(t, req.Env, "OCTOPOS_PARENT_JOB_ID")
+	assertNoEnv(t, req.Env, remotechild.EnvChildToken)
+	if req.RemoteChild == nil {
+		t.Fatal("RemoteChild metadata missing")
+	}
+	if req.RemoteChild.ParentJobId != "job-parent" || req.RemoteChild.ChildToken != "parent-token" {
+		t.Fatalf("remote child parent/token metadata = %#v", req.RemoteChild)
+	}
+	if req.RemoteChild.PlacementReason != "explicit" || req.RemoteChild.ShadowPid != 123 || req.RemoteChild.ParentPid != 45 {
+		t.Fatalf("remote child metadata = %#v", req.RemoteChild)
+	}
 }
 
 func TestBuildRequestStripsPreloadGuard(t *testing.T) {
@@ -206,7 +215,9 @@ func TestBuildRequestStripsPreloadGuard(t *testing.T) {
 		remotechild.EnvPreloadActive + "=1",
 	}, 123, 45)
 
-	assertEnv(t, req.Env, remotechild.EnvPlacementReason+"=transparent")
+	if req.RemoteChild == nil || req.RemoteChild.PlacementReason != "transparent" {
+		t.Fatalf("remote child placement = %#v, want transparent", req.RemoteChild)
+	}
 	assertEnv(t, req.Env, remotechild.EnvMode+"=safe")
 	assertNoEnv(t, req.Env, remotechild.EnvPreloadActive)
 }
@@ -224,7 +235,10 @@ func TestBuildRequestIncludesFDPlan(t *testing.T) {
 	cfg := config{SessionID: "session-a", JobID: "job-child", CWD: "/", CPU: 1, MemoryGB: 1}
 	req := buildRequestWithFDPlan(cfg, []string{"hostname"}, []string{"OCTOPOS_JOB_ID=job-parent"}, 123, 45, `[{"fd":9,"path":"/tmp/file","flags":2}]`, remotechild.EnvPipeFD(1)+"=12345")
 
-	assertEnv(t, req.Env, remotechild.EnvFDPlan+`=[{"fd":9,"path":"/tmp/file","flags":2}]`)
+	if req.RemoteChild == nil || req.RemoteChild.FdPlan != `[{"fd":9,"path":"/tmp/file","flags":2}]` {
+		t.Fatalf("remote child fd plan = %#v", req.RemoteChild)
+	}
+	assertNoEnv(t, req.Env, remotechild.EnvFDPlan)
 	assertEnv(t, req.Env, remotechild.EnvPipeFD(1)+"=12345")
 }
 
