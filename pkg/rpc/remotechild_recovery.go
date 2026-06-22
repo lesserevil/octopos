@@ -170,17 +170,29 @@ func (s *ClusterServerImpl) applyRecoveredRemoteChildJob(record remotechild.Shad
 	switch job.Status {
 	case JobStatus_JOB_STATUS_RUNNING:
 		record.State = remotechild.StateRunning
+		if job.RemoteChild != nil {
+			record.StateReason = job.RemoteChild.StateReason
+		} else if !strings.HasPrefix(record.StateReason, "continued by signal ") {
+			record.StateReason = ""
+		}
 		record.FailureReason = ""
 		s.remoteChildren.MarkRunning(record.RemoteJobID, record.RemoteGlobalPID, nonZeroTime(record.StartedAt, now))
+		if record.StateReason != "" {
+			s.remoteChildren.MarkState(record.RemoteJobID, remotechild.StateRunning, record.StateReason, now)
+		}
 		s.upsertRecoveredJob(record, cluster.JobStatusRunning, job)
 		return remoteChildRecoveryRunning
 	case JobStatus_JOB_STATUS_STOPPED:
-		reason := record.FailureReason
+		reason := record.StateReason
+		if reason == "" {
+			reason = record.FailureReason
+		}
 		if reason == "" {
 			reason = "remote job is stopped"
 		}
 		record.State = remotechild.StateStopped
-		record.FailureReason = reason
+		record.StateReason = reason
+		record.FailureReason = ""
 		s.remoteChildren.MarkState(record.RemoteJobID, remotechild.StateStopped, reason, now)
 		s.upsertRecoveredJob(record, cluster.JobStatusStopped, job)
 		return remoteChildRecoveryStopped
@@ -287,7 +299,12 @@ func mergeRecoveredRemoteChildRecord(record remotechild.ShadowRecord, job *JobIn
 		if record.FallbackReasonCode == "" {
 			record.FallbackReasonCode = child.FallbackReasonCode
 		}
-		if child.FailureReason != "" {
+		if child.StateReason != "" {
+			record.StateReason = child.StateReason
+		} else if child.State == string(remotechild.StateStopped) && child.FailureReason != "" {
+			record.StateReason = child.FailureReason
+		}
+		if child.FailureReason != "" && child.State != string(remotechild.StateStopped) {
 			record.FailureReason = child.FailureReason
 		}
 		if record.StartedAt.IsZero() {

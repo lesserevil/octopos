@@ -216,6 +216,7 @@ type RemoteChildInfo struct {
 	FallbackReason           string    `json:"fallback_reason,omitempty"`
 	FallbackReasonCode       string    `json:"fallback_reason_code,omitempty"`
 	State                    string    `json:"state,omitempty"`
+	StateReason              string    `json:"state_reason,omitempty"`
 	FailureReason            string    `json:"failure_reason,omitempty"`
 	StartedAt                time.Time `json:"started_at,omitempty"`
 	FinishedAt               time.Time `json:"finished_at,omitempty"`

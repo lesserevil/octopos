@@ -3841,6 +3841,7 @@ type RemoteChildInfo struct {
 	ProcessGroupId           int32                  `protobuf:"varint,15,opt,name=process_group_id,json=processGroupId,proto3" json:"process_group_id,omitempty"`
 	KernelSessionId          int32                  `protobuf:"varint,16,opt,name=kernel_session_id,json=kernelSessionId,proto3" json:"kernel_session_id,omitempty"`
 	ForegroundProcessGroupId int32                  `protobuf:"varint,17,opt,name=foreground_process_group_id,json=foregroundProcessGroupId,proto3" json:"foreground_process_group_id,omitempty"`
+	StateReason              string                 `protobuf:"bytes,18,opt,name=state_reason,json=stateReason,proto3" json:"state_reason,omitempty"`
 	unknownFields            protoimpl.UnknownFields
 	sizeCache                protoimpl.SizeCache
 }
@@ -3994,6 +3995,13 @@ func (x *RemoteChildInfo) GetForegroundProcessGroupId() int32 {
 	return 0
 }
 
+func (x *RemoteChildInfo) GetStateReason() string {
+	if x != nil {
+		return x.StateReason
+	}
+	return ""
+}
+
 type RemoteChildRecord struct {
 	state                    protoimpl.MessageState `protogen:"open.v1"`
 	SessionId                string                 `protobuf:"bytes,1,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
@@ -4018,6 +4026,7 @@ type RemoteChildRecord struct {
 	ProcessGroupId           int32                  `protobuf:"varint,20,opt,name=process_group_id,json=processGroupId,proto3" json:"process_group_id,omitempty"`
 	KernelSessionId          int32                  `protobuf:"varint,21,opt,name=kernel_session_id,json=kernelSessionId,proto3" json:"kernel_session_id,omitempty"`
 	ForegroundProcessGroupId int32                  `protobuf:"varint,22,opt,name=foreground_process_group_id,json=foregroundProcessGroupId,proto3" json:"foreground_process_group_id,omitempty"`
+	StateReason              string                 `protobuf:"bytes,23,opt,name=state_reason,json=stateReason,proto3" json:"state_reason,omitempty"`
 	unknownFields            protoimpl.UnknownFields
 	sizeCache                protoimpl.SizeCache
 }
@@ -4204,6 +4213,13 @@ func (x *RemoteChildRecord) GetForegroundProcessGroupId() int32 {
 		return x.ForegroundProcessGroupId
 	}
 	return 0
+}
+
+func (x *RemoteChildRecord) GetStateReason() string {
+	if x != nil {
+		return x.StateReason
+	}
+	return ""
 }
 
 type CommandSpec struct {
@@ -4603,7 +4619,7 @@ const file_pkg_rpc_octopos_proto_rawDesc = "" +
 	"\x1bforeground_process_group_id\x18\x0e \x01(\x05R\x18foregroundProcessGroupId\x1a:\n" +
 	"\fPipeMapEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\x05R\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\x05R\x05value:\x028\x01\"\x9b\x05\n" +
+	"\x05value\x18\x02 \x01(\x05R\x05value:\x028\x01\"\xbe\x05\n" +
 	"\x0fRemoteChildInfo\x12\"\n" +
 	"\rparent_job_id\x18\x01 \x01(\tR\vparentJobId\x12\x1d\n" +
 	"\n" +
@@ -4626,7 +4642,8 @@ const file_pkg_rpc_octopos_proto_rawDesc = "" +
 	"\x14fallback_reason_code\x18\x0e \x01(\tR\x12fallbackReasonCode\x12(\n" +
 	"\x10process_group_id\x18\x0f \x01(\x05R\x0eprocessGroupId\x12*\n" +
 	"\x11kernel_session_id\x18\x10 \x01(\x05R\x0fkernelSessionId\x12=\n" +
-	"\x1bforeground_process_group_id\x18\x11 \x01(\x05R\x18foregroundProcessGroupId\"\xaf\x06\n" +
+	"\x1bforeground_process_group_id\x18\x11 \x01(\x05R\x18foregroundProcessGroupId\x12!\n" +
+	"\fstate_reason\x18\x12 \x01(\tR\vstateReason\"\xd2\x06\n" +
 	"\x11RemoteChildRecord\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\x01 \x01(\tR\tsessionId\x12\"\n" +
@@ -4657,7 +4674,8 @@ const file_pkg_rpc_octopos_proto_rawDesc = "" +
 	"\x14fallback_reason_code\x18\x13 \x01(\tR\x12fallbackReasonCode\x12(\n" +
 	"\x10process_group_id\x18\x14 \x01(\x05R\x0eprocessGroupId\x12*\n" +
 	"\x11kernel_session_id\x18\x15 \x01(\x05R\x0fkernelSessionId\x12=\n" +
-	"\x1bforeground_process_group_id\x18\x16 \x01(\x05R\x18foregroundProcessGroupId\"\x8d\x01\n" +
+	"\x1bforeground_process_group_id\x18\x16 \x01(\x05R\x18foregroundProcessGroupId\x12!\n" +
+	"\fstate_reason\x18\x17 \x01(\tR\vstateReason\"\x8d\x01\n" +
 	"\vCommandSpec\x12\x12\n" +
 	"\x04argv\x18\x01 \x03(\tR\x04argv\x12\x10\n" +
 	"\x03env\x18\x02 \x03(\tR\x03env\x127\n" +

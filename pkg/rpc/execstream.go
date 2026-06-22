@@ -313,9 +313,10 @@ func (s *ClusterServerImpl) executeLocalStream(stream execStreamServer, req *Exe
 			case *ExecStreamRequest_CloseStdin:
 				closeStdin()
 			case *ExecStreamRequest_Signal:
-				if cmd.Process != nil {
-					s.markJobSignalState(jobID, syscall.Signal(payload.Signal.Signal))
-					_ = syscall.Kill(-cmd.Process.Pid, syscall.Signal(payload.Signal.Signal))
+				if cmd.Process != nil && payload.Signal != nil {
+					if err := syscall.Kill(-cmd.Process.Pid, syscall.Signal(payload.Signal.Signal)); err == nil {
+						s.markJobSignalState(jobID, syscall.Signal(payload.Signal.Signal))
+					}
 				}
 			}
 		}
@@ -418,11 +419,8 @@ func (s *ClusterServerImpl) executeLocalPTYStream(stream execStreamServer, req *
 			case *ExecStreamRequest_CloseStdin:
 				return
 			case *ExecStreamRequest_Signal:
-				if payload.Signal != nil {
-					s.markJobSignalState(jobID, syscall.Signal(payload.Signal.Signal))
-				}
 				if handlePTYSignal(ptmx, cmd, payload.Signal) {
-					continue
+					s.markJobSignalState(jobID, syscall.Signal(payload.Signal.Signal))
 				}
 			}
 		}
@@ -484,11 +482,12 @@ func (s *ClusterServerImpl) proxyExecStream(stream execStreamServer, req *Execut
 			if err != nil {
 				return
 			}
-			if payload := msg.GetSignal(); payload != nil {
-				s.markJobSignalState(jobID, syscall.Signal(payload.Signal))
-			}
+			payload := msg.GetSignal()
 			if err := peerStream.Send(msg); err != nil {
 				return
+			}
+			if payload != nil {
+				s.markJobSignalState(jobID, syscall.Signal(payload.Signal))
 			}
 		}
 	}()
@@ -758,6 +757,8 @@ func (s *ClusterServerImpl) markJobStarted(jobID cluster.JobID) {
 		job.StartedAt = now
 		if job.RemoteChild != nil {
 			job.RemoteChild.State = remotechild.StateRunning
+			job.RemoteChild.StateReason = ""
+			job.RemoteChild.FailureReason = ""
 			if job.RemoteChild.StartedAt.IsZero() {
 				job.RemoteChild.StartedAt = now
 			}
@@ -795,6 +796,8 @@ func (s *ClusterServerImpl) recordRemoteChildWorker(jobID cluster.JobID, globalP
 			job.RemoteChild.ForegroundProcessGroupID = control.ForegroundProcessGroupID
 		}
 		job.RemoteChild.State = remotechild.StateRunning
+		job.RemoteChild.StateReason = ""
+		job.RemoteChild.FailureReason = ""
 		if job.RemoteChild.StartedAt.IsZero() {
 			job.RemoteChild.StartedAt = now
 		}
@@ -823,6 +826,7 @@ func (s *ClusterServerImpl) markJobSignalState(jobID cluster.JobID, sig syscall.
 	case syscall.SIGCONT:
 		status = cluster.JobStatusRunning
 		childState = remotechild.StateRunning
+		reason = fmt.Sprintf("continued by signal %d", sig)
 	default:
 		return
 	}
@@ -835,11 +839,8 @@ func (s *ClusterServerImpl) markJobSignalState(jobID cluster.JobID, sig syscall.
 	job.Status = status
 	if job.RemoteChild != nil {
 		job.RemoteChild.State = string(childState)
-		if childState == remotechild.StateStopped {
-			job.RemoteChild.FailureReason = reason
-		} else {
-			job.RemoteChild.FailureReason = ""
-		}
+		job.RemoteChild.StateReason = reason
+		job.RemoteChild.FailureReason = ""
 		s.remoteChildren.MarkState(string(jobID), childState, reason, time.Now())
 	}
 }
@@ -1303,6 +1304,7 @@ func remoteChildRecordFromInfo(req *ExecuteRequest, info *cluster.RemoteChildInf
 		PlacementReason:          info.PlacementReason,
 		FallbackReason:           info.FallbackReason,
 		FallbackReasonCode:       info.FallbackReasonCode,
+		StateReason:              info.StateReason,
 		FailureReason:            info.FailureReason,
 		ProcessGroupID:           info.ProcessGroupID,
 		KernelSessionID:          info.KernelSessionID,
@@ -1448,19 +1450,19 @@ func initialPTYSize(env []string) *pty.Winsize {
 
 func handlePTYSignal(ptmx *os.File, cmd *exec.Cmd, signal *SignalRequest) bool {
 	if signal == nil {
-		return true
+		return false
 	}
 	if signal.Signal == streamResizeSignal {
 		rows, cols := decodePTYResize(signal.GlobalPid)
 		if rows > 0 && cols > 0 {
 			_ = pty.Setsize(ptmx, &pty.Winsize{Rows: rows, Cols: cols})
 		}
-		return true
+		return false
 	}
 	if cmd.Process != nil {
-		_ = syscall.Kill(-cmd.Process.Pid, syscall.Signal(signal.Signal))
+		return syscall.Kill(-cmd.Process.Pid, syscall.Signal(signal.Signal)) == nil
 	}
-	return true
+	return false
 }
 
 func decodePTYResize(encoded uint64) (uint16, uint16) {

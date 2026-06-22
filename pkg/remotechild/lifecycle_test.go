@@ -58,11 +58,28 @@ func TestStoreLifecycleTransitions(t *testing.T) {
 	if record.State != StateRunning || record.RemoteGlobalPID != 42 || !record.StartedAt.Equal(started) {
 		t.Fatalf("running record = %#v", record)
 	}
+	if record.StateReason != "" || record.FailureReason != "" {
+		t.Fatalf("running record kept state/failure reason: %#v", record)
+	}
+
+	stopped := time.Unix(20, 500)
+	store.MarkState("job-child", StateStopped, "stopped by signal 20", stopped)
+	record, _ = store.Get("job-child")
+	if record.State != StateStopped || record.StateReason != "stopped by signal 20" || record.FailureReason != "" {
+		t.Fatalf("stopped record = %#v", record)
+	}
+
+	continued := time.Unix(20, 750)
+	store.MarkState("job-child", StateRunning, "continued by signal 18", continued)
+	record, _ = store.Get("job-child")
+	if record.State != StateRunning || record.StateReason != "continued by signal 18" || record.FailureReason != "" {
+		t.Fatalf("continued record = %#v", record)
+	}
 
 	finished := time.Unix(21, 0)
 	store.MarkFinished("job-child", StateFailed, -1, 15, "test failure", finished)
 	record, _ = store.Get("job-child")
-	if record.State != StateFailed || record.ExitCode != -1 || record.Signal != 15 || record.FailureReason != "test failure" {
+	if record.State != StateFailed || record.ExitCode != -1 || record.Signal != 15 || record.StateReason != "test failure" || record.FailureReason != "test failure" {
 		t.Fatalf("finished record = %#v", record)
 	}
 	if !record.FinishedAt.Equal(finished) {

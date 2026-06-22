@@ -1251,19 +1251,22 @@ func TestRemoteChildSignalStateTransitions(t *testing.T) {
 		t.Fatalf("remote child state = %s, want stopped", job.RemoteChild.State)
 	}
 	record, _ := server.remoteChildren.Get(string(jobID))
-	if record.State != remotechild.StateStopped || record.FailureReason == "" {
+	if record.State != remotechild.StateStopped || record.StateReason == "" || record.FailureReason != "" {
 		t.Fatalf("record after stop = %#v", record)
+	}
+	if job.RemoteChild.StateReason == "" || job.RemoteChild.FailureReason != "" {
+		t.Fatalf("remote child stop reason = %#v", job.RemoteChild)
 	}
 
 	server.markJobSignalState(jobID, syscall.SIGCONT)
 	if job.Status != cluster.JobStatusRunning {
 		t.Fatalf("job status after cont = %s, want running", job.Status)
 	}
-	if job.RemoteChild.State != remotechild.StateRunning || job.RemoteChild.FailureReason != "" {
+	if job.RemoteChild.State != remotechild.StateRunning || job.RemoteChild.StateReason == "" || job.RemoteChild.FailureReason != "" {
 		t.Fatalf("remote child after cont = %#v", job.RemoteChild)
 	}
 	record, _ = server.remoteChildren.Get(string(jobID))
-	if record.State != remotechild.StateRunning || record.FailureReason != "" {
+	if record.State != remotechild.StateRunning || record.StateReason == "" || record.FailureReason != "" {
 		t.Fatalf("record after cont = %#v", record)
 	}
 }
@@ -1381,14 +1384,14 @@ func TestRecoverRemoteChildRecordFromStoppedJob(t *testing.T) {
 			RemoteNodeId:    "node-2",
 			RemoteGlobalPid: 42,
 			State:           remotechild.StateStopped,
-			FailureReason:   "stopped by signal 20",
+			StateReason:     "stopped by signal 20",
 		},
 	}, now)
 	if outcome != remoteChildRecoveryStopped {
 		t.Fatalf("outcome = %v, want stopped", outcome)
 	}
 	recovered, _ := server.remoteChildren.Get("job-child")
-	if recovered.State != remotechild.StateStopped || recovered.FailureReason != "stopped by signal 20" {
+	if recovered.State != remotechild.StateStopped || recovered.StateReason != "stopped by signal 20" || recovered.FailureReason != "" {
 		t.Fatalf("recovered stopped record = %#v", recovered)
 	}
 	job, ok := server.cluster.jobs["job-child"]

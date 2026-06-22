@@ -418,21 +418,40 @@ var jobChildrenCmd = &cobra.Command{
 			return fmt.Errorf("ListRemoteChildren failed: %w", err)
 		}
 
-		fmt.Printf("%-20s %-20s %-15s %-10s %-10s %-12s %-24s %s\n", "REMOTE JOB", "PARENT JOB", "REMOTE NODE", "SHADOW", "PID", "STATE", "REASON CODE", "COMMAND")
+		fmt.Printf("%-20s %-20s %-15s %-10s %-10s %-12s %-30s %s\n", "REMOTE JOB", "PARENT JOB", "REMOTE NODE", "SHADOW", "PID", "STATE", "DETAIL", "COMMAND")
 		for _, child := range resp.Children {
-			fmt.Printf("%-20s %-20s %-15s %-10d %-10d %-12s %-24s %s\n",
+			fmt.Printf("%-20s %-20s %-15s %-10d %-10d %-12s %-30s %s\n",
 				child.RemoteJobId,
 				child.ParentJobId,
 				child.RemoteNodeId,
 				child.ShadowPid,
 				child.RemoteGlobalPid,
 				child.State,
-				child.FallbackReasonCode,
+				remoteChildDetail(child),
 				strings.Join(child.Command, " "),
 			)
 		}
 		return nil
 	},
+}
+
+func remoteChildDetail(child *octopospb.RemoteChildRecord) string {
+	if child == nil {
+		return ""
+	}
+	switch {
+	case child.StateReason != "":
+		return child.StateReason
+	case child.FailureReason != "":
+		return child.FailureReason
+	case child.FallbackReasonCode != "":
+		if child.FallbackReason != "" {
+			return child.FallbackReasonCode + ": " + child.FallbackReason
+		}
+		return child.FallbackReasonCode
+	default:
+		return child.FallbackReason
+	}
 }
 
 var vfioCmd = &cobra.Command{

@@ -310,10 +310,10 @@ func (s *ClusterServerImpl) signalLocal(req *SignalRequest, proc *cluster.Proces
 	if proc.LocalPID <= 0 {
 		return &SignalResponse{Success: false, Error: "process has no local PID"}, nil
 	}
-	s.markJobSignalState(proc.JobID, syscall.Signal(req.Signal))
 	if err := syscall.Kill(-proc.LocalPID, syscall.Signal(req.Signal)); err != nil {
 		return &SignalResponse{Success: false, Error: err.Error()}, nil
 	}
+	s.markJobSignalState(proc.JobID, syscall.Signal(req.Signal))
 	return &SignalResponse{Success: true}, nil
 }
 
@@ -1137,6 +1137,7 @@ func remoteChildInfoToProto(info *cluster.RemoteChildInfo) *RemoteChildInfo {
 		FallbackReason:           info.FallbackReason,
 		FallbackReasonCode:       info.FallbackReasonCode,
 		State:                    info.State,
+		StateReason:              info.StateReason,
 		FailureReason:            info.FailureReason,
 		StartedAt:                unixTimeOrZero(info.StartedAt),
 		FinishedAt:               unixTimeOrZero(info.FinishedAt),
@@ -1162,6 +1163,7 @@ func remoteChildInfoFromProto(info *RemoteChildInfo) *cluster.RemoteChildInfo {
 		FallbackReason:           info.FallbackReason,
 		FallbackReasonCode:       info.FallbackReasonCode,
 		State:                    info.State,
+		StateReason:              info.StateReason,
 		FailureReason:            info.FailureReason,
 		StartedAt:                unixTimeFromProto(info.StartedAt),
 		FinishedAt:               unixTimeFromProto(info.FinishedAt),
@@ -1169,6 +1171,16 @@ func remoteChildInfoFromProto(info *RemoteChildInfo) *cluster.RemoteChildInfo {
 		KernelSessionID:          int(info.KernelSessionId),
 		ForegroundProcessGroupID: int(info.ForegroundProcessGroupId),
 	}
+}
+
+func stateReasonForRecord(record remotechild.ShadowRecord) string {
+	if record.StateReason != "" {
+		return record.StateReason
+	}
+	if record.State == remotechild.StateStopped && record.FailureReason != "" {
+		return record.FailureReason
+	}
+	return ""
 }
 
 func remoteChildInfoFromRecord(record remotechild.ShadowRecord) *cluster.RemoteChildInfo {
@@ -1185,6 +1197,7 @@ func remoteChildInfoFromRecord(record remotechild.ShadowRecord) *cluster.RemoteC
 		FallbackReason:           record.FallbackReason,
 		FallbackReasonCode:       record.FallbackReasonCode,
 		State:                    string(record.State),
+		StateReason:              stateReasonForRecord(record),
 		FailureReason:            record.FailureReason,
 		StartedAt:                record.StartedAt,
 		FinishedAt:               record.FinishedAt,
@@ -1213,6 +1226,7 @@ func remoteChildRecordToProto(record remotechild.ShadowRecord) *RemoteChildRecor
 		FallbackReason:           record.FallbackReason,
 		FallbackReasonCode:       record.FallbackReasonCode,
 		FailureReason:            record.FailureReason,
+		StateReason:              stateReasonForRecord(record),
 		CreatedAt:                unixTimeOrZero(record.CreatedAt),
 		UpdatedAt:                unixTimeOrZero(record.UpdatedAt),
 		ProcessGroupId:           int32(record.ProcessGroupID),
@@ -1242,6 +1256,7 @@ func remoteChildRecordFromProto(record *RemoteChildRecord) remotechild.ShadowRec
 		PlacementReason:          record.PlacementReason,
 		FallbackReason:           record.FallbackReason,
 		FallbackReasonCode:       record.FallbackReasonCode,
+		StateReason:              record.StateReason,
 		FailureReason:            record.FailureReason,
 		CreatedAt:                unixTimeFromProto(record.CreatedAt),
 		UpdatedAt:                unixTimeFromProto(record.UpdatedAt),

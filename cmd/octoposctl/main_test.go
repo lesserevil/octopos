@@ -70,6 +70,28 @@ func TestRemoteChildrenEnvironmentRejectsUnknownPolicy(t *testing.T) {
 	}
 }
 
+func TestRemoteChildDetailPrefersStateReason(t *testing.T) {
+	child := &octopospb.RemoteChildRecord{
+		StateReason:        "stopped by signal 20",
+		FailureReason:      "legacy failure",
+		FallbackReasonCode: "local-only",
+		FallbackReason:     "unsupported syscall",
+	}
+	if got := remoteChildDetail(child); got != "stopped by signal 20" {
+		t.Fatalf("detail = %q, want state reason", got)
+	}
+
+	child.StateReason = ""
+	if got := remoteChildDetail(child); got != "legacy failure" {
+		t.Fatalf("detail = %q, want failure reason", got)
+	}
+
+	child.FailureReason = ""
+	if got := remoteChildDetail(child); got != "local-only: unsupported syscall" {
+		t.Fatalf("detail = %q, want fallback detail", got)
+	}
+}
+
 func TestExecResourceDefaultsUsesClusterConfig(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "octoposd.yaml")
 	if err := os.WriteFile(path, []byte("exec_defaults:\n  cpu_cores: 4\n  memory_gb: 12\n"), 0600); err != nil {

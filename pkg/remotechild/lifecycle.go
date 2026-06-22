@@ -45,6 +45,7 @@ type ShadowRecord struct {
 	PlacementReason          string
 	FallbackReason           string
 	FallbackReasonCode       string
+	StateReason              string
 	FailureReason            string
 	ProcessGroupID           int
 	KernelSessionID          int
@@ -147,8 +148,10 @@ func NewPersistentStore(path string) (*Store, error) {
 			continue
 		}
 		if record.Active() {
+			reason := "octoposd restarted; waiting for remote child recovery"
 			record.State = StateRecovering
-			record.FailureReason = "octoposd restarted; waiting for remote child recovery"
+			record.StateReason = reason
+			record.FailureReason = reason
 			record.UpdatedAt = now
 			store.recoveringOnLoad++
 		}
@@ -261,6 +264,9 @@ func (s *Store) Upsert(record ShadowRecord) ShadowRecord {
 		if record.FallbackReasonCode == "" {
 			record.FallbackReasonCode = existing.FallbackReasonCode
 		}
+		if record.StateReason == "" {
+			record.StateReason = existing.StateReason
+		}
 		if record.FailureReason == "" {
 			record.FailureReason = existing.FailureReason
 		}
@@ -302,6 +308,7 @@ func (s *Store) MarkRunningWithLocalPID(remoteJobID string, globalPID uint64, lo
 		record.RemoteLocalPID = localPID
 	}
 	record.State = StateRunning
+	record.StateReason = ""
 	record.FailureReason = ""
 	if record.StartedAt.IsZero() {
 		record.StartedAt = at
@@ -346,6 +353,7 @@ func (s *Store) MarkFinished(remoteJobID string, state ShadowState, exitCode int
 		return
 	}
 	record.State = state
+	record.StateReason = reason
 	record.ExitCode = exitCode
 	record.Signal = signal
 	record.FailureReason = reason
@@ -366,10 +374,20 @@ func (s *Store) MarkState(remoteJobID string, state ShadowState, reason string, 
 		return
 	}
 	record.State = state
-	record.FailureReason = reason
+	record.StateReason = reason
+	record.FailureReason = failureReasonForState(state, reason)
 	record.UpdatedAt = at
 	s.records[remoteJobID] = record
 	s.persistLocked()
+}
+
+func failureReasonForState(state ShadowState, reason string) string {
+	switch state {
+	case StateFailed, StateFallback, StateOrphaned, StateRecovering:
+		return reason
+	default:
+		return ""
+	}
 }
 
 func (s *Store) Get(remoteJobID string) (ShadowRecord, bool) {
@@ -423,6 +441,7 @@ func (s *Store) MarkParentTerminal(parentJobID string, state ShadowState, reason
 			continue
 		}
 		record.State = state
+		record.StateReason = reason
 		record.FailureReason = reason
 		record.FinishedAt = at
 		record.UpdatedAt = at
