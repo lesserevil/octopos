@@ -23,7 +23,7 @@ operational even if later stages are never completed.
 
 ## Current Implementation Status
 
-Status date: 2026-06-20.
+Status date: 2026-06-22.
 
 Implemented and live-tested on `shedwards-octo1`, `shedwards-octo2`, and
 `shedwards-octo3`:
@@ -36,6 +36,8 @@ Implemented and live-tested on `shedwards-octo1`, `shedwards-octo2`, and
     `ExecStream`.
 - Shared foreground ExecStream client logic in `pkg/execclient`.
 - Foreground stdout/stderr/stdin forwarding and remote exit-code propagation.
+- Signal-caused foreground exits now return shell-compatible statuses
+  (`128+signal`) while preserving the raw signal in recovered worker records.
 - TTY-capable explicit remote-child execution via the existing ExecStream PTY
   path.
 - Resource and placement flags on `octopos-remote-child`:

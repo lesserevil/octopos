@@ -6,6 +6,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"syscall"
@@ -1263,6 +1264,20 @@ func TestCommandContextForNormalExecFollowsStreamCancel(t *testing.T) {
 	}
 }
 
+func TestWaitExitCodeReturnsShellStatusForSignal(t *testing.T) {
+	cmd := exec.Command("/bin/sleep", "60")
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start sleep: %v", err)
+	}
+	if err := cmd.Process.Signal(syscall.SIGINT); err != nil {
+		_ = cmd.Process.Kill()
+		t.Fatalf("signal sleep: %v", err)
+	}
+	if got, want := waitExitCode(cmd.Wait()), int32(128+syscall.SIGINT); got != want {
+		t.Fatalf("waitExitCode = %d, want %d", got, want)
+	}
+}
+
 func TestRecoverRemoteChildRecordFromRunningJob(t *testing.T) {
 	server := NewClusterServerImpl(
 		cluster.NodeID("node-1"),
@@ -1546,6 +1561,58 @@ func TestRecoverLocalRemoteChildRecordUsesExitStatusForMissingPID(t *testing.T) 
 	}
 	job := server.cluster.jobs["job-child"]
 	if job == nil || job.Status != cluster.JobStatusCompleted || len(job.ExitCodes) != 1 || job.ExitCodes[0] != 7 {
+		t.Fatalf("recovered job = %#v", job)
+	}
+}
+
+func TestRecoverLocalRemoteChildRecordUsesSignalExitStatus(t *testing.T) {
+	root := t.TempDir()
+	exitStatusDir := t.TempDir()
+	server := NewClusterServerImplWithOptions(
+		cluster.NodeID("node-1"),
+		scheduler.NewScheduler(&scheduler.BinPackPolicy{}),
+		tracker.NewTracker(),
+		nil,
+		ServerOptions{SSI: ssi.Config{
+			ClusterRoot:  root,
+			RootFS:       root,
+			RequireMount: false,
+			Required:     true,
+		}, RemoteChildExitStatusDir: exitStatusDir},
+	)
+	now := time.Unix(200, 0)
+	record := remotechild.ShadowRecord{
+		SessionID:       "sess-1",
+		ParentJobID:     "job-parent",
+		RemoteJobID:     "job-child",
+		RemoteNodeID:    "node-1",
+		RemoteGlobalPID: 42,
+		Command:         []string{"/bin/sleep", "75"},
+		State:           remotechild.StateRecovering,
+		UpdatedAt:       now,
+	}
+	server.remoteChildren.Upsert(record)
+	statusPath := remotechild.WorkerExitStatusPathInDir(exitStatusDir, record.RemoteJobID)
+	if err := remotechild.WriteWorkerExitStatus(statusPath, remotechild.WorkerExitStatus{
+		JobID:    record.RemoteJobID,
+		PID:      99999999,
+		ExitCode: -1,
+		Signal:   int(syscall.SIGTERM),
+		ExitedAt: now.Add(time.Second),
+	}); err != nil {
+		t.Fatalf("WriteWorkerExitStatus: %v", err)
+	}
+
+	outcome := server.recoverLocalRemoteChildRecord(record, now)
+	if outcome != remoteChildRecoveryCompleted {
+		t.Fatalf("outcome = %v, want completed", outcome)
+	}
+	recovered, _ := server.remoteChildren.Get("job-child")
+	if recovered.State != remotechild.StateCompleted || recovered.ExitCode != 128+int(syscall.SIGTERM) || recovered.Signal != int(syscall.SIGTERM) {
+		t.Fatalf("recovered local record = %#v", recovered)
+	}
+	job := server.cluster.jobs["job-child"]
+	if job == nil || job.Status != cluster.JobStatusCompleted || len(job.ExitCodes) != 1 || job.ExitCodes[0] != int(128+syscall.SIGTERM) {
 		t.Fatalf("recovered job = %#v", job)
 	}
 }

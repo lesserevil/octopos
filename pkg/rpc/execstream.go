@@ -1300,6 +1300,9 @@ func waitExitCode(err error) int32 {
 	}
 	if exitErr, ok := err.(*exec.ExitError); ok {
 		if waitStatus, ok := exitErr.Sys().(syscall.WaitStatus); ok {
+			if waitStatus.Signaled() {
+				return int32(128 + int(waitStatus.Signal()))
+			}
 			return int32(waitStatus.ExitStatus())
 		}
 	}

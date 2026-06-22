@@ -370,7 +370,11 @@ func (s *ClusterServerImpl) recoverLocalRemoteChildExitStatus(record remotechild
 		outcome = remoteChildRecoveryFailed
 		reason = status.Error
 	}
-	record = terminalRecoveredRecord(record, state, status.ExitCode, status.Signal, reason, finishedAt)
+	exitCode := status.ExitCode
+	if status.Signal > 0 && exitCode < 0 {
+		exitCode = 128 + status.Signal
+	}
+	record = terminalRecoveredRecord(record, state, exitCode, status.Signal, reason, finishedAt)
 	s.remoteChildren.MarkFinished(record.RemoteJobID, record.State, record.ExitCode, record.Signal, record.FailureReason, record.FinishedAt)
 	s.upsertRecoveredJob(record, jobStatus, recoveredJobInfoFromRecord(record, jobStatusToProto(jobStatus), now))
 	return outcome, true
