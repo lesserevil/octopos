@@ -441,6 +441,112 @@ static int spawn_unixsock_proxy(int app_fd, const char *path) {
     return 0;
 }
 
+struct unixsock_binding {
+    int fd;
+    int registered;
+    char path[4096];
+    struct unixsock_binding *next;
+};
+
+static struct unixsock_binding *unixsock_bindings = NULL;
+
+static struct unixsock_binding *find_unixsock_binding(int fd) {
+    for (struct unixsock_binding *cur = unixsock_bindings; cur != NULL; cur = cur->next) {
+        if (cur->fd == fd) {
+            return cur;
+        }
+    }
+    return NULL;
+}
+
+static int remember_unixsock_binding(int fd, const char *path) {
+    if (path == NULL || path[0] == '\0') {
+        return -1;
+    }
+    struct unixsock_binding *binding = find_unixsock_binding(fd);
+    if (binding == NULL) {
+        binding = calloc(1, sizeof(*binding));
+        if (binding == NULL) {
+            return -1;
+        }
+        binding->fd = fd;
+        binding->next = unixsock_bindings;
+        unixsock_bindings = binding;
+    }
+    if (snprintf(binding->path, sizeof(binding->path), "%s", path) >= (int)sizeof(binding->path)) {
+        return -1;
+    }
+    binding->registered = 0;
+    return 0;
+}
+
+static void forget_unixsock_binding(int fd) {
+    struct unixsock_binding **cur = &unixsock_bindings;
+    while (*cur != NULL) {
+        if ((*cur)->fd == fd) {
+            struct unixsock_binding *victim = *cur;
+            *cur = victim->next;
+            free(victim);
+            return;
+        }
+        cur = &(*cur)->next;
+    }
+}
+
+static int run_unixsock_broker_command(int do_register, const char *path) {
+    if (path == NULL || path[0] == '\0') {
+        errno = EINVAL;
+        return -1;
+    }
+    pid_t pid = fork();
+    if (pid < 0) {
+        return -1;
+    }
+    if (pid == 0) {
+        setenv("OCTOPOS_REMOTE_CHILD_PRELOAD_ACTIVE", "1", 1);
+        if (do_register) {
+            execlp(unixsock_proxy_binary(), unixsock_proxy_binary(),
+                   "--addr", broker_addr(),
+                   "--register",
+                   "--path", path,
+                   "--target", path,
+                   (char *)NULL);
+        } else {
+            execlp(unixsock_proxy_binary(), unixsock_proxy_binary(),
+                   "--addr", broker_addr(),
+                   "--unregister",
+                   "--path", path,
+                   (char *)NULL);
+        }
+        _exit(127);
+    }
+
+    int status = 0;
+    while (waitpid(pid, &status, 0) < 0) {
+        if (errno != EINTR) {
+            return -1;
+        }
+    }
+    if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+        errno = ECONNREFUSED;
+        return -1;
+    }
+    return 0;
+}
+
+static int unregister_unixsock_binding(int fd) {
+    struct unixsock_binding *binding = find_unixsock_binding(fd);
+    if (binding == NULL) {
+        return 0;
+    }
+    int rc = 0;
+    if (binding->registered) {
+        rc = run_unixsock_broker_command(0, binding->path);
+    }
+    forget_unixsock_binding(fd);
+    return rc;
+}
+
 static int contains_scm_rights(const struct msghdr *msg) {
     if (msg == NULL || msg->msg_control == NULL || msg->msg_controllen == 0) {
         return 0;
@@ -571,6 +677,7 @@ typedef ssize_t (*sendmsg_fn)(int, const struct msghdr *, int);
 typedef ssize_t (*recvmsg_fn)(int, struct msghdr *, int);
 typedef int (*getsockopt_fn)(int, int, int, void *, socklen_t *);
 typedef int (*setsockopt_fn)(int, int, int, const void *, socklen_t);
+typedef int (*close_fn)(int);
 typedef int (*open_fn)(const char *, int, ...);
 typedef int (*openat_fn)(int, const char *, int, ...);
 typedef int (*mkfifo_fn)(const char *, mode_t);
@@ -841,10 +948,37 @@ int bind(int sockfd, const struct sockaddr *addr, socklen_t addrlen) {
         errno = ENOSYS;
         return -1;
     }
-    if (remote_child_process() && addr != NULL && addr->sa_family == AF_UNIX) {
-        return unsupported_unix_socket("server-side AF_UNIX bind/listen is not brokered in remote children");
+    if (!remote_child_process() || addr == NULL || addr->sa_family != AF_UNIX) {
+        return real_bind(sockfd, addr, addrlen);
     }
-    return real_bind(sockfd, addr, addrlen);
+    if (fd_socket_type(sockfd) != SOCK_STREAM) {
+        return unsupported_unix_socket("only AF_UNIX/SOCK_STREAM bind is brokerable");
+    }
+
+    char path[sizeof(((struct sockaddr_un *)0)->sun_path) + 1];
+    int abstract = 0;
+    if (unix_sockaddr_path(addr, addrlen, path, sizeof(path), &abstract) != 0) {
+        if (abstract) {
+            return unsupported_unix_socket("abstract Unix sockets are not distributed");
+        }
+        return unsupported_unix_socket("Unix socket bind requires an absolute filesystem path");
+    }
+    if (path[0] != '/') {
+        return unsupported_unix_socket("relative Unix socket paths are not distributed");
+    }
+
+    char broker_path[4096];
+    if (broker_path_for_unix_socket(path, broker_path, sizeof(broker_path)) != 0) {
+        return unsupported_unix_socket("Unix socket path is outside the SSI root");
+    }
+    if (real_bind(sockfd, addr, addrlen) != 0) {
+        return -1;
+    }
+    if (remember_unixsock_binding(sockfd, broker_path) != 0) {
+        errno = ENOMEM;
+        return -1;
+    }
+    return 0;
 }
 
 int listen(int sockfd, int backlog) {
@@ -853,10 +987,35 @@ int listen(int sockfd, int backlog) {
         errno = ENOSYS;
         return -1;
     }
-    if (remote_child_process() && fd_socket_domain(sockfd) == AF_UNIX) {
-        return unsupported_unix_socket("server-side listen is not brokered in remote children");
+    if (!remote_child_process() || fd_socket_domain(sockfd) != AF_UNIX) {
+        return real_listen(sockfd, backlog);
     }
-    return real_listen(sockfd, backlog);
+    struct unixsock_binding *binding = find_unixsock_binding(sockfd);
+    if (binding == NULL) {
+        return unsupported_unix_socket("AF_UNIX listen requires a brokerable pathname bind first");
+    }
+    if (real_listen(sockfd, backlog) != 0) {
+        return -1;
+    }
+    if (!binding->registered) {
+        if (run_unixsock_broker_command(1, binding->path) != 0) {
+            return -1;
+        }
+        binding->registered = 1;
+    }
+    return 0;
+}
+
+int close(int fd) {
+    close_fn real_close = (close_fn)dlsym(RTLD_NEXT, "close");
+    if (real_close == NULL) {
+        errno = ENOSYS;
+        return -1;
+    }
+    if (remote_child_process()) {
+        (void)unregister_unixsock_binding(fd);
+    }
+    return real_close(fd);
 }
 
 ssize_t sendmsg(int sockfd, const struct msghdr *msg, int flags) {

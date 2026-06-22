@@ -103,11 +103,21 @@ func TestPreloadBlocksUnsupportedUnixSocketOperations(t *testing.T) {
 	so := buildTestPreload(t)
 	probe := buildUnixSocketPolicyProbe(t)
 	path := filepath.Join(t.TempDir(), "blocked.sock")
+	dir := t.TempDir()
+	helper := filepath.Join(dir, "octopos-unixsock-proxy")
+	logPath := filepath.Join(dir, "proxy.log")
+	helperScript := "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$OCTOPOS_UNIXSOCK_PROXY_LOG\"\nexit 0\n"
+	if err := os.WriteFile(helper, []byte(helperScript), 0700); err != nil {
+		t.Fatalf("write fake unixsock proxy: %v", err)
+	}
 
 	cmd := exec.Command(probe, path)
 	cmd.Env = append(os.Environ(),
 		"LD_PRELOAD="+so,
 		EnvRemoteChild+"=1",
+		EnvBrokerAddr+"=127.0.0.1:50051",
+		"OCTOPOS_UNIXSOCK_PROXY_PATH="+helper,
+		"OCTOPOS_UNIXSOCK_PROXY_LOG="+logPath,
 	)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
@@ -117,14 +127,26 @@ func TestPreloadBlocksUnsupportedUnixSocketOperations(t *testing.T) {
 	for _, want := range []string{
 		"unix_dgram blocked",
 		"socketpair blocked",
-		"bind blocked",
-		"listen blocked",
+		"bind allowed",
+		"listen registered",
+		"abstract_bind blocked",
 		"scm_rights blocked",
 		"so_peercred blocked",
 		"so_passcred blocked",
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("probe output missing %q:\n%s", want, got)
+		}
+	}
+	logData, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read fake proxy log: %v", err)
+	}
+	log := string(logData)
+	brokerPath := "/cluster" + path
+	for _, want := range []string{"--register --path " + brokerPath + " --target " + brokerPath, "--unregister --path " + brokerPath} {
+		if !strings.Contains(log, want) {
+			t.Fatalf("proxy log missing %q:\n%s", want, log)
 		}
 	}
 }
@@ -483,10 +505,34 @@ int main(int argc, char **argv) {
     snprintf(addr.sun_path, sizeof(addr.sun_path), "%s", argv[1]);
     unlink(addr.sun_path);
     errno = 0;
-    failures += expect_enotsup("bind", bind(stream, (struct sockaddr *)&addr, sizeof(addr)));
+    if (bind(stream, (struct sockaddr *)&addr, sizeof(addr)) == 0) {
+        printf("bind allowed\n");
+    } else {
+        perror("bind");
+        failures++;
+    }
 
     errno = 0;
-    failures += expect_enotsup("listen", listen(stream, 1));
+    if (listen(stream, 1) == 0) {
+        printf("listen registered\n");
+    } else {
+        perror("listen");
+        failures++;
+    }
+
+    int abstract_stream = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (abstract_stream < 0) {
+        perror("abstract stream socket");
+        return 1;
+    }
+    struct sockaddr_un abstract_addr;
+    memset(&abstract_addr, 0, sizeof(abstract_addr));
+    abstract_addr.sun_family = AF_UNIX;
+    abstract_addr.sun_path[0] = '\0';
+    memcpy(abstract_addr.sun_path + 1, "octopos-abstract", sizeof("octopos-abstract"));
+    errno = 0;
+    failures += expect_enotsup("abstract_bind", bind(abstract_stream, (struct sockaddr *)&abstract_addr, offsetof(struct sockaddr_un, sun_path) + 1 + sizeof("octopos-abstract")));
+    close(abstract_stream);
 
     char control[CMSG_SPACE(sizeof(int))];
     memset(control, 0, sizeof(control));
@@ -512,6 +558,7 @@ int main(int argc, char **argv) {
     failures += expect_enotsup("so_passcred", setsockopt(stream, SOL_SOCKET, SO_PASSCRED, &one, sizeof(one)));
 
     close(stream);
+    unlink(addr.sun_path);
     return failures == 0 ? 0 : 1;
 }
 `
