@@ -227,7 +227,11 @@ func applyLocalPolicy(cfg config, command []string) error {
 	if err != nil {
 		return err
 	}
-	plans = remotechild.PrepareFDPlans(plans, fdPlanOptions(os.Environ()))
+	opts, err := fdPlanOptions(os.Environ())
+	if err != nil {
+		return err
+	}
+	plans = remotechild.PrepareFDPlans(plans, opts)
 	unsupported := remotechild.UnsupportedFDs(plans)
 	if len(unsupported) == 0 {
 		return nil
@@ -251,17 +255,26 @@ func remoteFDPlanFromCurrentProcess() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	plans = remotechild.PrepareFDPlans(plans, fdPlanOptions(os.Environ()))
+	opts, err := fdPlanOptions(os.Environ())
+	if err != nil {
+		return "", err
+	}
+	plans = remotechild.PrepareFDPlans(plans, opts)
 	return remotechild.EncodeReopenFDs(remotechild.ReopenFDs(plans))
 }
 
-func fdPlanOptions(env []string) remotechild.FDPlanOptions {
+func fdPlanOptions(env []string) (remotechild.FDPlanOptions, error) {
+	allowedDevices, err := remotechild.ParseDeviceAllowlist(lookupEnv(env, remotechild.EnvAllowDevices))
+	if err != nil {
+		return remotechild.FDPlanOptions{}, err
+	}
 	return remotechild.FDPlanOptions{
 		AllowReopen:    ssiEnvActive(env),
 		AllowFileLocks: truthyEnvValue(lookupEnv(env, remotechild.EnvAllowFileLocks)),
 		AllowFIFOProxy: true,
 		AllowPipeProxy: true,
-	}
+		AllowedDevices: allowedDevices,
+	}, nil
 }
 
 func remotePipeEnvFromCurrentProcess() ([]string, error) {

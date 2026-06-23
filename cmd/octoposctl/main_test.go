@@ -34,7 +34,7 @@ func TestOctoposctlBootstrapHelpRegistersGatewayFlagsOnce(t *testing.T) {
 }
 
 func TestRemoteChildrenEnvironmentAddsIPCCompatPolicy(t *testing.T) {
-	env, err := remoteChildrenEnvironment("safe", "relaxed", true)
+	env, err := remoteChildrenEnvironment("safe", "relaxed", true, []string{"/dev/fuse", "char:195:0"})
 	if err != nil {
 		t.Fatalf("remoteChildrenEnvironment: %v", err)
 	}
@@ -43,6 +43,7 @@ func TestRemoteChildrenEnvironmentAddsIPCCompatPolicy(t *testing.T) {
 		remotechild.EnvMode + "=safe",
 		remotechild.EnvIPCCompat + "=relaxed",
 		remotechild.EnvAllowFileLocks + "=1",
+		remotechild.EnvAllowDevices + "=/dev/fuse,char:195:0",
 		"LD_PRELOAD=" + remoteChildPreloadPath,
 	} {
 		if !stringSliceContains(env, want) {
@@ -52,7 +53,7 @@ func TestRemoteChildrenEnvironmentAddsIPCCompatPolicy(t *testing.T) {
 }
 
 func TestRemoteChildrenEnvironmentOffOmitsPreload(t *testing.T) {
-	env, err := remoteChildrenEnvironment("off", "relaxed", true)
+	env, err := remoteChildrenEnvironment("off", "relaxed", true, []string{"/dev/fuse"})
 	if err != nil {
 		t.Fatalf("remoteChildrenEnvironment: %v", err)
 	}
@@ -62,11 +63,14 @@ func TestRemoteChildrenEnvironmentOffOmitsPreload(t *testing.T) {
 }
 
 func TestRemoteChildrenEnvironmentRejectsUnknownPolicy(t *testing.T) {
-	if _, err := remoteChildrenEnvironment("maybe", "strict", false); err == nil {
+	if _, err := remoteChildrenEnvironment("maybe", "strict", false, nil); err == nil {
 		t.Fatal("accepted invalid remote child mode")
 	}
-	if _, err := remoteChildrenEnvironment("safe", "loose", false); err == nil {
+	if _, err := remoteChildrenEnvironment("safe", "loose", false, nil); err == nil {
 		t.Fatal("accepted invalid IPC compatibility mode")
+	}
+	if _, err := remoteChildrenEnvironment("safe", "strict", false, []string{"bad"}); err == nil {
+		t.Fatal("accepted invalid remote device allowlist")
 	}
 }
 

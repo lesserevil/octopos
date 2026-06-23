@@ -286,6 +286,93 @@ func TestPrepareFDPlansReopensDevFull(t *testing.T) {
 	}
 }
 
+func TestParseDeviceAllowlist(t *testing.T) {
+	rules, err := ParseDeviceAllowlist("/dev/fuse,char:195:0,block:8:1,1:3")
+	if err != nil {
+		t.Fatalf("ParseDeviceAllowlist: %v", err)
+	}
+	if len(rules) != 4 {
+		t.Fatalf("rules = %#v, want four", rules)
+	}
+	if rules[0].Path != "/dev/fuse" {
+		t.Fatalf("path rule = %#v", rules[0])
+	}
+	if rules[1].Kind != FDKindCharDevice || !rules[1].HasDevice || rules[1].Major != 195 || rules[1].Minor != 0 {
+		t.Fatalf("char rule = %#v", rules[1])
+	}
+	if rules[2].Kind != FDKindBlockDevice || !rules[2].HasDevice || rules[2].Major != 8 || rules[2].Minor != 1 {
+		t.Fatalf("block rule = %#v", rules[2])
+	}
+	if rules[3].Kind != "" || !rules[3].HasDevice || rules[3].Major != 1 || rules[3].Minor != 3 {
+		t.Fatalf("major/minor rule = %#v", rules[3])
+	}
+	if _, err := ParseDeviceAllowlist("bad"); err == nil {
+		t.Fatal("ParseDeviceAllowlist accepted invalid entry")
+	}
+}
+
+func TestPrepareFDPlansReopensAllowlistedCharacterDevice(t *testing.T) {
+	plan := FDPlan{
+		FD:          7,
+		Kind:        FDKindCharDevice,
+		Action:      FDActionForceLocal,
+		Path:        "/dev/fuse",
+		ReopenPath:  "/dev/fuse",
+		DeviceMajor: 10,
+		DeviceMinor: 229,
+		Reason:      "character device descriptor requires an explicit device allowlist",
+		ReasonCode:  FDReasonCharDeviceAllowlist,
+	}
+	prepared := PrepareFDPlans([]FDPlan{plan}, FDPlanOptions{AllowReopen: true})
+	if prepared[0].Action == FDActionReopen {
+		t.Fatalf("device reopened without allowlist: %#v", prepared[0])
+	}
+
+	rules, err := ParseDeviceAllowlist("/dev/fuse")
+	if err != nil {
+		t.Fatalf("ParseDeviceAllowlist: %v", err)
+	}
+	prepared = PrepareFDPlans([]FDPlan{plan}, FDPlanOptions{AllowReopen: true, AllowedDevices: rules})
+	if prepared[0].Action != FDActionReopen {
+		t.Fatalf("path-allowlisted device was not reopened: %#v", prepared[0])
+	}
+
+	rules, err = ParseDeviceAllowlist("char:10:229")
+	if err != nil {
+		t.Fatalf("ParseDeviceAllowlist: %v", err)
+	}
+	prepared = PrepareFDPlans([]FDPlan{plan}, FDPlanOptions{AllowReopen: true, AllowedDevices: rules})
+	if prepared[0].Action != FDActionReopen {
+		t.Fatalf("major/minor-allowlisted device was not reopened: %#v", prepared[0])
+	}
+}
+
+func TestPrepareFDPlansReopensAllowlistedBlockDevice(t *testing.T) {
+	plan := FDPlan{
+		FD:          7,
+		Kind:        FDKindBlockDevice,
+		Action:      FDActionForceLocal,
+		Path:        "/dev/loop0",
+		ReopenPath:  "/dev/loop0",
+		DeviceMajor: 7,
+		DeviceMinor: 0,
+		Reason:      "block device descriptor requires an explicit device allowlist",
+		ReasonCode:  FDReasonBlockDeviceAllowlist,
+	}
+	prepared := PrepareFDPlans([]FDPlan{plan}, FDPlanOptions{AllowReopen: true})
+	if prepared[0].Action == FDActionReopen {
+		t.Fatalf("block device reopened without allowlist: %#v", prepared[0])
+	}
+	rules, err := ParseDeviceAllowlist("block:7:0")
+	if err != nil {
+		t.Fatalf("ParseDeviceAllowlist: %v", err)
+	}
+	prepared = PrepareFDPlans([]FDPlan{plan}, FDPlanOptions{AllowReopen: true, AllowedDevices: rules})
+	if prepared[0].Action != FDActionReopen {
+		t.Fatalf("allowlisted block device was not reopened: %#v", prepared[0])
+	}
+}
+
 func TestClassifyInheritedFDsReportsUnixSocketReason(t *testing.T) {
 	left, right := socketPairFiles(t)
 	defer left.Close()

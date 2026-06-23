@@ -148,7 +148,10 @@ func TestPIDAliveForCurrentProcess(t *testing.T) {
 
 func TestFDPlanOptionsAllowsFileLocksOnlyWhenExplicit(t *testing.T) {
 	env := []string{"OCTOPOS_SSI=1"}
-	opts := fdPlanOptions(env)
+	opts, err := fdPlanOptions(env)
+	if err != nil {
+		t.Fatalf("fdPlanOptions: %v", err)
+	}
 	if !opts.AllowReopen {
 		t.Fatal("AllowReopen = false")
 	}
@@ -163,9 +166,31 @@ func TestFDPlanOptionsAllowsFileLocksOnlyWhenExplicit(t *testing.T) {
 	}
 
 	env = append(env, remotechild.EnvAllowFileLocks+"=1")
-	opts = fdPlanOptions(env)
+	opts, err = fdPlanOptions(env)
+	if err != nil {
+		t.Fatalf("fdPlanOptions: %v", err)
+	}
 	if !opts.AllowFileLocks {
 		t.Fatal("AllowFileLocks = false with opt-in")
+	}
+}
+
+func TestFDPlanOptionsParsesAllowedDevices(t *testing.T) {
+	opts, err := fdPlanOptions([]string{
+		"OCTOPOS_SSI=1",
+		remotechild.EnvAllowDevices + "=/dev/fuse,char:195:0",
+	})
+	if err != nil {
+		t.Fatalf("fdPlanOptions: %v", err)
+	}
+	if len(opts.AllowedDevices) != 2 {
+		t.Fatalf("allowed devices = %#v, want two", opts.AllowedDevices)
+	}
+	if _, err := fdPlanOptions([]string{
+		"OCTOPOS_SSI=1",
+		remotechild.EnvAllowDevices + "=bad",
+	}); err == nil {
+		t.Fatal("fdPlanOptions accepted invalid device allowlist")
 	}
 }
 

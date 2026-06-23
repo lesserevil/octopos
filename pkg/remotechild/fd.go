@@ -94,6 +94,15 @@ type FDPlanOptions struct {
 	AllowFileLocks bool
 	AllowFIFOProxy bool
 	AllowPipeProxy bool
+	AllowedDevices []DeviceAllowRule
+}
+
+type DeviceAllowRule struct {
+	Kind      FDKind
+	Path      string
+	Major     uint32
+	Minor     uint32
+	HasDevice bool
 }
 
 type ReopenFD struct {
@@ -228,6 +237,62 @@ func DecodeReopenFDs(raw string) ([]ReopenFD, error) {
 	return fds, nil
 }
 
+func ParseDeviceAllowlist(raw string) ([]DeviceAllowRule, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil, nil
+	}
+	parts := strings.Split(raw, ",")
+	rules := make([]DeviceAllowRule, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		rule, err := parseDeviceAllowRule(part)
+		if err != nil {
+			return nil, err
+		}
+		rules = append(rules, rule)
+	}
+	return rules, nil
+}
+
+func parseDeviceAllowRule(raw string) (DeviceAllowRule, error) {
+	rule := DeviceAllowRule{}
+	spec := raw
+	if prefix, rest, ok := strings.Cut(raw, ":"); ok {
+		switch prefix {
+		case "char":
+			rule.Kind = FDKindCharDevice
+			spec = rest
+		case "block":
+			rule.Kind = FDKindBlockDevice
+			spec = rest
+		}
+	}
+	if strings.HasPrefix(spec, "/") {
+		rule.Path = filepath.Clean(spec)
+		return rule, nil
+	}
+	majorRaw, minorRaw, ok := strings.Cut(spec, ":")
+	if !ok {
+		return DeviceAllowRule{}, fmt.Errorf("invalid device allowlist entry %q: use /dev/path, major:minor, char:major:minor, or block:major:minor", raw)
+	}
+	major, err := strconv.ParseUint(majorRaw, 10, 32)
+	if err != nil {
+		return DeviceAllowRule{}, fmt.Errorf("invalid device allowlist major in %q: %w", raw, err)
+	}
+	minor, err := strconv.ParseUint(minorRaw, 10, 32)
+	if err != nil {
+		return DeviceAllowRule{}, fmt.Errorf("invalid device allowlist minor in %q: %w", raw, err)
+	}
+	rule.Major = uint32(major)
+	rule.Minor = uint32(minor)
+	rule.HasDevice = true
+	return rule, nil
+}
+
 func UnsupportedFDs(plans []FDPlan) []FDPlan {
 	var out []FDPlan
 	for _, plan := range plans {
@@ -330,10 +395,33 @@ func reopenableFDPlan(plan FDPlan, opts FDPlanOptions) bool {
 			!strings.HasPrefix(plan.ReopenPath, "/sys/") &&
 			!strings.HasPrefix(plan.ReopenPath, "/run/octopos/")
 	case FDKindCharDevice:
-		return knownReopenableCharDevice(plan.ReopenPath)
+		return knownReopenableCharDevice(plan.ReopenPath) || deviceAllowed(plan, opts.AllowedDevices)
+	case FDKindBlockDevice:
+		return deviceAllowed(plan, opts.AllowedDevices)
 	default:
 		return false
 	}
+}
+
+func deviceAllowed(plan FDPlan, rules []DeviceAllowRule) bool {
+	if plan.Kind != FDKindCharDevice && plan.Kind != FDKindBlockDevice {
+		return false
+	}
+	for _, rule := range rules {
+		if rule.Kind != "" && rule.Kind != plan.Kind {
+			continue
+		}
+		if rule.Path != "" {
+			if plan.ReopenPath != "" && filepath.Clean(plan.ReopenPath) == rule.Path {
+				return true
+			}
+			continue
+		}
+		if rule.HasDevice && plan.DeviceMajor == rule.Major && plan.DeviceMinor == rule.Minor {
+			return true
+		}
+	}
+	return false
 }
 
 func sanitizeReopenFlags(flags int) int {

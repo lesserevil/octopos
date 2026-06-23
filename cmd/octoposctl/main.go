@@ -68,7 +68,7 @@ func requiresClusterConnection(cmd *cobra.Command) bool {
 	return true
 }
 
-func remoteChildrenEnvironment(remoteChildren string, ipcCompat string, allowFileLocks bool) ([]string, error) {
+func remoteChildrenEnvironment(remoteChildren string, ipcCompat string, allowFileLocks bool, allowedDevices []string) ([]string, error) {
 	switch remoteChildren {
 	case "off", "safe", "aggressive":
 	default:
@@ -85,6 +85,10 @@ func remoteChildrenEnvironment(remoteChildren string, ipcCompat string, allowFil
 	if remoteChildren == "off" {
 		return nil, nil
 	}
+	allowedDevices = cleanStringList(allowedDevices)
+	if _, err := remotechild.ParseDeviceAllowlist(strings.Join(allowedDevices, ",")); err != nil {
+		return nil, err
+	}
 	env := []string{
 		remotechild.EnvMode + "=" + remoteChildren,
 		remotechild.EnvIPCCompat + "=" + ipcCompat,
@@ -93,7 +97,22 @@ func remoteChildrenEnvironment(remoteChildren string, ipcCompat string, allowFil
 	if allowFileLocks {
 		env = append(env, remotechild.EnvAllowFileLocks+"=1")
 	}
+	if len(allowedDevices) > 0 {
+		env = append(env, remotechild.EnvAllowDevices+"="+strings.Join(allowedDevices, ","))
+	}
 	return env, nil
+}
+
+func cleanStringList(values []string) []string {
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		out = append(out, value)
+	}
+	return out
 }
 
 func execResourceDefaults(cmd *cobra.Command, configPath string) (int, int, error) {
@@ -660,7 +679,8 @@ var execCmd = &cobra.Command{
 		remoteChildren, _ := cmd.Flags().GetString("remote-children")
 		remoteIPCCompat, _ := cmd.Flags().GetString("remote-ipc-compat")
 		remoteFileLocks, _ := cmd.Flags().GetBool("remote-file-locks")
-		remoteEnv, err := remoteChildrenEnvironment(remoteChildren, remoteIPCCompat, remoteFileLocks)
+		remoteDevices, _ := cmd.Flags().GetStringArray("remote-device")
+		remoteEnv, err := remoteChildrenEnvironment(remoteChildren, remoteIPCCompat, remoteFileLocks, remoteDevices)
 		if err != nil {
 			return err
 		}
@@ -1054,6 +1074,7 @@ func main() {
 	execCmd.Flags().String("remote-children", "off", "Remote eligible child execs with the LD_PRELOAD runtime: off, safe, or aggressive")
 	execCmd.Flags().String("remote-ipc-compat", "strict", "Remote child IPC compatibility policy: strict or relaxed")
 	execCmd.Flags().Bool("remote-file-locks", false, "Allow remoting inherited locked SSI files after validating cluster filesystem lock semantics")
+	execCmd.Flags().StringArray("remote-device", nil, "Allow inherited device FDs to be reopened remotely by /dev/path, major:minor, char:major:minor, or block:major:minor (repeatable)")
 
 	psCmd.Flags().String("node", "", "Filter by node")
 	psCmd.Flags().String("session", "", "Filter by session")
