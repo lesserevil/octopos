@@ -82,10 +82,17 @@ Implemented and live-tested on `shedwards-octo1`, `shedwards-octo2`, and
 - Remote-side FD recreation for eligible inherited regular files and safe
   character devices such as `/dev/null`, using `OCTOPOS_REMOTE_CHILD_FD_PLAN`
   and `octopos-exec` `dup2` setup before payload exec.
+- Administrator-approved inherited device FDs can be reopened remotely through
+  explicit `--remote-device` path or major/minor allowlist entries.
+- Inherited NVIDIA device FDs are gated on a requested GPU allocation and cannot
+  be enabled through the generic device allowlist.
 - FD kind diagnostics for unsupported inherited descriptors.
 - Specific FD fallback reasons for deleted files, Unix sockets, anonymous
   pipes, eventfd, timerfd, device descriptors, shared memory, and memfd-style
   descriptors.
+- Local fallback decisions export structured JSON diagnostics in
+  `OCTOPOS_REMOTE_CHILD_FALLBACK_JSON`, alongside the existing fallback reason
+  and code variables.
 - Refusal to remote unsupported inherited non-stdio FDs.
 - Local fallback for unsupported inherited FDs when `--local-if-unsupported` is
   set.
@@ -224,15 +231,17 @@ Partially implemented:
     close-on-exec FDs as safe to close, detects common FD kinds, carries
     regular-file reopen paths, pipe/socket IDs, char/block device major/minor
     metadata, gives category-specific force-local diagnostics, reopens eligible
-    regular files and safe character devices remotely in SSI mode, and treats
-    other inherited FDs as force-local with explicit diagnostics. The preload
-    also blocks unsupported local-kernel IPC after launch and implements the
-    current supported byte-stream IPC set: anonymous pipes, eligible named
-    FIFOs, and pathname Unix stream sockets.
-  - Missing: broader administrator device allowlists, richer multi-reader or
-    multi-writer FIFO semantics, localhost TCP proxying if needed, exact
-    credential-sensitive Unix socket behavior, and any future explicitly
-    approved broker for currently unsupported kernel IPC classes.
+    regular files and safe character devices remotely in SSI mode, supports
+    administrator device allowlists, gates inherited NVIDIA device FDs on GPU
+    allocation, emits structured local-fallback diagnostics, and treats other
+    inherited FDs as force-local with explicit diagnostics. The preload also
+    blocks unsupported local-kernel IPC after launch and implements the current
+    supported byte-stream IPC set: anonymous pipes, eligible named FIFOs, and
+    pathname Unix stream sockets.
+  - Missing: richer multi-reader or multi-writer FIFO semantics, localhost TCP
+    proxying if needed, exact credential-sensitive Unix socket behavior, and
+    any future explicitly approved broker for currently unsupported kernel IPC
+    classes.
 
 Not implemented yet:
 

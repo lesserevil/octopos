@@ -120,6 +120,30 @@ func TestFormatUnsupportedFDs(t *testing.T) {
 	}
 }
 
+func TestFormatUnsupportedFDsIncludesCompatibilityDetails(t *testing.T) {
+	got := FormatUnsupportedFDs([]FDPlan{{
+		FD:          7,
+		Kind:        FDKindCharDevice,
+		Path:        "/dev/fuse",
+		ReopenPath:  "/dev/fuse",
+		DeviceMajor: 10,
+		DeviceMinor: 229,
+		Reason:      "character device descriptor requires an explicit device allowlist",
+		ReasonCode:  FDReasonCharDeviceAllowlist,
+	}})
+	for _, want := range []string{
+		"fd 7",
+		"char_device",
+		"reopen=/dev/fuse",
+		"dev=10:229",
+		string(FDReasonCharDeviceAllowlist),
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("FormatUnsupportedFDs = %q, missing %q", got, want)
+		}
+	}
+}
+
 func TestFallbackDiagnosticJSONIncludesFDDetails(t *testing.T) {
 	plans := []FDPlan{{
 		FD:            5,
@@ -153,6 +177,22 @@ func TestFallbackDiagnosticJSONIncludesFDDetails(t *testing.T) {
 	}
 	if fd.ReasonCode != FDReasonUnixSocket {
 		t.Fatalf("decoded fd reason code = %q, want %q", fd.ReasonCode, FDReasonUnixSocket)
+	}
+}
+
+func TestFDDiagnosticsCopiesFileLockTypes(t *testing.T) {
+	plans := []FDPlan{{
+		FD:            8,
+		Kind:          FDKindRegular,
+		Action:        FDActionForceLocal,
+		Path:          "/cluster/locked",
+		FileLockTypes: []string{"FLOCK"},
+		ReasonCode:    FDReasonFileLock,
+	}}
+	diags := FDDiagnostics(plans)
+	plans[0].FileLockTypes[0] = "changed"
+	if got := diags[0].FileLockTypes[0]; got != "FLOCK" {
+		t.Fatalf("diagnostic lock type = %q, want copied FLOCK", got)
 	}
 }
 
@@ -324,24 +364,27 @@ func TestPrepareFDPlansReopensDevFull(t *testing.T) {
 }
 
 func TestParseDeviceAllowlist(t *testing.T) {
-	rules, err := ParseDeviceAllowlist("/dev/fuse,char:195:0,block:8:1,1:3")
+	rules, err := ParseDeviceAllowlist("/dev/fuse,char:/dev/uinput,char:195:0,block:8:1,1:3")
 	if err != nil {
 		t.Fatalf("ParseDeviceAllowlist: %v", err)
 	}
-	if len(rules) != 4 {
-		t.Fatalf("rules = %#v, want four", rules)
+	if len(rules) != 5 {
+		t.Fatalf("rules = %#v, want five", rules)
 	}
 	if rules[0].Path != "/dev/fuse" {
 		t.Fatalf("path rule = %#v", rules[0])
 	}
-	if rules[1].Kind != FDKindCharDevice || !rules[1].HasDevice || rules[1].Major != 195 || rules[1].Minor != 0 {
-		t.Fatalf("char rule = %#v", rules[1])
+	if rules[1].Kind != FDKindCharDevice || rules[1].Path != "/dev/uinput" {
+		t.Fatalf("char path rule = %#v", rules[1])
 	}
-	if rules[2].Kind != FDKindBlockDevice || !rules[2].HasDevice || rules[2].Major != 8 || rules[2].Minor != 1 {
-		t.Fatalf("block rule = %#v", rules[2])
+	if rules[2].Kind != FDKindCharDevice || !rules[2].HasDevice || rules[2].Major != 195 || rules[2].Minor != 0 {
+		t.Fatalf("char rule = %#v", rules[2])
 	}
-	if rules[3].Kind != "" || !rules[3].HasDevice || rules[3].Major != 1 || rules[3].Minor != 3 {
-		t.Fatalf("major/minor rule = %#v", rules[3])
+	if rules[3].Kind != FDKindBlockDevice || !rules[3].HasDevice || rules[3].Major != 8 || rules[3].Minor != 1 {
+		t.Fatalf("block rule = %#v", rules[3])
+	}
+	if rules[4].Kind != "" || !rules[4].HasDevice || rules[4].Major != 1 || rules[4].Minor != 3 {
+		t.Fatalf("major/minor rule = %#v", rules[4])
 	}
 	if _, err := ParseDeviceAllowlist("bad"); err == nil {
 		t.Fatal("ParseDeviceAllowlist accepted invalid entry")
@@ -461,6 +504,53 @@ func TestPrepareFDPlansAllowsNVIDIAControlDeviceWithGPUAllocation(t *testing.T) 
 	prepared = PrepareFDPlans([]FDPlan{plan}, FDPlanOptions{AllowReopen: true, AllowNVIDIA: true})
 	if prepared[0].Action != FDActionReopen {
 		t.Fatalf("GPU-allocated NVIDIA control device was not reopened: %#v", prepared[0])
+	}
+}
+
+func TestNVIDIADevicePathRecognition(t *testing.T) {
+	for _, path := range []string{
+		"/dev/nvidia0",
+		"/dev/nvidia12",
+		"/dev/nvidiactl",
+		"/dev/nvidia-uvm",
+		"/dev/nvidia-uvm-tools",
+		"/dev/nvidia-modeset",
+		"/dev/nvidia-caps/nvidia-cap1",
+	} {
+		if !nvidiaDevicePath(path) {
+			t.Fatalf("nvidiaDevicePath(%q) = false, want true", path)
+		}
+	}
+	for _, path := range []string{
+		"/dev/nvidia",
+		"/dev/nvidiafoo",
+		"/dev/not-nvidia0",
+	} {
+		if nvidiaDevicePath(path) {
+			t.Fatalf("nvidiaDevicePath(%q) = true, want false", path)
+		}
+	}
+}
+
+func TestReopenFDsSanitizesFlagsAndKeepsOffset(t *testing.T) {
+	plans := []FDPlan{{
+		FD:         9,
+		Kind:       FDKindRegular,
+		Action:     FDActionReopen,
+		ReopenPath: "/cluster/file",
+		OpenFlags:  unix.O_RDWR | unix.O_APPEND | unix.O_NONBLOCK | unix.O_CREAT | unix.O_TRUNC,
+		Offset:     42,
+	}}
+	fds := ReopenFDs(plans)
+	if len(fds) != 1 {
+		t.Fatalf("reopen FDs = %#v, want one", fds)
+	}
+	wantFlags := unix.O_RDWR | unix.O_APPEND | unix.O_NONBLOCK
+	if fds[0].Flags != wantFlags {
+		t.Fatalf("reopen flags = %#x, want %#x", fds[0].Flags, wantFlags)
+	}
+	if fds[0].Offset != 42 {
+		t.Fatalf("offset = %d, want 42", fds[0].Offset)
 	}
 }
 

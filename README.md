@@ -185,9 +185,14 @@ to run locally or require an explicit `octopos-remote-child` launch. Transparent
 mode falls back local for host-sensitive commands and inherited descriptors that
 cannot yet be recreated on a remote node. Regular files and safe character
 devices inherited as non-stdio descriptors are reopened in the remote SSI
-namespace when possible. Anonymous pipes and already-open FIFO endpoints on
-stdin/stdout/stderr are proxied through the OctopOS pipe graph. Supported
-blocking `O_RDONLY`/`O_WRONLY` opens of absolute named FIFO paths under the SSI
+namespace when possible. Additional inherited device FDs require explicit
+administrator approval with repeated `--remote-device` entries, using either
+`/dev/path`, `major:minor`, `char:major:minor`, or `block:major:minor`. Inherited
+NVIDIA device FDs are reopened only when the child requested a GPU allocation
+with `--gpu` or `--gpus`; the generic device allowlist does not enable them.
+Anonymous pipes and already-open FIFO endpoints on stdin/stdout/stderr are
+proxied through the OctopOS pipe graph. Supported blocking `O_RDONLY`/`O_WRONLY`
+opens of absolute named FIFO paths under the SSI
 root are also proxied through the same graph for remote children.
 
 Inspect pipe proxy counters with:
