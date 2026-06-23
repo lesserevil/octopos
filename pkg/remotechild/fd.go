@@ -65,6 +65,7 @@ const (
 	FDReasonCharDeviceAllowlist     FDReasonCode = "fd.char_device.allowlist_required"
 	FDReasonCharDeviceNoPath        FDReasonCode = "fd.char_device.no_reopen_path"
 	FDReasonBlockDeviceAllowlist    FDReasonCode = "fd.block_device.allowlist_required"
+	FDReasonNVIDIARequiresGPU       FDReasonCode = "gpu.nvidia.requires_allocation"
 	FDReasonUnknown                 FDReasonCode = "fd.unknown"
 )
 
@@ -95,6 +96,7 @@ type FDPlanOptions struct {
 	AllowFIFOProxy bool
 	AllowPipeProxy bool
 	AllowedDevices []DeviceAllowRule
+	AllowNVIDIA    bool
 }
 
 type DeviceAllowRule struct {
@@ -395,6 +397,9 @@ func reopenableFDPlan(plan FDPlan, opts FDPlanOptions) bool {
 			!strings.HasPrefix(plan.ReopenPath, "/sys/") &&
 			!strings.HasPrefix(plan.ReopenPath, "/run/octopos/")
 	case FDKindCharDevice:
+		if nvidiaDevicePath(plan.ReopenPath) {
+			return opts.AllowNVIDIA
+		}
 		return knownReopenableCharDevice(plan.ReopenPath) || deviceAllowed(plan, opts.AllowedDevices)
 	case FDKindBlockDevice:
 		return deviceAllowed(plan, opts.AllowedDevices)
@@ -647,6 +652,9 @@ func forceLocalReason(plan FDPlan) (string, FDReasonCode) {
 			return "anonymous inode descriptor is local kernel state and is not distributed", FDReasonAnonInode
 		}
 	case FDKindCharDevice:
+		if nvidiaDevicePath(plan.ReopenPath) {
+			return "NVIDIA device descriptor requires an allocated GPU for remote reopening", FDReasonNVIDIARequiresGPU
+		}
 		if knownReopenableCharDevice(plan.ReopenPath) {
 			return fmt.Sprintf("%s can be reopened remotely, but remote fd recreation is not enabled yet", plan.ReopenPath), FDReasonCharDeviceReopenable
 		}
@@ -659,6 +667,31 @@ func forceLocalReason(plan FDPlan) (string, FDReasonCode) {
 	default:
 		return fmt.Sprintf("inherited %s descriptor would not be represented remotely", plan.Kind), FDReasonUnknown
 	}
+}
+
+func nvidiaDevicePath(path string) bool {
+	path = filepath.Clean(path)
+	base := filepath.Base(path)
+	switch base {
+	case "nvidiactl", "nvidia-uvm", "nvidia-uvm-tools", "nvidia-modeset":
+		return true
+	}
+	if strings.HasPrefix(path, "/dev/nvidia-caps/") {
+		return true
+	}
+	if !strings.HasPrefix(base, "nvidia") {
+		return false
+	}
+	suffix := strings.TrimPrefix(base, "nvidia")
+	if suffix == "" {
+		return false
+	}
+	for _, r := range suffix {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 func knownReopenableCharDevice(path string) bool {

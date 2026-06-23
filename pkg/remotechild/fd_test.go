@@ -373,6 +373,60 @@ func TestPrepareFDPlansReopensAllowlistedBlockDevice(t *testing.T) {
 	}
 }
 
+func TestPrepareFDPlansRequiresGPUAllocationForNVIDIADevices(t *testing.T) {
+	plan := FDPlan{
+		FD:          7,
+		Kind:        FDKindCharDevice,
+		Action:      FDActionForceLocal,
+		Path:        "/dev/nvidia0",
+		ReopenPath:  "/dev/nvidia0",
+		DeviceMajor: 195,
+		DeviceMinor: 0,
+		Reason:      "NVIDIA device descriptor requires an allocated GPU for remote reopening",
+		ReasonCode:  FDReasonNVIDIARequiresGPU,
+	}
+	prepared := PrepareFDPlans([]FDPlan{plan}, FDPlanOptions{AllowReopen: true})
+	if prepared[0].Action == FDActionReopen {
+		t.Fatalf("NVIDIA device reopened without GPU allocation: %#v", prepared[0])
+	}
+
+	rules, err := ParseDeviceAllowlist("/dev/nvidia0,char:195:0")
+	if err != nil {
+		t.Fatalf("ParseDeviceAllowlist: %v", err)
+	}
+	prepared = PrepareFDPlans([]FDPlan{plan}, FDPlanOptions{AllowReopen: true, AllowedDevices: rules})
+	if prepared[0].Action == FDActionReopen {
+		t.Fatalf("NVIDIA device reopened through generic device allowlist: %#v", prepared[0])
+	}
+
+	prepared = PrepareFDPlans([]FDPlan{plan}, FDPlanOptions{AllowReopen: true, AllowNVIDIA: true})
+	if prepared[0].Action != FDActionReopen {
+		t.Fatalf("GPU-allocated NVIDIA device was not reopened: %#v", prepared[0])
+	}
+}
+
+func TestPrepareFDPlansAllowsNVIDIAControlDeviceWithGPUAllocation(t *testing.T) {
+	plan := FDPlan{
+		FD:          7,
+		Kind:        FDKindCharDevice,
+		Action:      FDActionForceLocal,
+		Path:        "/dev/nvidiactl",
+		ReopenPath:  "/dev/nvidiactl",
+		DeviceMajor: 195,
+		DeviceMinor: 255,
+		Reason:      "NVIDIA device descriptor requires an allocated GPU for remote reopening",
+		ReasonCode:  FDReasonNVIDIARequiresGPU,
+	}
+	prepared := PrepareFDPlans([]FDPlan{plan}, FDPlanOptions{AllowReopen: true})
+	if prepared[0].Action == FDActionReopen {
+		t.Fatalf("NVIDIA control device reopened without GPU allocation: %#v", prepared[0])
+	}
+	prepared = PrepareFDPlans([]FDPlan{plan}, FDPlanOptions{AllowReopen: true, AllowNVIDIA: true})
+	if prepared[0].Action != FDActionReopen {
+		t.Fatalf("GPU-allocated NVIDIA control device was not reopened: %#v", prepared[0])
+	}
+}
+
 func TestClassifyInheritedFDsReportsUnixSocketReason(t *testing.T) {
 	left, right := socketPairFiles(t)
 	defer left.Close()

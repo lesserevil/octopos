@@ -51,7 +51,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "octopos-remote-child: %v\n", err)
 		os.Exit(1)
 	}
-	fdPlan, err := remoteFDPlanFromCurrentProcess()
+	fdPlan, err := remoteFDPlanFromCurrentProcess(cfg)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "octopos-remote-child: %v\n", err)
 		os.Exit(1)
@@ -227,7 +227,7 @@ func applyLocalPolicy(cfg config, command []string) error {
 	if err != nil {
 		return err
 	}
-	opts, err := fdPlanOptions(os.Environ())
+	opts, err := fdPlanOptions(os.Environ(), cfg.GPUs)
 	if err != nil {
 		return err
 	}
@@ -247,7 +247,7 @@ func applyLocalPolicy(cfg config, command []string) error {
 	return fmt.Errorf("unsupported inherited file descriptors [%s]: %s", reasonCode, reason)
 }
 
-func remoteFDPlanFromCurrentProcess() (string, error) {
+func remoteFDPlanFromCurrentProcess(cfg config) (string, error) {
 	if !ssiEnvActive(os.Environ()) {
 		return "", nil
 	}
@@ -255,7 +255,7 @@ func remoteFDPlanFromCurrentProcess() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	opts, err := fdPlanOptions(os.Environ())
+	opts, err := fdPlanOptions(os.Environ(), cfg.GPUs)
 	if err != nil {
 		return "", err
 	}
@@ -263,7 +263,7 @@ func remoteFDPlanFromCurrentProcess() (string, error) {
 	return remotechild.EncodeReopenFDs(remotechild.ReopenFDs(plans))
 }
 
-func fdPlanOptions(env []string) (remotechild.FDPlanOptions, error) {
+func fdPlanOptions(env []string, gpuCount int) (remotechild.FDPlanOptions, error) {
 	allowedDevices, err := remotechild.ParseDeviceAllowlist(lookupEnv(env, remotechild.EnvAllowDevices))
 	if err != nil {
 		return remotechild.FDPlanOptions{}, err
@@ -274,6 +274,7 @@ func fdPlanOptions(env []string) (remotechild.FDPlanOptions, error) {
 		AllowFIFOProxy: true,
 		AllowPipeProxy: true,
 		AllowedDevices: allowedDevices,
+		AllowNVIDIA:    ssiEnvActive(env) && gpuCount > 0,
 	}, nil
 }
 

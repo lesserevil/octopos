@@ -148,7 +148,7 @@ func TestPIDAliveForCurrentProcess(t *testing.T) {
 
 func TestFDPlanOptionsAllowsFileLocksOnlyWhenExplicit(t *testing.T) {
 	env := []string{"OCTOPOS_SSI=1"}
-	opts, err := fdPlanOptions(env)
+	opts, err := fdPlanOptions(env, 0)
 	if err != nil {
 		t.Fatalf("fdPlanOptions: %v", err)
 	}
@@ -166,7 +166,7 @@ func TestFDPlanOptionsAllowsFileLocksOnlyWhenExplicit(t *testing.T) {
 	}
 
 	env = append(env, remotechild.EnvAllowFileLocks+"=1")
-	opts, err = fdPlanOptions(env)
+	opts, err = fdPlanOptions(env, 0)
 	if err != nil {
 		t.Fatalf("fdPlanOptions: %v", err)
 	}
@@ -179,7 +179,7 @@ func TestFDPlanOptionsParsesAllowedDevices(t *testing.T) {
 	opts, err := fdPlanOptions([]string{
 		"OCTOPOS_SSI=1",
 		remotechild.EnvAllowDevices + "=/dev/fuse,char:195:0",
-	})
+	}, 0)
 	if err != nil {
 		t.Fatalf("fdPlanOptions: %v", err)
 	}
@@ -189,8 +189,32 @@ func TestFDPlanOptionsParsesAllowedDevices(t *testing.T) {
 	if _, err := fdPlanOptions([]string{
 		"OCTOPOS_SSI=1",
 		remotechild.EnvAllowDevices + "=bad",
-	}); err == nil {
+	}, 0); err == nil {
 		t.Fatal("fdPlanOptions accepted invalid device allowlist")
+	}
+}
+
+func TestFDPlanOptionsAllowsNVIDIAOnlyWithGPURequest(t *testing.T) {
+	opts, err := fdPlanOptions([]string{"OCTOPOS_SSI=1"}, 0)
+	if err != nil {
+		t.Fatalf("fdPlanOptions: %v", err)
+	}
+	if opts.AllowNVIDIA {
+		t.Fatal("AllowNVIDIA = true without GPU request")
+	}
+	opts, err = fdPlanOptions([]string{"OCTOPOS_SSI=1"}, 1)
+	if err != nil {
+		t.Fatalf("fdPlanOptions: %v", err)
+	}
+	if !opts.AllowNVIDIA {
+		t.Fatal("AllowNVIDIA = false with GPU request")
+	}
+	opts, err = fdPlanOptions(nil, 1)
+	if err != nil {
+		t.Fatalf("fdPlanOptions: %v", err)
+	}
+	if opts.AllowNVIDIA {
+		t.Fatal("AllowNVIDIA = true outside SSI")
 	}
 }
 
@@ -443,7 +467,7 @@ func TestApplyLocalPolicyAllowsReopenableFDInSSI(t *testing.T) {
 	if err != nil {
 		t.Fatalf("applyLocalPolicy rejected reopenable fd in SSI: %v", err)
 	}
-	plan, err := remoteFDPlanFromCurrentProcess()
+	plan, err := remoteFDPlanFromCurrentProcess(config{})
 	if err != nil {
 		t.Fatalf("remoteFDPlanFromCurrentProcess: %v", err)
 	}
