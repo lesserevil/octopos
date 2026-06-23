@@ -1,6 +1,7 @@
 package remotechild
 
 import (
+	"encoding/json"
 	"net"
 	"os"
 	"path/filepath"
@@ -116,6 +117,42 @@ func TestFormatUnsupportedFDs(t *testing.T) {
 	})
 	if codes != string(FDReasonEventFD)+","+string(FDReasonSocket) {
 		t.Fatalf("FormatUnsupportedReasonCodes = %q", codes)
+	}
+}
+
+func TestFallbackDiagnosticJSONIncludesFDDetails(t *testing.T) {
+	plans := []FDPlan{{
+		FD:            5,
+		Kind:          FDKindSocket,
+		Action:        FDActionForceLocal,
+		Path:          "socket:[1]",
+		SocketFamily:  "unix",
+		SocketAddress: "/tmp/test.sock",
+		Reason:        "Unix socket descriptor requires local kernel peer state",
+		ReasonCode:    FDReasonUnixSocket,
+	}}
+
+	diag := NewFallbackDiagnostic("local_fallback", string(FDReasonUnixSocket), "fallback reason", plans)
+	raw := diag.JSON()
+	if raw == "" {
+		t.Fatal("diagnostic JSON is empty")
+	}
+	var decoded FallbackDiagnostic
+	if err := json.Unmarshal([]byte(raw), &decoded); err != nil {
+		t.Fatalf("diagnostic JSON did not decode: %v; raw=%s", err, raw)
+	}
+	if decoded.Decision != "local_fallback" || decoded.ReasonCode != string(FDReasonUnixSocket) || decoded.Reason != "fallback reason" {
+		t.Fatalf("decoded diagnostic metadata = %#v", decoded)
+	}
+	if len(decoded.FDs) != 1 {
+		t.Fatalf("decoded FDs = %#v, want one", decoded.FDs)
+	}
+	fd := decoded.FDs[0]
+	if fd.FD != 5 || fd.Kind != FDKindSocket || fd.Action != FDActionForceLocal || fd.SocketFamily != "unix" || fd.SocketAddress != "/tmp/test.sock" {
+		t.Fatalf("decoded fd diagnostic = %#v", fd)
+	}
+	if fd.ReasonCode != FDReasonUnixSocket {
+		t.Fatalf("decoded fd reason code = %q, want %q", fd.ReasonCode, FDReasonUnixSocket)
 	}
 }
 

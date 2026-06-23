@@ -209,15 +209,17 @@ func remoteChildStreamRequestFromExecStreamRequest(req *octopospb.ExecStreamRequ
 
 func applyLocalPolicy(cfg config, command []string) error {
 	if os.Getenv(remotechild.EnvForceLocal) == "1" {
+		recordLocalFallback(remotechild.NewFallbackDiagnostic("local_fallback", "policy.force_local", "forced local execution", nil))
 		if debugEnabled() {
-			fmt.Fprintln(os.Stderr, "octopos-remote-child: forced local execution")
+			fmt.Fprintf(os.Stderr, "octopos-remote-child: local fallback %s\n", os.Getenv(remotechild.EnvFallbackJSON))
 		}
 		return localExec(command)
 	}
 	if allowed, reason := commandPolicyAllowed(command); !allowed {
 		if cfg.LocalIfUnsupported || os.Getenv(remotechild.EnvPreloadActive) == "1" {
+			recordLocalFallback(remotechild.NewFallbackDiagnostic("local_fallback", "policy.command", reason, nil))
 			if debugEnabled() {
-				fmt.Fprintf(os.Stderr, "octopos-remote-child: local fallback: %s\n", reason)
+				fmt.Fprintf(os.Stderr, "octopos-remote-child: local fallback %s\n", os.Getenv(remotechild.EnvFallbackJSON))
 			}
 			return localExec(command)
 		}
@@ -239,12 +241,26 @@ func applyLocalPolicy(cfg config, command []string) error {
 	reason := remotechild.FormatUnsupportedFDs(unsupported)
 	reasonCode := remotechild.FormatUnsupportedReasonCodes(unsupported)
 	if cfg.LocalIfUnsupported || os.Getenv(remotechild.EnvPreloadActive) == "1" {
+		recordLocalFallback(remotechild.NewFallbackDiagnostic("local_fallback", reasonCode, reason, unsupported))
 		if debugEnabled() {
-			fmt.Fprintf(os.Stderr, "octopos-remote-child: local fallback [%s]: %s\n", reasonCode, reason)
+			fmt.Fprintf(os.Stderr, "octopos-remote-child: local fallback %s\n", os.Getenv(remotechild.EnvFallbackJSON))
 		}
 		return localExec(command)
 	}
 	return fmt.Errorf("unsupported inherited file descriptors [%s]: %s", reasonCode, reason)
+}
+
+func recordLocalFallback(diag remotechild.FallbackDiagnostic) {
+	_ = os.Setenv(remotechild.EnvPlacementReason, "local_fallback")
+	if diag.ReasonCode != "" {
+		_ = os.Setenv(remotechild.EnvFallbackCode, diag.ReasonCode)
+	}
+	if diag.Reason != "" {
+		_ = os.Setenv(remotechild.EnvFallbackReason, diag.Reason)
+	}
+	if raw := diag.JSON(); raw != "" {
+		_ = os.Setenv(remotechild.EnvFallbackJSON, raw)
+	}
 }
 
 func remoteFDPlanFromCurrentProcess(cfg config) (string, error) {
@@ -495,6 +511,7 @@ func buildRequestWithFDPlan(cfg config, command []string, env []string, pid int,
 		remotechild.EnvPlacementReason,
 		remotechild.EnvFallbackReason,
 		remotechild.EnvFallbackCode,
+		remotechild.EnvFallbackJSON,
 		remotechild.EnvParentJobID,
 		remotechild.EnvParentPID,
 		remotechild.EnvShadowPID,

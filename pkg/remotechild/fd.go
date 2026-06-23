@@ -115,6 +115,31 @@ type ReopenFD struct {
 	Kind   FDKind `json:"kind"`
 }
 
+type FDDiagnostic struct {
+	FD            int          `json:"fd"`
+	Kind          FDKind       `json:"kind"`
+	Action        FDAction     `json:"action"`
+	Path          string       `json:"path,omitempty"`
+	ReopenPath    string       `json:"reopen_path,omitempty"`
+	DeviceMajor   uint32       `json:"device_major,omitempty"`
+	DeviceMinor   uint32       `json:"device_minor,omitempty"`
+	PipeID        string       `json:"pipe_id,omitempty"`
+	FIFOPath      string       `json:"fifo_path,omitempty"`
+	SocketFamily  string       `json:"socket_family,omitempty"`
+	SocketAddress string       `json:"socket_address,omitempty"`
+	FileLockTypes []string     `json:"file_lock_types,omitempty"`
+	Deleted       bool         `json:"deleted,omitempty"`
+	Reason        string       `json:"reason,omitempty"`
+	ReasonCode    FDReasonCode `json:"reason_code,omitempty"`
+}
+
+type FallbackDiagnostic struct {
+	Decision   string         `json:"decision"`
+	ReasonCode string         `json:"reason_code,omitempty"`
+	Reason     string         `json:"reason,omitempty"`
+	FDs        []FDDiagnostic `json:"fds,omitempty"`
+}
+
 func ClassifyInheritedFDs(pid int) ([]FDPlan, error) {
 	if pid == os.Getpid() {
 		return classifyCurrentProcessFDs()
@@ -237,6 +262,47 @@ func DecodeReopenFDs(raw string) ([]ReopenFD, error) {
 		return nil, err
 	}
 	return fds, nil
+}
+
+func NewFallbackDiagnostic(decision string, reasonCode string, reason string, plans []FDPlan) FallbackDiagnostic {
+	return FallbackDiagnostic{
+		Decision:   decision,
+		ReasonCode: reasonCode,
+		Reason:     reason,
+		FDs:        FDDiagnostics(plans),
+	}
+}
+
+func FDDiagnostics(plans []FDPlan) []FDDiagnostic {
+	out := make([]FDDiagnostic, 0, len(plans))
+	for _, plan := range plans {
+		out = append(out, FDDiagnostic{
+			FD:            plan.FD,
+			Kind:          plan.Kind,
+			Action:        plan.Action,
+			Path:          plan.Path,
+			ReopenPath:    plan.ReopenPath,
+			DeviceMajor:   plan.DeviceMajor,
+			DeviceMinor:   plan.DeviceMinor,
+			PipeID:        plan.PipeID,
+			FIFOPath:      plan.FIFOPath,
+			SocketFamily:  plan.SocketFamily,
+			SocketAddress: plan.SocketAddress,
+			FileLockTypes: append([]string{}, plan.FileLockTypes...),
+			Deleted:       plan.Deleted,
+			Reason:        plan.Reason,
+			ReasonCode:    plan.ReasonCode,
+		})
+	}
+	return out
+}
+
+func (d FallbackDiagnostic) JSON() string {
+	data, err := json.Marshal(d)
+	if err != nil {
+		return ""
+	}
+	return string(data)
 }
 
 func ParseDeviceAllowlist(raw string) ([]DeviceAllowRule, error) {

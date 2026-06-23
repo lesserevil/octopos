@@ -284,6 +284,7 @@ func TestBuildRequestStripsPreloadGuard(t *testing.T) {
 		"PATH=/usr/bin",
 		remotechild.EnvMode + "=safe",
 		remotechild.EnvPreloadActive + "=1",
+		remotechild.EnvFallbackJSON + `={"decision":"local_fallback"}`,
 	}, 123, 45)
 
 	if req.RemoteChild == nil || req.RemoteChild.PlacementReason != "transparent" {
@@ -291,6 +292,7 @@ func TestBuildRequestStripsPreloadGuard(t *testing.T) {
 	}
 	assertEnv(t, req.Env, remotechild.EnvMode+"=safe")
 	assertNoEnv(t, req.Env, remotechild.EnvPreloadActive)
+	assertNoEnv(t, req.Env, remotechild.EnvFallbackJSON)
 }
 
 func TestBuildRequestAddsParentNodeSoftAntiAffinity(t *testing.T) {
@@ -477,6 +479,7 @@ func TestApplyLocalPolicyAllowsReopenableFDInSSI(t *testing.T) {
 }
 
 func TestApplyLocalPolicyFallbackExecsLocal(t *testing.T) {
+	preserveFallbackEnv(t)
 	file := openNonCloseOnExecFile(t)
 	defer file.Close()
 
@@ -498,9 +501,27 @@ func TestApplyLocalPolicyFallbackExecsLocal(t *testing.T) {
 	if !called {
 		t.Fatal("local fallback was not called")
 	}
+	if got := os.Getenv(remotechild.EnvPlacementReason); got != "local_fallback" {
+		t.Fatalf("%s = %q, want local_fallback", remotechild.EnvPlacementReason, got)
+	}
+	if got := os.Getenv(remotechild.EnvFallbackCode); got != string(remotechild.FDReasonRegularRequiresReopen) {
+		t.Fatalf("%s = %q, want %q", remotechild.EnvFallbackCode, got, remotechild.FDReasonRegularRequiresReopen)
+	}
+	raw := os.Getenv(remotechild.EnvFallbackJSON)
+	for _, want := range []string{
+		`"decision":"local_fallback"`,
+		`"reason_code":"` + string(remotechild.FDReasonRegularRequiresReopen) + `"`,
+		`"fd":` + strconv.Itoa(int(file.Fd())),
+		`"action":"force_local"`,
+	} {
+		if !strings.Contains(raw, want) {
+			t.Fatalf("%s = %q, missing %s", remotechild.EnvFallbackJSON, raw, want)
+		}
+	}
 }
 
 func TestTransparentUnsupportedFDFallsBackLocal(t *testing.T) {
+	preserveFallbackEnv(t)
 	t.Setenv(remotechild.EnvPreloadActive, "1")
 	file := openNonCloseOnExecFile(t)
 	defer file.Close()
@@ -522,6 +543,9 @@ func TestTransparentUnsupportedFDFallsBackLocal(t *testing.T) {
 	}
 	if !called {
 		t.Fatal("transparent unsupported fd did not fall back local")
+	}
+	if got := os.Getenv(remotechild.EnvFallbackCode); got != string(remotechild.FDReasonRegularRequiresReopen) {
+		t.Fatalf("%s = %q, want %q", remotechild.EnvFallbackCode, got, remotechild.FDReasonRegularRequiresReopen)
 	}
 }
 
@@ -547,6 +571,7 @@ func TestCommandPolicyAllowList(t *testing.T) {
 }
 
 func TestTransparentDeniedCommandFallsBackLocal(t *testing.T) {
+	preserveFallbackEnv(t)
 	t.Setenv(remotechild.EnvPreloadActive, "1")
 	called := false
 	oldLocalExec := localExec
@@ -564,6 +589,12 @@ func TestTransparentDeniedCommandFallsBackLocal(t *testing.T) {
 	}
 	if !called {
 		t.Fatal("transparent denied command did not fall back local")
+	}
+	if got := os.Getenv(remotechild.EnvFallbackCode); got != "policy.command" {
+		t.Fatalf("%s = %q, want policy.command", remotechild.EnvFallbackCode, got)
+	}
+	if raw := os.Getenv(remotechild.EnvFallbackJSON); !strings.Contains(raw, `"reason_code":"policy.command"`) {
+		t.Fatalf("%s = %q, want policy.command diagnostic", remotechild.EnvFallbackJSON, raw)
 	}
 }
 
@@ -616,4 +647,25 @@ func currentPipeIDForFD(t *testing.T, fd int) string {
 	}
 	t.Fatalf("fd %d plan not found in %#v", fd, plans)
 	return ""
+}
+
+func preserveFallbackEnv(t *testing.T) {
+	t.Helper()
+	for _, key := range []string{
+		remotechild.EnvPlacementReason,
+		remotechild.EnvFallbackReason,
+		remotechild.EnvFallbackCode,
+		remotechild.EnvFallbackJSON,
+	} {
+		key := key
+		old, ok := os.LookupEnv(key)
+		os.Unsetenv(key)
+		t.Cleanup(func() {
+			if ok {
+				os.Setenv(key, old)
+				return
+			}
+			os.Unsetenv(key)
+		})
+	}
 }
