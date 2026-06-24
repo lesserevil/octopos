@@ -304,17 +304,22 @@ func remotePipeEnvFromCurrentProcess() ([]string, error) {
 
 func remotePipeEnvFromPlans(plans []remotechild.FDPlan, env []string) []string {
 	var out []string
-	for _, plan := range plans {
-		if plan.FD < 0 || plan.FD > 2 || plan.PipeID == "" {
-			if plan.FD >= 0 && plan.FD <= 2 && plan.FIFOPath != "" {
-				out = append(out, remotechild.EnvFIFOFD(plan.FD)+"="+plan.FIFOPath)
-			}
+	for _, endpoint := range remotechild.StdioPipeEndpoints(plans, parentStdioPipeIDs(env)) {
+		entry, ok := remotechild.EnvForPipeEndpoint(endpoint)
+		if !ok {
 			continue
 		}
-		if plan.PipeID == lookupEnv(env, remotechild.EnvParentStdioPipeFD(plan.FD)) {
-			continue
+		out = append(out, entry)
+	}
+	return out
+}
+
+func parentStdioPipeIDs(env []string) map[int]string {
+	out := make(map[int]string)
+	for fd := 0; fd <= 2; fd++ {
+		if pipeID := lookupEnv(env, remotechild.EnvParentStdioPipeFD(fd)); pipeID != "" {
+			out[fd] = pipeID
 		}
-		out = append(out, remotechild.EnvPipeFD(plan.FD)+"="+plan.PipeID)
 	}
 	return out
 }

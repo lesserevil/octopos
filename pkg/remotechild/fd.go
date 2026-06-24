@@ -90,6 +90,27 @@ type FDPlan struct {
 	ReasonCode    FDReasonCode
 }
 
+type PipeEndpointKind string
+
+const (
+	PipeEndpointAnonymous PipeEndpointKind = "pipe"
+	PipeEndpointFIFO      PipeEndpointKind = "fifo"
+)
+
+type PipeEndpointDirection string
+
+const (
+	PipeEndpointRead  PipeEndpointDirection = "read"
+	PipeEndpointWrite PipeEndpointDirection = "write"
+)
+
+type PipeEndpoint struct {
+	FD        int                   `json:"fd"`
+	Kind      PipeEndpointKind      `json:"kind"`
+	ID        string                `json:"id"`
+	Direction PipeEndpointDirection `json:"direction"`
+}
+
 type FDPlanOptions struct {
 	AllowReopen    bool
 	AllowFileLocks bool
@@ -116,21 +137,22 @@ type ReopenFD struct {
 }
 
 type FDDiagnostic struct {
-	FD            int          `json:"fd"`
-	Kind          FDKind       `json:"kind"`
-	Action        FDAction     `json:"action"`
-	Path          string       `json:"path,omitempty"`
-	ReopenPath    string       `json:"reopen_path,omitempty"`
-	DeviceMajor   uint32       `json:"device_major,omitempty"`
-	DeviceMinor   uint32       `json:"device_minor,omitempty"`
-	PipeID        string       `json:"pipe_id,omitempty"`
-	FIFOPath      string       `json:"fifo_path,omitempty"`
-	SocketFamily  string       `json:"socket_family,omitempty"`
-	SocketAddress string       `json:"socket_address,omitempty"`
-	FileLockTypes []string     `json:"file_lock_types,omitempty"`
-	Deleted       bool         `json:"deleted,omitempty"`
-	Reason        string       `json:"reason,omitempty"`
-	ReasonCode    FDReasonCode `json:"reason_code,omitempty"`
+	FD            int           `json:"fd"`
+	Kind          FDKind        `json:"kind"`
+	Action        FDAction      `json:"action"`
+	Path          string        `json:"path,omitempty"`
+	ReopenPath    string        `json:"reopen_path,omitempty"`
+	DeviceMajor   uint32        `json:"device_major,omitempty"`
+	DeviceMinor   uint32        `json:"device_minor,omitempty"`
+	PipeID        string        `json:"pipe_id,omitempty"`
+	FIFOPath      string        `json:"fifo_path,omitempty"`
+	SocketFamily  string        `json:"socket_family,omitempty"`
+	SocketAddress string        `json:"socket_address,omitempty"`
+	FileLockTypes []string      `json:"file_lock_types,omitempty"`
+	Deleted       bool          `json:"deleted,omitempty"`
+	PipeEndpoint  *PipeEndpoint `json:"pipe_endpoint,omitempty"`
+	Reason        string        `json:"reason,omitempty"`
+	ReasonCode    FDReasonCode  `json:"reason_code,omitempty"`
 }
 
 type FallbackDiagnostic struct {
@@ -276,6 +298,10 @@ func NewFallbackDiagnostic(decision string, reasonCode string, reason string, pl
 func FDDiagnostics(plans []FDPlan) []FDDiagnostic {
 	out := make([]FDDiagnostic, 0, len(plans))
 	for _, plan := range plans {
+		var endpoint *PipeEndpoint
+		if ep, ok := plan.PipeEndpoint(""); ok {
+			endpoint = &ep
+		}
 		out = append(out, FDDiagnostic{
 			FD:            plan.FD,
 			Kind:          plan.Kind,
@@ -290,6 +316,7 @@ func FDDiagnostics(plans []FDPlan) []FDDiagnostic {
 			SocketAddress: plan.SocketAddress,
 			FileLockTypes: append([]string{}, plan.FileLockTypes...),
 			Deleted:       plan.Deleted,
+			PipeEndpoint:  endpoint,
 			Reason:        plan.Reason,
 			ReasonCode:    plan.ReasonCode,
 		})
@@ -324,6 +351,66 @@ func ParseDeviceAllowlist(raw string) ([]DeviceAllowRule, error) {
 		rules = append(rules, rule)
 	}
 	return rules, nil
+}
+
+func (plan FDPlan) PipeEndpoint(parentPipeID string) (PipeEndpoint, bool) {
+	if plan.FD < 0 || plan.FD > 2 {
+		return PipeEndpoint{}, false
+	}
+	switch {
+	case plan.PipeID != "":
+		if parentPipeID != "" && plan.PipeID == parentPipeID {
+			return PipeEndpoint{}, false
+		}
+		return PipeEndpoint{
+			FD:        plan.FD,
+			Kind:      PipeEndpointAnonymous,
+			ID:        plan.PipeID,
+			Direction: stdioPipeEndpointDirection(plan.FD),
+		}, true
+	case plan.FIFOPath != "":
+		return PipeEndpoint{
+			FD:        plan.FD,
+			Kind:      PipeEndpointFIFO,
+			ID:        plan.FIFOPath,
+			Direction: stdioPipeEndpointDirection(plan.FD),
+		}, true
+	default:
+		return PipeEndpoint{}, false
+	}
+}
+
+func StdioPipeEndpoints(plans []FDPlan, parentPipeIDs map[int]string) []PipeEndpoint {
+	out := make([]PipeEndpoint, 0, len(plans))
+	for _, plan := range plans {
+		endpoint, ok := plan.PipeEndpoint(parentPipeIDs[plan.FD])
+		if !ok {
+			continue
+		}
+		out = append(out, endpoint)
+	}
+	return out
+}
+
+func EnvForPipeEndpoint(endpoint PipeEndpoint) (string, bool) {
+	if endpoint.FD < 0 || endpoint.FD > 2 || endpoint.ID == "" {
+		return "", false
+	}
+	switch endpoint.Kind {
+	case PipeEndpointAnonymous:
+		return EnvPipeFD(endpoint.FD) + "=" + endpoint.ID, true
+	case PipeEndpointFIFO:
+		return EnvFIFOFD(endpoint.FD) + "=" + endpoint.ID, true
+	default:
+		return "", false
+	}
+}
+
+func stdioPipeEndpointDirection(fd int) PipeEndpointDirection {
+	if fd == 0 {
+		return PipeEndpointRead
+	}
+	return PipeEndpointWrite
 }
 
 func parseDeviceAllowRule(raw string) (DeviceAllowRule, error) {

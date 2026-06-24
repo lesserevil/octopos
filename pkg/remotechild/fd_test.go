@@ -196,6 +196,50 @@ func TestFDDiagnosticsCopiesFileLockTypes(t *testing.T) {
 	}
 }
 
+func TestStdioPipeEndpointsRepresentAnonymousPipesAndFIFOs(t *testing.T) {
+	plans := []FDPlan{
+		{FD: 0, Kind: FDKindPipe, PipeID: "pipe-in"},
+		{FD: 1, Kind: FDKindPipe, PipeID: "parent-stdout"},
+		{FD: 2, Kind: FDKindPipe, FIFOPath: "/cluster/tmp/stderr.fifo"},
+		{FD: 3, Kind: FDKindPipe, PipeID: "ignored-non-stdio"},
+	}
+	endpoints := StdioPipeEndpoints(plans, map[int]string{1: "parent-stdout"})
+	if len(endpoints) != 2 {
+		t.Fatalf("endpoints = %#v, want two", endpoints)
+	}
+	if endpoints[0].FD != 0 || endpoints[0].Kind != PipeEndpointAnonymous || endpoints[0].ID != "pipe-in" || endpoints[0].Direction != PipeEndpointRead {
+		t.Fatalf("stdin endpoint = %#v", endpoints[0])
+	}
+	if endpoints[1].FD != 2 || endpoints[1].Kind != PipeEndpointFIFO || endpoints[1].ID != "/cluster/tmp/stderr.fifo" || endpoints[1].Direction != PipeEndpointWrite {
+		t.Fatalf("stderr FIFO endpoint = %#v", endpoints[1])
+	}
+
+	entry, ok := EnvForPipeEndpoint(endpoints[0])
+	if !ok || entry != EnvPipeFD(0)+"=pipe-in" {
+		t.Fatalf("pipe endpoint env = %q/%t", entry, ok)
+	}
+	entry, ok = EnvForPipeEndpoint(endpoints[1])
+	if !ok || entry != EnvFIFOFD(2)+"=/cluster/tmp/stderr.fifo" {
+		t.Fatalf("fifo endpoint env = %q/%t", entry, ok)
+	}
+}
+
+func TestFDDiagnosticsIncludesPipeEndpoint(t *testing.T) {
+	diags := FDDiagnostics([]FDPlan{{
+		FD:         1,
+		Kind:       FDKindPipe,
+		Action:     FDActionProxyStream,
+		PipeID:     "pipe-out",
+		ReasonCode: FDReasonPipe,
+	}})
+	if len(diags) != 1 || diags[0].PipeEndpoint == nil {
+		t.Fatalf("diagnostics missing pipe endpoint: %#v", diags)
+	}
+	if got := diags[0].PipeEndpoint; got.FD != 1 || got.Kind != PipeEndpointAnonymous || got.ID != "pipe-out" || got.Direction != PipeEndpointWrite {
+		t.Fatalf("diagnostic pipe endpoint = %#v", got)
+	}
+}
+
 func TestClassifyInheritedFDsReportsPipeKind(t *testing.T) {
 	readEnd, writeEnd, err := os.Pipe()
 	if err != nil {
