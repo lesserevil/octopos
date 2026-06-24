@@ -697,6 +697,7 @@ func (s *ClusterServerImpl) scheduleJob(req *ExecuteRequest) (*cluster.NodeInfo,
 		s.recordRemoteChildAudit(req, "spawn", "scheduled", "", remoteInfo)
 	}
 	s.pipes.recordPlacement(pipeKeys, node.ID)
+	s.pipes.recordPipelineChild(pipeKeys, node.ID, jobID)
 
 	return node, reqs, jobID, nil
 }

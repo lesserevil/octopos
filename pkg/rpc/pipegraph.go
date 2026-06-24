@@ -19,6 +19,7 @@ import (
 type pipeCoordinator struct {
 	mu               sync.Mutex
 	placement        map[string]cluster.NodeID
+	groups           map[string]*pipelineGroup
 	local            map[string]*localPipe
 	fifos            map[string]*pendingFIFO
 	activeStreams    uint64
@@ -31,6 +32,24 @@ type pipeCoordinator struct {
 type localPipe struct {
 	read  *os.File
 	write *os.File
+}
+
+type pipelineGroup struct {
+	Key      string
+	Children map[cluster.JobID]pipelineChild
+	PipeKeys map[string]struct{}
+}
+
+type pipelineChild struct {
+	JobID     cluster.JobID
+	NodeID    cluster.NodeID
+	Endpoints []pipelineEndpoint
+}
+
+type pipelineEndpoint struct {
+	PipeKey   string
+	FD        int
+	Direction remotechild.PipeEndpointDirection
 }
 
 type pendingFIFO struct {
@@ -58,6 +77,7 @@ type pipeStats struct {
 func newPipeCoordinator() *pipeCoordinator {
 	return &pipeCoordinator{
 		placement: make(map[string]cluster.NodeID),
+		groups:    make(map[string]*pipelineGroup),
 		local:     make(map[string]*localPipe),
 		fifos:     make(map[string]*pendingFIFO),
 	}
@@ -106,6 +126,18 @@ func remoteChildPipeKeys(req *ExecuteRequest) map[int]string {
 
 func remoteChildPipeKey(sessionID string, parentJobID string, pipeID string) string {
 	return sessionID + "\x00" + parentJobID + "\x00" + pipeID
+}
+
+func remoteChildPipelineGroupKey(pipeKey string) (string, bool) {
+	sessionID, rest, ok := strings.Cut(pipeKey, "\x00")
+	if !ok || sessionID == "" {
+		return "", false
+	}
+	parentJobID, pipeID, ok := strings.Cut(rest, "\x00")
+	if !ok || parentJobID == "" || pipeID == "" {
+		return "", false
+	}
+	return sessionID + "\x00" + parentJobID, true
 }
 
 const (
@@ -172,6 +204,84 @@ func (p *pipeCoordinator) recordPlacement(keys map[int]string, nodeID cluster.No
 			p.placement[key] = nodeID
 		}
 	}
+}
+
+func (p *pipeCoordinator) recordPipelineChild(keys map[int]string, nodeID cluster.NodeID, jobID cluster.JobID) {
+	if p == nil || len(keys) == 0 || nodeID == "" || jobID == "" {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for fd, key := range keys {
+		groupKey, ok := remoteChildPipelineGroupKey(key)
+		if !ok {
+			continue
+		}
+		group := p.groups[groupKey]
+		if group == nil {
+			group = &pipelineGroup{
+				Key:      groupKey,
+				Children: make(map[cluster.JobID]pipelineChild),
+				PipeKeys: make(map[string]struct{}),
+			}
+			p.groups[groupKey] = group
+		}
+		group.PipeKeys[key] = struct{}{}
+		child := group.Children[jobID]
+		if child.JobID == "" {
+			child.JobID = jobID
+			child.NodeID = nodeID
+		}
+		if !pipelineChildHasEndpoint(child, key, fd) {
+			child.Endpoints = append(child.Endpoints, pipelineEndpoint{
+				PipeKey:   key,
+				FD:        fd,
+				Direction: pipeEndpointDirectionForFD(fd),
+			})
+		}
+		group.Children[jobID] = child
+	}
+}
+
+func pipelineChildHasEndpoint(child pipelineChild, pipeKey string, fd int) bool {
+	for _, endpoint := range child.Endpoints {
+		if endpoint.PipeKey == pipeKey && endpoint.FD == fd {
+			return true
+		}
+	}
+	return false
+}
+
+func pipeEndpointDirectionForFD(fd int) remotechild.PipeEndpointDirection {
+	if fd == 0 {
+		return remotechild.PipeEndpointRead
+	}
+	return remotechild.PipeEndpointWrite
+}
+
+func (p *pipeCoordinator) pipelineGroupSnapshot(groupKey string) (pipelineGroup, bool) {
+	if p == nil || groupKey == "" {
+		return pipelineGroup{}, false
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	group, ok := p.groups[groupKey]
+	if !ok {
+		return pipelineGroup{}, false
+	}
+	out := pipelineGroup{
+		Key:      group.Key,
+		Children: make(map[cluster.JobID]pipelineChild, len(group.Children)),
+		PipeKeys: make(map[string]struct{}, len(group.PipeKeys)),
+	}
+	for key := range group.PipeKeys {
+		out.PipeKeys[key] = struct{}{}
+	}
+	for jobID, child := range group.Children {
+		child.Endpoints = append([]pipelineEndpoint{}, child.Endpoints...)
+		out.Children[jobID] = child
+	}
+	return out, true
 }
 
 func (p *pipeCoordinator) attachLocal(key string, fd int) (*os.File, error) {

@@ -1352,6 +1352,20 @@ func TestRemoteChildPipePlacementCoLocatesEndpoints(t *testing.T) {
 	if _, ok := second.Resources.NodeAffinity["prefer_not_node_id"]; ok {
 		t.Fatalf("prefer_not_node_id was not removed: %#v", second.Resources.NodeAffinity)
 	}
+	groupKey, ok := remoteChildPipelineGroupKey(remoteChildPipeKey("session-1", "job-parent", "pipe:pipe-123"))
+	if !ok {
+		t.Fatal("pipeline group key missing")
+	}
+	group, ok := server.pipes.pipelineGroupSnapshot(groupKey)
+	if !ok {
+		t.Fatalf("pipeline group %q missing", groupKey)
+	}
+	if len(group.Children) != 2 {
+		t.Fatalf("pipeline group children = %#v, want two", group.Children)
+	}
+	if group.Children[firstJobID].NodeID != firstNode.ID || group.Children[secondJobID].NodeID != secondNode.ID {
+		t.Fatalf("pipeline group nodes = %#v, first=%s second=%s", group.Children, firstNode.ID, secondNode.ID)
+	}
 }
 
 func TestRemoteChildSignalStateTransitions(t *testing.T) {

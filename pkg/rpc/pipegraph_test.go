@@ -39,6 +39,39 @@ func TestPipeCoordinatorPlacement(t *testing.T) {
 	}
 }
 
+func TestPipeCoordinatorTracksPipelineGroups(t *testing.T) {
+	coordinator := newPipeCoordinator()
+	producerKey := remoteChildPipeKey("session-1", "job-parent", "pipe:pipe-a")
+	consumerKey := remoteChildPipeKey("session-1", "job-parent", "pipe:pipe-a")
+
+	coordinator.recordPipelineChild(map[int]string{1: producerKey}, "node-1", "job-producer")
+	coordinator.recordPipelineChild(map[int]string{0: consumerKey}, "node-2", "job-consumer")
+	coordinator.recordPipelineChild(map[int]string{1: producerKey}, "node-1", "job-producer")
+
+	groupKey, ok := remoteChildPipelineGroupKey(producerKey)
+	if !ok {
+		t.Fatalf("pipeline group key missing for %q", producerKey)
+	}
+	group, ok := coordinator.pipelineGroupSnapshot(groupKey)
+	if !ok {
+		t.Fatalf("pipeline group %q missing", groupKey)
+	}
+	if len(group.Children) != 2 {
+		t.Fatalf("children = %#v, want two", group.Children)
+	}
+	producer := group.Children["job-producer"]
+	if producer.NodeID != "node-1" || len(producer.Endpoints) != 1 || producer.Endpoints[0].Direction != remotechild.PipeEndpointWrite {
+		t.Fatalf("producer child = %#v", producer)
+	}
+	consumer := group.Children["job-consumer"]
+	if consumer.NodeID != "node-2" || len(consumer.Endpoints) != 1 || consumer.Endpoints[0].Direction != remotechild.PipeEndpointRead {
+		t.Fatalf("consumer child = %#v", consumer)
+	}
+	if len(group.PipeKeys) != 1 {
+		t.Fatalf("pipe keys = %#v, want one", group.PipeKeys)
+	}
+}
+
 func TestPipeCoordinatorLocalPipe(t *testing.T) {
 	coordinator := newPipeCoordinator()
 	writer, err := coordinator.attachLocal("pipe-a", 1)
