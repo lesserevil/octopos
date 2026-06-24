@@ -10,6 +10,7 @@ import (
 
 	"github.com/octopos/octopos/pkg/cluster"
 	"github.com/octopos/octopos/pkg/remotechild"
+	"google.golang.org/grpc/metadata"
 )
 
 func TestRemoteChildPipeIDsFromEnv(t *testing.T) {
@@ -271,6 +272,44 @@ func TestPipeStreamBridgesRemoteEndpoints(t *testing.T) {
 	}
 }
 
+func TestWriteFullRetriesShortWrites(t *testing.T) {
+	writer := &shortChunkWriter{max: 3}
+	if err := writeFull(writer, []byte("hello over chunks")); err != nil {
+		t.Fatalf("writeFull: %v", err)
+	}
+	if got := writer.String(); got != "hello over chunks" {
+		t.Fatalf("written data = %q", got)
+	}
+	if writer.writes <= 1 {
+		t.Fatalf("writes = %d, want chunked writes", writer.writes)
+	}
+}
+
+func TestPipeStreamToFileReportsBrokenPipe(t *testing.T) {
+	server := NewClusterServerImpl("node-1", nil, nil, nil)
+	readEnd, writeEnd, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = readEnd.Close()
+	defer writeEnd.Close()
+
+	stream := &fakePipeStreamServer{
+		ctx:    context.Background(),
+		frames: []*PipeFrame{{Data: []byte("downstream closed")}},
+	}
+	if err := server.pipeStreamToFile(stream, writeEnd); err != nil {
+		t.Fatalf("pipeStreamToFile: %v", err)
+	}
+	stats := server.pipes.stats()
+	if stats.BrokenPipes != 1 {
+		t.Fatalf("broken pipes = %d, want 1", stats.BrokenPipes)
+	}
+	if len(stream.sent) != 1 || stream.sent[0].Error == "" || !stream.sent[0].Close {
+		t.Fatalf("sent frames = %#v, want error close frame", stream.sent)
+	}
+}
+
 func TestAttachRemotePipeEndpoint(t *testing.T) {
 	client, cleanup := newTestClusterClient(t)
 	defer cleanup()
@@ -307,4 +346,64 @@ func TestAttachRemotePipeEndpoint(t *testing.T) {
 	if string(data) != "remote endpoint data" {
 		t.Fatalf("remote endpoint data = %q", data)
 	}
+}
+
+type shortChunkWriter struct {
+	bytes.Buffer
+	max    int
+	writes int
+}
+
+func (w *shortChunkWriter) Write(data []byte) (int, error) {
+	w.writes++
+	if len(data) > w.max {
+		data = data[:w.max]
+	}
+	return w.Buffer.Write(data)
+}
+
+type fakePipeStreamServer struct {
+	ctx    context.Context
+	frames []*PipeFrame
+	sent   []*PipeFrame
+}
+
+func (s *fakePipeStreamServer) Send(frame *PipeFrame) error {
+	s.sent = append(s.sent, frame)
+	return nil
+}
+
+func (s *fakePipeStreamServer) Recv() (*PipeFrame, error) {
+	if len(s.frames) == 0 {
+		return nil, io.EOF
+	}
+	frame := s.frames[0]
+	s.frames = s.frames[1:]
+	return frame, nil
+}
+
+func (s *fakePipeStreamServer) SetHeader(metadata.MD) error {
+	return nil
+}
+
+func (s *fakePipeStreamServer) SendHeader(metadata.MD) error {
+	return nil
+}
+
+func (s *fakePipeStreamServer) SetTrailer(metadata.MD) {
+}
+
+func (s *fakePipeStreamServer) Context() context.Context {
+	if s.ctx != nil {
+		return s.ctx
+	}
+	return context.Background()
+}
+
+func (s *fakePipeStreamServer) SendMsg(any) error {
+	return nil
+}
+
+func (s *fakePipeStreamServer) RecvMsg(any) error {
+	return io.EOF
 }

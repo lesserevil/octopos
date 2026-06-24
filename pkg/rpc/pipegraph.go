@@ -143,6 +143,7 @@ func remoteChildPipelineGroupKey(pipeKey string) (string, bool) {
 const (
 	pipeCoordinatorKeyPrefix = "coord:"
 	fifoPipeKeyPrefix        = "fifo-path:"
+	pipeProxyChunkSize       = 32 * 1024
 )
 
 func pipeKeyWithCoordinator(nodeID cluster.NodeID, key string) string {
@@ -579,7 +580,7 @@ func pipeStreamToWriter(stream Cluster_PipeStreamClient, writer *os.File) {
 			return
 		}
 		if len(frame.Data) > 0 {
-			if _, err := writer.Write(frame.Data); err != nil {
+			if err := writeFull(writer, frame.Data); err != nil {
 				_ = stream.Send(&PipeFrame{Error: err.Error(), Close: true})
 				return
 			}
@@ -593,7 +594,7 @@ func pipeStreamToWriter(stream Cluster_PipeStreamClient, writer *os.File) {
 func readerToPipeStream(reader *os.File, stream Cluster_PipeStreamClient) {
 	defer reader.Close()
 	defer stream.CloseSend()
-	buf := make([]byte, 32*1024)
+	buf := make([]byte, pipeProxyChunkSize)
 	for {
 		n, err := reader.Read(buf)
 		if n > 0 {
@@ -604,7 +605,11 @@ func readerToPipeStream(reader *os.File, stream Cluster_PipeStreamClient) {
 			}
 		}
 		if err != nil {
-			_ = stream.Send(&PipeFrame{Close: true})
+			if err == io.EOF {
+				_ = stream.Send(&PipeFrame{Close: true})
+				return
+			}
+			_ = stream.Send(&PipeFrame{Error: err.Error(), Close: true})
 			return
 		}
 	}
@@ -729,7 +734,7 @@ func (s *ClusterServerImpl) GetPipeStats(ctx context.Context, req *GetPipeStatsR
 }
 
 func (s *ClusterServerImpl) pipeFileToStream(reader *os.File, stream Cluster_PipeStreamServer) error {
-	buf := make([]byte, 32*1024)
+	buf := make([]byte, pipeProxyChunkSize)
 	for {
 		n, err := reader.Read(buf)
 		if n > 0 {
@@ -766,7 +771,7 @@ func (s *ClusterServerImpl) pipeStreamToFile(stream Cluster_PipeStreamServer, wr
 			return nil
 		}
 		if len(frame.Data) > 0 {
-			if _, err := writer.Write(frame.Data); err != nil {
+			if err := writeFull(writer, frame.Data); err != nil {
 				_ = stream.Send(&PipeFrame{Error: err.Error(), Close: true})
 				s.pipes.recordBrokenPipe()
 				return nil
@@ -777,4 +782,20 @@ func (s *ClusterServerImpl) pipeStreamToFile(stream Cluster_PipeStreamServer, wr
 			return nil
 		}
 	}
+}
+
+func writeFull(writer io.Writer, data []byte) error {
+	for len(data) > 0 {
+		n, err := writer.Write(data)
+		if n > 0 {
+			data = data[n:]
+		}
+		if err != nil {
+			return err
+		}
+		if n == 0 {
+			return io.ErrShortWrite
+		}
+	}
+	return nil
 }
