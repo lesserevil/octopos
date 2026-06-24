@@ -1368,6 +1368,92 @@ func TestRemoteChildPipePlacementCoLocatesEndpoints(t *testing.T) {
 	}
 }
 
+func TestRemoteChildPipeCoordinatorFollowsPipelinePlacement(t *testing.T) {
+	server := NewClusterServerImplWithOptions(
+		cluster.NodeID("node-1"),
+		scheduler.NewScheduler(&scheduler.BinPackPolicy{}),
+		tracker.NewTracker(),
+		nil,
+		ServerOptions{SSI: ssi.Config{ClusterRoot: "/cluster", RootFS: "/cluster", Required: true}},
+	)
+	for _, nodeID := range []string{"node-1", "node-2"} {
+		if _, err := server.RegisterNode(context.Background(), &RegisterNodeRequest{
+			NodeId:  nodeID,
+			Address: "10.0.0." + nodeID[len(nodeID)-1:],
+			Resources: &NodeResources{
+				CpuMillicores: 4000,
+				MemoryBytes:   4 * 1024 * 1024 * 1024,
+			},
+		}); err != nil {
+			t.Fatalf("RegisterNode %s: %v", nodeID, err)
+		}
+	}
+	server.cluster.jobs["job-parent"] = &cluster.JobInfo{
+		ID:         "job-parent",
+		SessionID:  "session-1",
+		Status:     cluster.JobStatusRunning,
+		ChildToken: "parent-token",
+	}
+
+	first := &ExecuteRequest{
+		SessionId: "session-1",
+		JobId:     "job-producer",
+		Command:   []string{"producer"},
+		Cwd:       "/",
+		Env: []string{
+			remotechild.EnvRemoteChild + "=1",
+			remotechild.EnvParentJobID + "=job-parent",
+			remotechild.EnvChildToken + "=parent-token",
+			remotechild.EnvPipeFD(1) + "=pipe-123",
+		},
+		Resources: &Requirements{
+			CpuMillicores: 1000,
+			MemoryBytes:   1024 * 1024 * 1024,
+			NodeAffinity:  map[string]string{"node_id": "node-2"},
+		},
+	}
+	firstNode, firstReqs, _, err := server.scheduleJob(first)
+	if err != nil {
+		t.Fatalf("schedule first endpoint: %v", err)
+	}
+	defer server.scheduler.Release(firstNode.ID, firstReqs)
+	if firstNode.ID != "node-2" {
+		t.Fatalf("first node = %s, want node-2", firstNode.ID)
+	}
+	if got := envValue(first.Env, remotechild.EnvPipeCoordinator); got != "node-2" {
+		t.Fatalf("first coordinator = %q, want node-2; env=%v", got, first.Env)
+	}
+
+	second := &ExecuteRequest{
+		SessionId: "session-1",
+		JobId:     "job-consumer",
+		Command:   []string{"consumer"},
+		Cwd:       "/",
+		Env: []string{
+			remotechild.EnvRemoteChild + "=1",
+			remotechild.EnvParentJobID + "=job-parent",
+			remotechild.EnvChildToken + "=parent-token",
+			remotechild.EnvPipeFD(0) + "=pipe-123",
+		},
+		Resources: &Requirements{
+			CpuMillicores: 1000,
+			MemoryBytes:   1024 * 1024 * 1024,
+			NodeAffinity:  map[string]string{"node_id": "node-1"},
+		},
+	}
+	secondNode, secondReqs, _, err := server.scheduleJob(second)
+	if err != nil {
+		t.Fatalf("schedule second endpoint: %v", err)
+	}
+	defer server.scheduler.Release(secondNode.ID, secondReqs)
+	if secondNode.ID != "node-1" {
+		t.Fatalf("second node = %s, want node-1", secondNode.ID)
+	}
+	if got := envValue(second.Env, remotechild.EnvPipeCoordinator); got != "node-2" {
+		t.Fatalf("second coordinator = %q, want existing node-2; env=%v", got, second.Env)
+	}
+}
+
 func TestRemoteChildSignalStateTransitions(t *testing.T) {
 	server := NewClusterServerImpl(
 		cluster.NodeID("node-1"),

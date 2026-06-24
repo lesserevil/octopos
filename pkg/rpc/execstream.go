@@ -678,7 +678,7 @@ func (s *ClusterServerImpl) scheduleJob(req *ExecuteRequest) (*cluster.NodeInfo,
 		s.scheduler.Release(node.ID, reqs)
 		return nil, reqs, jobID, err
 	}
-	s.applyScheduledEnv(req, node.ID, childToken)
+	s.applyScheduledEnv(req, node.ID, childToken, pipeKeys)
 
 	s.cluster.jobs[jobID] = &cluster.JobInfo{
 		ID:                  jobID,
@@ -1292,7 +1292,7 @@ func (s *ClusterServerImpl) normalizeScheduledRequest(req *ExecuteRequest) error
 	if err != nil {
 		return err
 	}
-	s.applyScheduledEnv(req, s.nodeID, token)
+	s.applyScheduledEnv(req, s.nodeID, token, nil)
 	return nil
 }
 
@@ -1309,7 +1309,7 @@ func (s *ClusterServerImpl) normalizeScheduledCWD(req *ExecuteRequest) error {
 	return nil
 }
 
-func (s *ClusterServerImpl) applyScheduledEnv(req *ExecuteRequest, nodeID cluster.NodeID, childToken string) {
+func (s *ClusterServerImpl) applyScheduledEnv(req *ExecuteRequest, nodeID cluster.NodeID, childToken string, pipeKeys map[int]string) {
 	if !s.ssiConfig.Required {
 		return
 	}
@@ -1330,7 +1330,11 @@ func (s *ClusterServerImpl) applyScheduledEnv(req *ExecuteRequest, nodeID cluste
 		remotechild.EnvChildToken + "=" + childToken,
 	}
 	if requestEnvValue(req.Env, remotechild.EnvPipeCoordinator) == "" {
-		values = append(values, remotechild.EnvPipeCoordinator+"="+string(s.nodeID))
+		coordinatorNode := s.nodeID
+		if selected := s.pipes.coordinatorNodeForSchedule(pipeKeys, nodeID); selected != "" {
+			coordinatorNode = selected
+		}
+		values = append(values, remotechild.EnvPipeCoordinator+"="+string(coordinatorNode))
 	}
 	req.Env = upsertEnv(req.Env, values...)
 }

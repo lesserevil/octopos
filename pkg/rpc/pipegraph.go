@@ -206,6 +206,16 @@ func (p *pipeCoordinator) recordPlacement(keys map[int]string, nodeID cluster.No
 	}
 }
 
+func (p *pipeCoordinator) coordinatorNodeForSchedule(keys map[int]string, scheduledNode cluster.NodeID) cluster.NodeID {
+	if p == nil || len(keys) == 0 {
+		return ""
+	}
+	if nodeID := p.preferredNode(keys); nodeID != "" {
+		return nodeID
+	}
+	return scheduledNode
+}
+
 func (p *pipeCoordinator) recordPipelineChild(keys map[int]string, nodeID cluster.NodeID, jobID cluster.JobID) {
 	if p == nil || len(keys) == 0 || nodeID == "" || jobID == "" {
 		return

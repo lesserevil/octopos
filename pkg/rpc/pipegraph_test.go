@@ -39,6 +39,18 @@ func TestPipeCoordinatorPlacement(t *testing.T) {
 	}
 }
 
+func TestPipeCoordinatorSelectsCoordinatorNodeForSchedule(t *testing.T) {
+	coordinator := newPipeCoordinator()
+	keys := map[int]string{1: "session\x00parent\x00pipe-a"}
+	if got := coordinator.coordinatorNodeForSchedule(keys, "node-2"); got != "node-2" {
+		t.Fatalf("coordinator node before placement = %q, want node-2", got)
+	}
+	coordinator.recordPlacement(keys, "node-3")
+	if got := coordinator.coordinatorNodeForSchedule(map[int]string{0: "session\x00parent\x00pipe-a"}, "node-2"); got != "node-3" {
+		t.Fatalf("coordinator node after placement = %q, want node-3", got)
+	}
+}
+
 func TestPipeCoordinatorTracksPipelineGroups(t *testing.T) {
 	coordinator := newPipeCoordinator()
 	producerKey := remoteChildPipeKey("session-1", "job-parent", "pipe:pipe-a")
