@@ -240,9 +240,9 @@ scripts/validate-remote-children.sh shedwards-octo1:50051
 ```
 
 The validation covers explicit cross-node child launch, stdin/stdout/stderr
-streaming, transparent multi-stage shell pipelines, named FIFOs, lock behavior,
-remote-child lifecycle records, pipe graph counters, and a configurable large
-stream. Useful overrides:
+streaming, transparent multi-stage shell pipelines, bounded large streams,
+downstream pipeline failure, named FIFOs, lock behavior, remote-child lifecycle
+records, and pipe graph counters. Useful overrides:
 
 ```bash
 OCTOPOS_VALIDATE_TARGET_NODE=shedwards-octo2 \

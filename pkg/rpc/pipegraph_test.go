@@ -310,6 +310,51 @@ func TestPipeStreamToFileReportsBrokenPipe(t *testing.T) {
 	}
 }
 
+func TestPipeFileToStreamUsesBoundedChunks(t *testing.T) {
+	server := NewClusterServerImpl("node-1", nil, nil, nil)
+	readEnd, writeEnd, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer readEnd.Close()
+	data := bytes.Repeat([]byte("x"), pipeProxyChunkSize*2+123)
+	writeDone := make(chan error, 1)
+	go func() {
+		err := writeFull(writeEnd, data)
+		closeErr := writeEnd.Close()
+		if err == nil {
+			err = closeErr
+		}
+		writeDone <- err
+	}()
+
+	stream := &fakePipeStreamServer{ctx: context.Background()}
+	if err := server.pipeFileToStream(readEnd, stream); err != nil {
+		t.Fatalf("pipeFileToStream: %v", err)
+	}
+	if err := <-writeDone; err != nil {
+		t.Fatalf("writer: %v", err)
+	}
+
+	var total int
+	var closeSeen bool
+	for _, frame := range stream.sent {
+		if len(frame.Data) > pipeProxyChunkSize {
+			t.Fatalf("frame length = %d, exceeds chunk size %d", len(frame.Data), pipeProxyChunkSize)
+		}
+		total += len(frame.Data)
+		if frame.Close {
+			closeSeen = true
+		}
+	}
+	if total != len(data) {
+		t.Fatalf("streamed bytes = %d, want %d", total, len(data))
+	}
+	if !closeSeen {
+		t.Fatalf("close frame missing: %#v", stream.sent)
+	}
+}
+
 func TestAttachRemotePipeEndpoint(t *testing.T) {
 	client, cleanup := newTestClusterClient(t)
 	defer cleanup()

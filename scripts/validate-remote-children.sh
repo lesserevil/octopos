@@ -106,7 +106,16 @@ run "$ctl" --addr "$addr" exec --session "$session" --remote-children=safe -- /b
   'test "$(seq 1 4096 | awk "{print \$1}" | sed "s/.*/x/" | wc -l | tr -d " ")" = 4096'
 
 run "$ctl" --addr "$addr" exec --session "$session" --remote-children=safe -- /bin/bash -lc \
+  'test "$(yes | head -n 10 | wc -l | tr -d " ")" = 10'
+
+run "$ctl" --addr "$addr" exec --session "$session" --remote-children=safe -- /bin/bash -lc \
   "test \"\$(head -c $large_bytes /dev/zero | wc -c | tr -d ' ')\" = $large_bytes"
+
+run "$ctl" --addr "$addr" exec --session "$session" --remote-children=safe -- /bin/bash -lc \
+  "large=$tmp_q/large.bin; head -c $large_bytes /dev/zero >\"\$large\"; test \"\$(cat \"\$large\" | wc -c | tr -d ' ')\" = $large_bytes"
+
+run "$ctl" --addr "$addr" exec --session "$session" --remote-children=safe -- /bin/bash -lc \
+  '! (yes | false)'
 
 run "$ctl" --addr "$addr" exec --session "$session" --remote-children=safe -- /bin/bash -lc \
   "mkfifo $tmp_q/fifo; { printf fifo >$tmp_q/fifo; } & test \"\$(cat $tmp_q/fifo)\" = fifo"

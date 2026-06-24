@@ -23,7 +23,7 @@ operational even if later stages are never completed.
 
 ## Current Implementation Status
 
-Status date: 2026-06-22.
+Status date: 2026-06-24.
 
 Implemented and live-tested on `shedwards-octo1`, `shedwards-octo2`, and
 `shedwards-octo3`:
@@ -97,6 +97,17 @@ Implemented and live-tested on `shedwards-octo1`, `shedwards-octo2`, and
 - Local fallback for unsupported inherited FDs when `--local-if-unsupported` is
   set.
 - Transparent interception falls back local for unsupported inherited FDs.
+- Pipe endpoints inherited on stdin/stdout/stderr are represented as structured
+  remote-child pipe endpoints and exported consistently for anonymous pipes and
+  FIFO endpoints.
+- Remote-child pipeline groups are tracked by session and parent job, including
+  child job IDs, selected nodes, and pipe endpoint roles.
+- Pipe graph placement chooses a worker-local coordinator for the first
+  endpoint; later co-located endpoints use native worker-local pipes, while
+  explicitly split endpoints proxy to the existing coordinator node.
+- Pipe graph stream proxying uses bounded chunks, full-write retries, explicit
+  EOF frames, broken-pipe accounting, and error frames for non-EOF read/write
+  failures.
 - Per-parent active remote-child limit enforced by `octoposd`.
 - Per-session and per-node active remote-child limits enforced by `octoposd`.
 - First-class remote-child lifecycle store in `pkg/remotechild`.
@@ -479,6 +490,22 @@ Acceptance criteria:
 ### Phase 4: Pipe Graph and Shell Pipeline Support
 
 Goal: support common pipelines without pretending arbitrary IPC is distributed.
+
+Current status:
+
+- Implemented: pipe endpoints are represented in the FD plan and exported
+  through structured remote-child endpoint helpers.
+- Implemented: parent-side pipeline group tracking records scheduled child jobs,
+  selected nodes, and read/write endpoint roles.
+- Implemented: placement co-locates endpoints by default, uses worker-local
+  pipe coordinators for same-node endpoints, and preserves explicit split-node
+  placement by proxying to the established coordinator node.
+- Implemented: stream proxying uses fixed-size chunks, propagates EOF/error
+  frames, records broken pipes, and avoids treating non-EOF read failures as
+  clean close.
+- Implemented: unit coverage plus live validation script cases for simple
+  pipelines, large streams, downstream failure, FIFO streams, and mixed
+  local/remote child paths.
 
 Tasks:
 
