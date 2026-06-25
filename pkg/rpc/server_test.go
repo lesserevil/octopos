@@ -934,6 +934,64 @@ func TestRemoteChildScheduleInputFromRequest(t *testing.T) {
 	}
 }
 
+func TestApplyRemoteChildSchedulingHints(t *testing.T) {
+	req := &ExecuteRequest{
+		SessionId:   "session-1",
+		JobId:       "job-child",
+		Command:     []string{"true"},
+		RemoteChild: &RemoteChildLaunch{ParentJobId: "job-parent"},
+		Env: []string{
+			"OCTOPOS_NODE_ID=node-parent",
+			remotechild.EnvChildCPU + "=2",
+			remotechild.EnvChildMem + "=5",
+			remotechild.EnvChildGPU + "=1",
+		},
+		Resources: &Requirements{},
+	}
+	applyRemoteChildSchedulingHints(req, newRemoteChildScheduleInput(req, nil))
+	if req.Resources.CpuMillicores != 2000 || req.Resources.MemoryBytes != 5*1024*1024*1024 || req.Resources.Gpus != 1 {
+		t.Fatalf("resources after hints = %#v", req.Resources)
+	}
+	if got := req.Resources.NodeAffinity["prefer_not_node_id"]; got != "node-parent" {
+		t.Fatalf("node affinity = %#v, want parent anti-affinity", req.Resources.NodeAffinity)
+	}
+
+	local := &ExecuteRequest{
+		SessionId:   "session-1",
+		JobId:       "job-local",
+		Command:     []string{"true"},
+		RemoteChild: &RemoteChildLaunch{ParentJobId: "job-parent"},
+		Env: []string{
+			"OCTOPOS_NODE_ID=node-parent",
+			remotechild.EnvChildLocal + "=1",
+		},
+		Resources: &Requirements{},
+	}
+	applyRemoteChildSchedulingHints(local, newRemoteChildScheduleInput(local, nil))
+	if got := local.Resources.NodeAffinity["node_id"]; got != "node-parent" {
+		t.Fatalf("local node affinity = %#v, want node-parent", local.Resources.NodeAffinity)
+	}
+
+	explicit := &ExecuteRequest{
+		SessionId:   "session-1",
+		JobId:       "job-explicit",
+		Command:     []string{"true"},
+		RemoteChild: &RemoteChildLaunch{ParentJobId: "job-parent"},
+		Env: []string{
+			"OCTOPOS_NODE_ID=node-parent",
+			remotechild.EnvChildLocal + "=1",
+		},
+		Resources: &Requirements{CpuMillicores: 500, NodeAffinity: map[string]string{"node_id": "node-explicit"}},
+	}
+	applyRemoteChildSchedulingHints(explicit, newRemoteChildScheduleInput(explicit, nil))
+	if got := explicit.Resources.NodeAffinity["node_id"]; got != "node-explicit" {
+		t.Fatalf("explicit node affinity = %#v, want preserved node-explicit", explicit.Resources.NodeAffinity)
+	}
+	if explicit.Resources.CpuMillicores != 500 {
+		t.Fatalf("explicit CPU was overwritten: %#v", explicit.Resources)
+	}
+}
+
 func TestRemoteChildExecuteRequestToExecuteRequest(t *testing.T) {
 	req := &RemoteChildExecuteRequest{
 		Exec: &ExecuteRequest{

@@ -648,6 +648,10 @@ func (s *ClusterServerImpl) scheduleJob(req *ExecuteRequest) (*cluster.NodeInfo,
 	}
 	pipeKeys := remoteChildPipeKeys(req)
 	schedInput := newRemoteChildScheduleInput(req, pipeKeys)
+	if schedInput.IsRemoteChild {
+		applyRemoteChildSchedulingHints(req, schedInput)
+		schedInput = newRemoteChildScheduleInput(req, pipeKeys)
+	}
 	if isRemoteChildRequest(req) && len(pipeKeys) > 0 {
 		s.applyPipePlacementAffinity(req, pipeKeys)
 	}
@@ -763,6 +767,61 @@ func clonePipeKeys(keys map[int]string) map[int]string {
 	return out
 }
 
+func applyRemoteChildSchedulingHints(req *ExecuteRequest, input remoteChildScheduleInput) {
+	if req == nil || !input.IsRemoteChild {
+		return
+	}
+	if req.Resources == nil {
+		req.Resources = &Requirements{}
+	}
+	ensureNodeAffinity(req)
+	if input.LocalHint && input.ParentNodeID != "" && input.ExplicitNode == "" {
+		req.Resources.NodeAffinity["node_id"] = string(input.ParentNodeID)
+		delete(req.Resources.NodeAffinity, "prefer_not_node_id")
+		delete(req.Resources.NodeAffinity, "prefer_not_node")
+	}
+	if input.ParentNodeID != "" && input.ExplicitNode == "" && req.Resources.NodeAffinity["node_id"] == "" &&
+		req.Resources.NodeAffinity["prefer_not_node_id"] == "" && req.Resources.NodeAffinity["prefer_not_node"] == "" {
+		req.Resources.NodeAffinity["prefer_not_node_id"] = string(input.ParentNodeID)
+	}
+	if req.Resources.CpuMillicores <= 0 {
+		if value, ok := positiveInt64Env(req.Env, remotechild.EnvChildCPU); ok {
+			req.Resources.CpuMillicores = value * 1000
+		}
+	}
+	if req.Resources.MemoryBytes <= 0 {
+		if value, ok := positiveInt64Env(req.Env, remotechild.EnvChildMem); ok {
+			req.Resources.MemoryBytes = value * 1024 * 1024 * 1024
+		}
+	}
+	if req.Resources.Gpus <= 0 {
+		if value, ok := positiveInt64Env(req.Env, remotechild.EnvChildGPU); ok {
+			req.Resources.Gpus = int32(value)
+		}
+	}
+}
+
+func ensureNodeAffinity(req *ExecuteRequest) {
+	if req.Resources == nil {
+		req.Resources = &Requirements{}
+	}
+	if req.Resources.NodeAffinity == nil {
+		req.Resources.NodeAffinity = make(map[string]string)
+	}
+}
+
+func positiveInt64Env(env []string, key string) (int64, bool) {
+	raw := strings.TrimSpace(requestEnvValue(env, key))
+	if raw == "" {
+		return 0, false
+	}
+	value, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || value < 0 {
+		return 0, false
+	}
+	return value, true
+}
+
 func (s *ClusterServerImpl) issueChildToken(now time.Time) (string, time.Time, error) {
 	if now.IsZero() {
 		now = time.Now()
@@ -787,12 +846,7 @@ func clearJobChildToken(job *cluster.JobInfo) {
 }
 
 func (s *ClusterServerImpl) applyPipePlacementAffinity(req *ExecuteRequest, pipeKeys map[int]string) {
-	if req.Resources == nil || req.Resources.NodeAffinity == nil {
-		if req.Resources == nil {
-			req.Resources = &Requirements{}
-		}
-		req.Resources.NodeAffinity = make(map[string]string)
-	}
+	ensureNodeAffinity(req)
 	if req.Resources.NodeAffinity["node_id"] != "" {
 		return
 	}
