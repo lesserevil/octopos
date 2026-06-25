@@ -1615,6 +1615,104 @@ func TestRemoteChildPipeCoordinatorFollowsPipelinePlacement(t *testing.T) {
 	}
 }
 
+func TestRemoteChildSessionCPUQuotaReleasesOnFinish(t *testing.T) {
+	sched := scheduler.NewScheduler(&scheduler.BinPackPolicy{})
+	sched.AddNode(&cluster.NodeInfo{
+		ID:    "node-1",
+		State: cluster.NodeStateActive,
+		Resources: cluster.ResourceSpec{
+			CPU:      8000,
+			Memory:   16 * 1024 * 1024 * 1024,
+			GPUCount: 2,
+			GPUDevices: []cluster.GPUDevice{
+				{Index: 0, UUID: "GPU-0"},
+				{Index: 1, UUID: "GPU-1"},
+			},
+		},
+	})
+	server := NewClusterServerImplWithOptions(
+		"node-1",
+		sched,
+		tracker.NewTracker(),
+		nil,
+		ServerOptions{MaxRemoteChildSessionCPU: 2000, MaxRemoteChildSessionMemory: 4 * 1024 * 1024 * 1024, MaxRemoteChildSessionGPUs: 1},
+	)
+	existingReqs := cluster.Requirements{CPU: 1500, Memory: 2 * 1024 * 1024 * 1024, GPUs: 1}
+	server.cluster.jobs["job-existing"] = &cluster.JobInfo{
+		ID:          "job-existing",
+		SessionID:   "session-1",
+		Status:      cluster.JobStatusRunning,
+		PrimaryNode: "node-1",
+		Commands:    []cluster.CommandSpec{{Argv: []string{"sleep"}, Resources: existingReqs}},
+		RemoteChild: &cluster.RemoteChildInfo{
+			ParentJobID:  "job-parent",
+			RemoteJobID:  "job-existing",
+			RemoteNodeID: "node-1",
+			State:        remotechild.StateRunning,
+		},
+	}
+
+	req := &ExecuteRequest{
+		SessionId: "session-1",
+		JobId:     "job-new",
+		Command:   []string{"work"},
+		Env:       []string{remotechild.EnvRemoteChild + "=1"},
+		RemoteChild: &RemoteChildLaunch{
+			ParentJobId: "job-parent",
+		},
+		Resources: &Requirements{
+			CpuMillicores: 1000,
+			MemoryBytes:   1 * 1024 * 1024 * 1024,
+		},
+	}
+	if _, _, _, err := server.scheduleJob(req); err == nil || !strings.Contains(err.Error(), "CPU quota") {
+		t.Fatalf("schedule with active quota usage error = %v, want CPU quota", err)
+	}
+
+	server.finishJob("job-existing", "node-1", existingReqs, 0)
+	node, reqs, jobID, err := server.scheduleJob(req)
+	if err != nil {
+		t.Fatalf("schedule after quota release: %v", err)
+	}
+	defer server.scheduler.Release(node.ID, reqs)
+	defer delete(server.cluster.jobs, jobID)
+}
+
+func TestRemoteChildSessionResourceQuotaIncludesMemoryAndGPU(t *testing.T) {
+	server := NewClusterServerImplWithOptions(
+		"node-1",
+		scheduler.NewScheduler(&scheduler.BinPackPolicy{}),
+		tracker.NewTracker(),
+		nil,
+		ServerOptions{MaxRemoteChildSessionMemory: 4 * 1024 * 1024 * 1024, MaxRemoteChildSessionGPUs: 1},
+	)
+	server.cluster.jobs["job-existing"] = &cluster.JobInfo{
+		ID:        "job-existing",
+		SessionID: "session-1",
+		Status:    cluster.JobStatusRunning,
+		Commands: []cluster.CommandSpec{{Resources: cluster.Requirements{
+			Memory: 3 * 1024 * 1024 * 1024,
+			GPUs:   1,
+		}}},
+		RemoteChild: &cluster.RemoteChildInfo{RemoteJobID: "job-existing", State: remotechild.StateRunning},
+	}
+
+	server.mu.Lock()
+	memErr := server.checkRemoteChildSessionResourceQuotaLocked("session-1", "job-new", cluster.Requirements{Memory: 2 * 1024 * 1024 * 1024})
+	gpuErr := server.checkRemoteChildSessionResourceQuotaLocked("session-1", "job-new", cluster.Requirements{GPUs: 1})
+	okErr := server.checkRemoteChildSessionResourceQuotaLocked("session-1", "job-new", cluster.Requirements{Memory: 1 * 1024 * 1024})
+	server.mu.Unlock()
+	if memErr == nil || !strings.Contains(memErr.Error(), "memory quota") {
+		t.Fatalf("memory quota error = %v", memErr)
+	}
+	if gpuErr == nil || !strings.Contains(gpuErr.Error(), "GPU quota") {
+		t.Fatalf("GPU quota error = %v", gpuErr)
+	}
+	if okErr != nil {
+		t.Fatalf("small memory request rejected: %v", okErr)
+	}
+}
+
 func TestRemoteChildSignalStateTransitions(t *testing.T) {
 	server := NewClusterServerImpl(
 		cluster.NodeID("node-1"),

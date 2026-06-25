@@ -36,6 +36,9 @@ type ClusterServerImpl struct {
 	maxRemoteChildrenPerParent  int
 	maxRemoteChildrenPerSession int
 	maxRemoteChildrenPerNode    int
+	maxRemoteChildSessionCPU    int64
+	maxRemoteChildSessionMemory int64
+	maxRemoteChildSessionGPUs   int
 	remoteChildLeaseTimeout     time.Duration
 	remoteChildTokenTTL         time.Duration
 	remoteChildExitStatusDir    string
@@ -68,6 +71,9 @@ type ServerOptions struct {
 	MaxRemoteChildrenPerParent  int
 	MaxRemoteChildrenPerSession int
 	MaxRemoteChildrenPerNode    int
+	MaxRemoteChildSessionCPU    int64
+	MaxRemoteChildSessionMemory int64
+	MaxRemoteChildSessionGPUs   int
 	RemoteChildStorePath        string
 	RemoteChildLeaseTimeout     time.Duration
 	RemoteChildTokenTTL         time.Duration
@@ -132,6 +138,9 @@ func NewClusterServerImplWithOptions(nodeID cluster.NodeID, sched *scheduler.Sch
 		maxRemoteChildrenPerParent:  maxRemoteChildren,
 		maxRemoteChildrenPerSession: maxSessionChildren,
 		maxRemoteChildrenPerNode:    maxNodeChildren,
+		maxRemoteChildSessionCPU:    opts.MaxRemoteChildSessionCPU,
+		maxRemoteChildSessionMemory: opts.MaxRemoteChildSessionMemory,
+		maxRemoteChildSessionGPUs:   opts.MaxRemoteChildSessionGPUs,
 		remoteChildLeaseTimeout:     remoteChildLeaseTimeout,
 		remoteChildTokenTTL:         remoteChildTokenTTL,
 		remoteChildExitStatusDir:    remoteChildExitStatusDir,

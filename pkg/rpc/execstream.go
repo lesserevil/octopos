@@ -668,6 +668,11 @@ func (s *ClusterServerImpl) scheduleJob(req *ExecuteRequest) (*cluster.NodeInfo,
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	if schedInput.IsRemoteChild {
+		if err := s.checkRemoteChildSessionResourceQuotaLocked(cluster.SessionID(req.SessionId), jobID, reqs); err != nil {
+			return nil, reqs, jobID, err
+		}
+	}
 	node, allocatedReqs, err := s.scheduler.ScheduleWithAllocation(reqs)
 	if err != nil {
 		return nil, reqs, jobID, err
@@ -938,6 +943,50 @@ func (s *ClusterServerImpl) mostLoadedRemoteChildNode(input remoteChildScheduleI
 		}
 	}
 	return best
+}
+
+type remoteChildResourceUsage struct {
+	CPU    int64
+	Memory int64
+	GPUs   int
+}
+
+func (s *ClusterServerImpl) checkRemoteChildSessionResourceQuotaLocked(sessionID cluster.SessionID, jobID cluster.JobID, reqs cluster.Requirements) error {
+	if s == nil || sessionID == "" {
+		return nil
+	}
+	usage := s.activeRemoteChildSessionUsageLocked(sessionID, jobID)
+	if s.maxRemoteChildSessionCPU > 0 && usage.CPU+reqs.CPU > s.maxRemoteChildSessionCPU {
+		return fmt.Errorf("remote child session CPU quota exceeded for session %s: requested %d millicores with %d active, limit %d", sessionID, reqs.CPU, usage.CPU, s.maxRemoteChildSessionCPU)
+	}
+	if s.maxRemoteChildSessionMemory > 0 && usage.Memory+reqs.Memory > s.maxRemoteChildSessionMemory {
+		return fmt.Errorf("remote child session memory quota exceeded for session %s: requested %d bytes with %d active, limit %d", sessionID, reqs.Memory, usage.Memory, s.maxRemoteChildSessionMemory)
+	}
+	if s.maxRemoteChildSessionGPUs > 0 && usage.GPUs+reqs.GPUs > s.maxRemoteChildSessionGPUs {
+		return fmt.Errorf("remote child session GPU quota exceeded for session %s: requested %d with %d active, limit %d", sessionID, reqs.GPUs, usage.GPUs, s.maxRemoteChildSessionGPUs)
+	}
+	return nil
+}
+
+func (s *ClusterServerImpl) activeRemoteChildSessionUsageLocked(sessionID cluster.SessionID, excludeJobID cluster.JobID) remoteChildResourceUsage {
+	var usage remoteChildResourceUsage
+	if s == nil || s.cluster == nil || sessionID == "" {
+		return usage
+	}
+	for jobID, job := range s.cluster.jobs {
+		if jobID == excludeJobID || job == nil || job.SessionID != sessionID || job.RemoteChild == nil {
+			continue
+		}
+		if isTerminalJobStatus(job.Status) {
+			continue
+		}
+		for _, command := range job.Commands {
+			usage.CPU += command.Resources.CPU
+			usage.Memory += command.Resources.Memory
+			usage.GPUs += command.Resources.GPUs
+		}
+	}
+	return usage
 }
 
 func (s *ClusterServerImpl) issueChildToken(now time.Time) (string, time.Time, error) {
