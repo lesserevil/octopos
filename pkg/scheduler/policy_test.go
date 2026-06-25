@@ -205,6 +205,50 @@ func TestSchedulerReturnsGPUAllocation(t *testing.T) {
 	}
 }
 
+func TestSchedulerPrefersNonGPUNodeForNonGPUWork(t *testing.T) {
+	s := NewScheduler(&BinPackPolicy{})
+	s.AddNode(&cluster.NodeInfo{
+		ID:    "gpu-node",
+		State: cluster.NodeStateActive,
+		Resources: cluster.ResourceSpec{
+			CPU:      8000,
+			Memory:   32 * 1024 * 1024 * 1024,
+			GPUCount: 2,
+			GPUDevices: []cluster.GPUDevice{
+				{Index: 0, UUID: "GPU-0"},
+				{Index: 1, UUID: "GPU-1"},
+			},
+		},
+		Allocated: cluster.ResourceSpec{CPU: 6000, Memory: 24 * 1024 * 1024 * 1024},
+	})
+	s.AddNode(&cluster.NodeInfo{
+		ID:        "cpu-node",
+		State:     cluster.NodeStateActive,
+		Resources: cluster.ResourceSpec{CPU: 8000, Memory: 32 * 1024 * 1024 * 1024},
+	})
+
+	selected, err := s.Schedule(cluster.Requirements{CPU: 1000, Memory: 1 * 1024 * 1024 * 1024})
+	if err != nil {
+		t.Fatalf("Schedule non-GPU work: %v", err)
+	}
+	if selected.ID != "cpu-node" {
+		t.Fatalf("selected node = %s, want cpu-node", selected.ID)
+	}
+
+	selected, _, err = s.ScheduleWithAllocation(cluster.Requirements{
+		CPU:    1000,
+		Memory: 1 * 1024 * 1024 * 1024,
+		GPUs:   1,
+		JobID:  "gpu-job",
+	})
+	if err != nil {
+		t.Fatalf("Schedule GPU work: %v", err)
+	}
+	if selected.ID != "gpu-node" {
+		t.Fatalf("selected GPU node = %s, want gpu-node", selected.ID)
+	}
+}
+
 func TestSchedulerReturnsVFIOAllocation(t *testing.T) {
 	s := NewScheduler(&BinPackPolicy{})
 	node := &cluster.NodeInfo{

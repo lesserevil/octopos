@@ -992,6 +992,63 @@ func TestApplyRemoteChildSchedulingHints(t *testing.T) {
 	}
 }
 
+func TestApplyRemoteChildPlacementPolicies(t *testing.T) {
+	server := NewClusterServerImpl("node-1", nil, nil, nil)
+
+	tiny := &ExecuteRequest{
+		SessionId:   "session-1",
+		JobId:       "job-tiny",
+		Command:     []string{"hostname"},
+		RemoteChild: &RemoteChildLaunch{ParentJobId: "job-parent"},
+		Env:         []string{"OCTOPOS_NODE_ID=node-parent"},
+		Resources:   &Requirements{},
+	}
+	applyRemoteChildSchedulingHints(tiny, newRemoteChildScheduleInput(tiny, nil))
+	if err := server.applyRemoteChildPlacementPolicies(tiny, newRemoteChildScheduleInput(tiny, nil)); err != nil {
+		t.Fatalf("tiny placement policy: %v", err)
+	}
+	if got := tiny.Resources.NodeAffinity["node_id"]; got != "node-parent" {
+		t.Fatalf("tiny command affinity = %#v, want node-parent", tiny.Resources.NodeAffinity)
+	}
+
+	invalidFDPlan := &ExecuteRequest{
+		SessionId: "session-1",
+		JobId:     "job-bad-fd",
+		Command:   []string{"cat"},
+		RemoteChild: &RemoteChildLaunch{
+			ParentJobId: "job-parent",
+			FdPlan:      "not-json",
+		},
+		Resources: &Requirements{},
+	}
+	if err := server.applyRemoteChildPlacementPolicies(invalidFDPlan, newRemoteChildScheduleInput(invalidFDPlan, nil)); err == nil {
+		t.Fatal("invalid fd plan accepted")
+	}
+
+	server.remoteChildren.Upsert(remotechild.ShadowRecord{
+		SessionID:    "session-1",
+		ParentJobID:  "job-parent",
+		RemoteJobID:  "job-existing",
+		RemoteNodeID: "node-busy",
+		State:        remotechild.StateRunning,
+	})
+	parallel := &ExecuteRequest{
+		SessionId:   "session-1",
+		JobId:       "job-build",
+		Command:     []string{"make", "-j8"},
+		RemoteChild: &RemoteChildLaunch{ParentJobId: "job-parent"},
+		Env:         []string{"OCTOPOS_NODE_ID=node-parent"},
+		Resources:   &Requirements{},
+	}
+	applyRemoteChildSchedulingHints(parallel, newRemoteChildScheduleInput(parallel, nil))
+	if err := server.applyRemoteChildPlacementPolicies(parallel, newRemoteChildScheduleInput(parallel, nil)); err != nil {
+		t.Fatalf("parallel placement policy: %v", err)
+	}
+	if got := parallel.Resources.NodeAffinity["prefer_not_node_id"]; got != "node-busy" {
+		t.Fatalf("parallel command affinity = %#v, want avoid node-busy", parallel.Resources.NodeAffinity)
+	}
+}
+
 func TestRemoteChildExecuteRequestToExecuteRequest(t *testing.T) {
 	req := &RemoteChildExecuteRequest{
 		Exec: &ExecuteRequest{

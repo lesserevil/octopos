@@ -651,6 +651,10 @@ func (s *ClusterServerImpl) scheduleJob(req *ExecuteRequest) (*cluster.NodeInfo,
 	if schedInput.IsRemoteChild {
 		applyRemoteChildSchedulingHints(req, schedInput)
 		schedInput = newRemoteChildScheduleInput(req, pipeKeys)
+		if err := s.applyRemoteChildPlacementPolicies(req, schedInput); err != nil {
+			return nil, cluster.Requirements{}, cluster.JobID(req.JobId), err
+		}
+		schedInput = newRemoteChildScheduleInput(req, pipeKeys)
 	}
 	if isRemoteChildRequest(req) && len(pipeKeys) > 0 {
 		s.applyPipePlacementAffinity(req, pipeKeys)
@@ -820,6 +824,120 @@ func positiveInt64Env(env []string, key string) (int64, bool) {
 		return 0, false
 	}
 	return value, true
+}
+
+func (s *ClusterServerImpl) applyRemoteChildPlacementPolicies(req *ExecuteRequest, input remoteChildScheduleInput) error {
+	if req == nil || !input.IsRemoteChild {
+		return nil
+	}
+	if err := validateRemoteChildFDPlan(input); err != nil {
+		return err
+	}
+	if input.ExplicitNode != "" || input.LocalHint {
+		return nil
+	}
+	if input.ParentNodeID != "" && len(input.PipeKeys) == 0 && commandLooksTiny(input.Command) {
+		ensureNodeAffinity(req)
+		req.Resources.NodeAffinity["node_id"] = string(input.ParentNodeID)
+		delete(req.Resources.NodeAffinity, "prefer_not_node_id")
+		delete(req.Resources.NodeAffinity, "prefer_not_node")
+		return nil
+	}
+	if commandLooksParallelBuild(input.Command) {
+		if nodeID := s.mostLoadedRemoteChildNode(input); nodeID != "" {
+			ensureNodeAffinity(req)
+			if req.Resources.NodeAffinity["node_id"] == "" {
+				req.Resources.NodeAffinity["prefer_not_node_id"] = string(nodeID)
+			}
+		}
+	}
+	return nil
+}
+
+func validateRemoteChildFDPlan(input remoteChildScheduleInput) error {
+	if strings.TrimSpace(input.FDPlan) == "" {
+		return nil
+	}
+	fds, err := remotechild.DecodeReopenFDs(input.FDPlan)
+	if err != nil {
+		return fmt.Errorf("invalid remote child fd plan: %w", err)
+	}
+	for _, fd := range fds {
+		if fd.FD < 0 || fd.Path == "" {
+			return fmt.Errorf("invalid remote child fd plan: fd %d has empty path", fd.FD)
+		}
+		if !strings.HasPrefix(fd.Path, "/") {
+			return fmt.Errorf("invalid remote child fd plan: fd %d path %q is not absolute", fd.FD, fd.Path)
+		}
+	}
+	return nil
+}
+
+func commandLooksTiny(command []string) bool {
+	if len(command) == 0 {
+		return false
+	}
+	name := commandBase(command[0])
+	switch name {
+	case "true", "false", "hostname", "pwd", "whoami", "id", "date", "echo", "printf", "test", "[":
+		return true
+	default:
+		return false
+	}
+}
+
+func commandLooksParallelBuild(command []string) bool {
+	if len(command) == 0 {
+		return false
+	}
+	name := commandBase(command[0])
+	if name != "make" && name != "ninja" {
+		return false
+	}
+	if name == "ninja" {
+		return true
+	}
+	for _, arg := range command[1:] {
+		if arg == "-j" || strings.HasPrefix(arg, "-j") || arg == "--jobs" || strings.HasPrefix(arg, "--jobs=") {
+			return true
+		}
+	}
+	return false
+}
+
+func commandBase(path string) string {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return ""
+	}
+	if slash := strings.LastIndex(path, "/"); slash >= 0 {
+		return path[slash+1:]
+	}
+	return path
+}
+
+func (s *ClusterServerImpl) mostLoadedRemoteChildNode(input remoteChildScheduleInput) cluster.NodeID {
+	if s == nil || s.remoteChildren == nil {
+		return ""
+	}
+	filter := remotechild.ListFilter{SessionID: string(input.SessionID), ParentJobID: string(input.ParentJobID), ActiveOnly: true}
+	records := s.remoteChildren.List(filter)
+	counts := make(map[cluster.NodeID]int)
+	for _, record := range records {
+		if record.RemoteNodeID == "" {
+			continue
+		}
+		counts[cluster.NodeID(record.RemoteNodeID)]++
+	}
+	var best cluster.NodeID
+	bestCount := 0
+	for nodeID, count := range counts {
+		if count > bestCount || (count == bestCount && (best == "" || nodeID < best)) {
+			best = nodeID
+			bestCount = count
+		}
+	}
+	return best
 }
 
 func (s *ClusterServerImpl) issueChildToken(now time.Time) (string, time.Time, error) {

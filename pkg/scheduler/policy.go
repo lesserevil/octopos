@@ -13,6 +13,7 @@ const (
 	affinityPreferNotNodeID = "prefer_not_node_id"
 	affinityPreferNotNode   = "prefer_not_node"
 	softAvoidNodePenalty    = 1_000_000
+	nonGPUOnGPUNodePenalty  = 500_000
 )
 
 // Policy defines scheduling policy interface
@@ -100,14 +101,21 @@ func isSchedulerAffinityKey(key string) bool {
 
 func applySoftAvoidNodePenalty(score int, node *cluster.NodeInfo, req cluster.Requirements) int {
 	if req.NodeAffinity == nil {
-		return score
+		return applyGPUNodePreferencePenalty(score, node, req)
 	}
 	preferNot := req.NodeAffinity[affinityPreferNotNodeID]
 	if preferNot == "" {
 		preferNot = req.NodeAffinity[affinityPreferNotNode]
 	}
 	if preferNot != "" && string(node.ID) == preferNot {
-		return score - softAvoidNodePenalty
+		score -= softAvoidNodePenalty
+	}
+	return applyGPUNodePreferencePenalty(score, node, req)
+}
+
+func applyGPUNodePreferencePenalty(score int, node *cluster.NodeInfo, req cluster.Requirements) int {
+	if req.GPUs <= 0 && node != nil && node.Resources.GPUCount > 0 {
+		return score - nonGPUOnGPUNodePenalty
 	}
 	return score
 }
