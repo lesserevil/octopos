@@ -647,6 +647,7 @@ func (s *ClusterServerImpl) scheduleJob(req *ExecuteRequest) (*cluster.NodeInfo,
 		req.Resources = &Requirements{}
 	}
 	pipeKeys := remoteChildPipeKeys(req)
+	schedInput := newRemoteChildScheduleInput(req, pipeKeys)
 	if isRemoteChildRequest(req) && len(pipeKeys) > 0 {
 		s.applyPipePlacementAffinity(req, pipeKeys)
 	}
@@ -696,10 +697,70 @@ func (s *ClusterServerImpl) scheduleJob(req *ExecuteRequest) (*cluster.NodeInfo,
 		s.remoteChildren.Upsert(remoteChildRecordFromInfo(req, remoteInfo))
 		s.recordRemoteChildAudit(req, "spawn", "scheduled", "", remoteInfo)
 	}
-	s.pipes.recordPlacement(pipeKeys, node.ID)
-	s.pipes.recordPipelineChild(pipeKeys, node.ID, jobID)
+	s.pipes.recordPlacement(schedInput.PipeKeys, node.ID)
+	s.pipes.recordPipelineChild(schedInput.PipeKeys, node.ID, jobID)
 
 	return node, reqs, jobID, nil
+}
+
+type remoteChildScheduleInput struct {
+	IsRemoteChild bool
+	SessionID     cluster.SessionID
+	JobID         cluster.JobID
+	ParentJobID   cluster.JobID
+	ParentNodeID  cluster.NodeID
+	Command       []string
+	CWD           string
+	FDPlan        string
+	PipeKeys      map[int]string
+	Resources     *Requirements
+	ExplicitNode  cluster.NodeID
+	LocalHint     bool
+}
+
+func newRemoteChildScheduleInput(req *ExecuteRequest, pipeKeys map[int]string) remoteChildScheduleInput {
+	input := remoteChildScheduleInput{}
+	if req == nil {
+		return input
+	}
+	input.IsRemoteChild = isRemoteChildRequest(req)
+	input.SessionID = cluster.SessionID(req.SessionId)
+	input.JobID = cluster.JobID(req.JobId)
+	input.Command = append([]string{}, req.Command...)
+	input.CWD = req.Cwd
+	input.PipeKeys = clonePipeKeys(pipeKeys)
+	input.Resources = req.Resources
+	input.ParentNodeID = cluster.NodeID(requestEnvValue(req.Env, "OCTOPOS_NODE_ID"))
+	if launch := req.GetRemoteChild(); launch != nil {
+		input.ParentJobID = cluster.JobID(launch.ParentJobId)
+		input.FDPlan = launch.FdPlan
+	}
+	if input.ParentJobID == "" {
+		input.ParentJobID = cluster.JobID(requestEnvValue(req.Env, remotechild.EnvParentJobID))
+	}
+	if input.FDPlan == "" {
+		input.FDPlan = requestEnvValue(req.Env, remotechild.EnvFDPlan)
+	}
+	if req.Resources != nil && req.Resources.NodeAffinity != nil {
+		if nodeID := req.Resources.NodeAffinity["node_id"]; nodeID != "" {
+			input.ExplicitNode = cluster.NodeID(nodeID)
+		} else if nodeID := req.Resources.NodeAffinity["node"]; nodeID != "" {
+			input.ExplicitNode = cluster.NodeID(nodeID)
+		}
+	}
+	input.LocalHint = truthyString(requestEnvValue(req.Env, remotechild.EnvChildLocal))
+	return input
+}
+
+func clonePipeKeys(keys map[int]string) map[int]string {
+	if len(keys) == 0 {
+		return nil
+	}
+	out := make(map[int]string, len(keys))
+	for fd, key := range keys {
+		out[fd] = key
+	}
+	return out
 }
 
 func (s *ClusterServerImpl) issueChildToken(now time.Time) (string, time.Time, error) {
@@ -1587,6 +1648,15 @@ func requestEnvValue(env []string, key string) string {
 		}
 	}
 	return ""
+}
+
+func truthyString(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
 }
 
 func cloneExecuteRequestForNode(req *ExecuteRequest, nodeID cluster.NodeID) *ExecuteRequest {

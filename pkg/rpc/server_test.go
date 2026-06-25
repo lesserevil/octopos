@@ -888,6 +888,52 @@ func TestRemoteChildInfoFromTypedLaunch(t *testing.T) {
 	}
 }
 
+func TestRemoteChildScheduleInputFromRequest(t *testing.T) {
+	req := &ExecuteRequest{
+		SessionId: "session-1",
+		JobId:     "job-child",
+		Command:   []string{"make", "-j8"},
+		Cwd:       "/work",
+		Env: []string{
+			"OCTOPOS_NODE_ID=node-parent",
+			remotechild.EnvChildLocal + "=yes",
+		},
+		RemoteChild: &RemoteChildLaunch{
+			ParentJobId: "job-parent",
+			FdPlan:      `[{"fd":9}]`,
+		},
+		Resources: &Requirements{
+			CpuMillicores: 2000,
+			MemoryBytes:   4 * 1024 * 1024 * 1024,
+			Gpus:          1,
+			NodeAffinity:  map[string]string{"node_id": "node-explicit"},
+		},
+	}
+	pipeKeys := map[int]string{1: "session-1\x00job-parent\x00pipe:123"}
+
+	input := newRemoteChildScheduleInput(req, pipeKeys)
+	pipeKeys[1] = "mutated"
+
+	if !input.IsRemoteChild || input.SessionID != "session-1" || input.JobID != "job-child" {
+		t.Fatalf("identity fields = %#v", input)
+	}
+	if input.ParentJobID != "job-parent" || input.ParentNodeID != "node-parent" {
+		t.Fatalf("parent fields = %#v", input)
+	}
+	if strings.Join(input.Command, " ") != "make -j8" || input.CWD != "/work" {
+		t.Fatalf("command/cwd = %#v/%q", input.Command, input.CWD)
+	}
+	if input.FDPlan != `[{"fd":9}]` || input.PipeKeys[1] != "session-1\x00job-parent\x00pipe:123" {
+		t.Fatalf("fd/pipe fields = %#v", input)
+	}
+	if input.Resources != req.Resources {
+		t.Fatalf("resources pointer not preserved")
+	}
+	if input.ExplicitNode != "node-explicit" || !input.LocalHint {
+		t.Fatalf("hints = explicit %q local %t", input.ExplicitNode, input.LocalHint)
+	}
+}
+
 func TestRemoteChildExecuteRequestToExecuteRequest(t *testing.T) {
 	req := &RemoteChildExecuteRequest{
 		Exec: &ExecuteRequest{
