@@ -38,46 +38,52 @@ import (
 )
 
 var (
-	configFile    = flag.String("config", "/etc/octopos/octoposd.yaml", "Config file path")
-	nodeID        = flag.String("node-id", "", "Node ID (default: hostname)")
-	grpcAddr      = flag.String("grpc-addr", "0.0.0.0:50051", "gRPC listen address")
-	wgInterface   = flag.String("wg-interface", "wg-octopos", "WireGuard interface")
-	peers         = flag.String("peers", "", "Comma-separated seed peer addresses (e.g., 10.0.0.2:50051,10.0.0.3:50051)")
-	clusterRoot   = flag.String("cluster-root", ssi.DefaultClusterRoot, "JuiceFS cluster filesystem mount point")
-	ssiRootFS     = flag.String("ssi-rootfs", "", "SSI root filesystem path (default: <cluster-root>)")
-	ssiMountBase  = flag.String("ssi-mount-base", ssi.DefaultMountBase, "Base directory for SSI virtual filesystem mounts")
-	ssiExecutor   = flag.String("ssi-executor", ssi.DefaultExecutor, "Privileged SSI command launcher")
-	requireSSI    = flag.Bool("require-ssi", true, "Require a mounted cluster filesystem and bootstrapped SSI rootfs before serving jobs")
-	childSocket   = flag.String("child-socket", remotechild.DefaultSocketPath, "Unix socket exposed to exec namespaces for local child process control")
-	childState    = flag.String("remote-child-state", "/var/lib/octopos/remote-children.json", "Persistent remote-child lifecycle state file")
-	childLease    = flag.Duration("remote-child-lease-timeout", 2*time.Minute, "How long to keep polling an unobservable remote child before failing its parent-side lease")
-	childTokenTTL = flag.Duration("remote-child-token-ttl", 24*time.Hour, "How long a parent exec's remote-child token remains valid")
-	vfioState     = flag.String("vfio-allocation-state", "/var/lib/octopos/vfio-allocations.json", "Persistent VFIO allocation state file")
+	configFile              = flag.String("config", "/etc/octopos/octoposd.yaml", "Config file path")
+	nodeID                  = flag.String("node-id", "", "Node ID (default: hostname)")
+	grpcAddr                = flag.String("grpc-addr", "0.0.0.0:50051", "gRPC listen address")
+	wgInterface             = flag.String("wg-interface", "wg-octopos", "WireGuard interface")
+	peers                   = flag.String("peers", "", "Comma-separated seed peer addresses (e.g., 10.0.0.2:50051,10.0.0.3:50051)")
+	clusterRoot             = flag.String("cluster-root", ssi.DefaultClusterRoot, "JuiceFS cluster filesystem mount point")
+	ssiRootFS               = flag.String("ssi-rootfs", "", "SSI root filesystem path (default: <cluster-root>)")
+	ssiMountBase            = flag.String("ssi-mount-base", ssi.DefaultMountBase, "Base directory for SSI virtual filesystem mounts")
+	ssiExecutor             = flag.String("ssi-executor", ssi.DefaultExecutor, "Privileged SSI command launcher")
+	requireSSI              = flag.Bool("require-ssi", true, "Require a mounted cluster filesystem and bootstrapped SSI rootfs before serving jobs")
+	childSocket             = flag.String("child-socket", remotechild.DefaultSocketPath, "Unix socket exposed to exec namespaces for local child process control")
+	childState              = flag.String("remote-child-state", "/var/lib/octopos/remote-children.json", "Persistent remote-child lifecycle state file")
+	childLease              = flag.Duration("remote-child-lease-timeout", 2*time.Minute, "How long to keep polling an unobservable remote child before failing its parent-side lease")
+	childTokenTTL           = flag.Duration("remote-child-token-ttl", 24*time.Hour, "How long a parent exec's remote-child token remains valid")
+	childSessionCPUQuota    = flag.Int64("remote-child-session-cpu-quota", 0, "Maximum aggregate remote-child CPU millicores per session (0 disables)")
+	childSessionMemoryQuota = flag.Int64("remote-child-session-memory-quota", 0, "Maximum aggregate remote-child memory bytes per session (0 disables)")
+	childSessionGPUQuota    = flag.Int("remote-child-session-gpu-quota", 0, "Maximum aggregate remote-child GPUs per session (0 disables)")
+	vfioState               = flag.String("vfio-allocation-state", "/var/lib/octopos/vfio-allocations.json", "Persistent VFIO allocation state file")
 )
 
 type Config struct {
-	NodeID             string                     `yaml:"node_id"`
-	GRPCAddr           string                     `yaml:"grpc_addr"`
-	WGInterface        string                     `yaml:"wg_interface"`
-	RedisAddrs         string                     `yaml:"redis_addrs"`
-	JuiceFSMount       string                     `yaml:"juicefs_mount"`
-	SSIRootFS          string                     `yaml:"ssi_rootfs"`
-	SSIMountBase       string                     `yaml:"ssi_mount_base"`
-	SSIExecutor        string                     `yaml:"ssi_executor"`
-	RequireSSI         bool                       `yaml:"require_ssi"`
-	ChildSocket        string                     `yaml:"child_socket"`
-	ChildState         string                     `yaml:"remote_child_state"`
-	ChildLease         time.Duration              `yaml:"remote_child_lease_timeout"`
-	ChildTokenTTL      time.Duration              `yaml:"remote_child_token_ttl"`
-	VFIOState          string                     `yaml:"vfio_allocation_state"`
-	Peers              string                     `yaml:"peers"`
-	VFIOEnabled        bool                       `yaml:"vfio_enabled"`
-	VFIOAllowedGroups  []int                      `yaml:"vfio_allowed_groups"`
-	VFIODeniedGroups   []int                      `yaml:"vfio_denied_groups"`
-	VFIOAllowedClasses []string                   `yaml:"vfio_allowed_classes"`
-	VFIOAllowedVendors []string                   `yaml:"vfio_allowed_vendors"`
-	VFIODriverRebind   bool                       `yaml:"vfio_driver_rebind"`
-	ExecDefaults       clusterconfig.ExecDefaults `yaml:"exec_defaults"`
+	NodeID                        string                     `yaml:"node_id"`
+	GRPCAddr                      string                     `yaml:"grpc_addr"`
+	WGInterface                   string                     `yaml:"wg_interface"`
+	RedisAddrs                    string                     `yaml:"redis_addrs"`
+	JuiceFSMount                  string                     `yaml:"juicefs_mount"`
+	SSIRootFS                     string                     `yaml:"ssi_rootfs"`
+	SSIMountBase                  string                     `yaml:"ssi_mount_base"`
+	SSIExecutor                   string                     `yaml:"ssi_executor"`
+	RequireSSI                    bool                       `yaml:"require_ssi"`
+	ChildSocket                   string                     `yaml:"child_socket"`
+	ChildState                    string                     `yaml:"remote_child_state"`
+	ChildLease                    time.Duration              `yaml:"remote_child_lease_timeout"`
+	ChildTokenTTL                 time.Duration              `yaml:"remote_child_token_ttl"`
+	RemoteChildSessionCPUQuota    int64                      `yaml:"remote_child_session_cpu_quota"`
+	RemoteChildSessionMemoryQuota int64                      `yaml:"remote_child_session_memory_quota"`
+	RemoteChildSessionGPUQuota    int                        `yaml:"remote_child_session_gpu_quota"`
+	VFIOState                     string                     `yaml:"vfio_allocation_state"`
+	Peers                         string                     `yaml:"peers"`
+	VFIOEnabled                   bool                       `yaml:"vfio_enabled"`
+	VFIOAllowedGroups             []int                      `yaml:"vfio_allowed_groups"`
+	VFIODeniedGroups              []int                      `yaml:"vfio_denied_groups"`
+	VFIOAllowedClasses            []string                   `yaml:"vfio_allowed_classes"`
+	VFIOAllowedVendors            []string                   `yaml:"vfio_allowed_vendors"`
+	VFIODriverRebind              bool                       `yaml:"vfio_driver_rebind"`
+	ExecDefaults                  clusterconfig.ExecDefaults `yaml:"exec_defaults"`
 }
 
 type Server struct {
@@ -103,23 +109,26 @@ func main() {
 
 	// Load config
 	cfg := &Config{
-		NodeID:        *nodeID,
-		GRPCAddr:      *grpcAddr,
-		WGInterface:   *wgInterface,
-		RedisAddrs:    "10.0.0.1:6379,10.0.0.2:6379,10.0.0.3:6379",
-		JuiceFSMount:  *clusterRoot,
-		SSIRootFS:     *ssiRootFS,
-		SSIMountBase:  *ssiMountBase,
-		SSIExecutor:   *ssiExecutor,
-		RequireSSI:    *requireSSI,
-		ChildSocket:   *childSocket,
-		ChildState:    *childState,
-		ChildLease:    *childLease,
-		ChildTokenTTL: *childTokenTTL,
-		VFIOState:     *vfioState,
-		Peers:         *peers,
-		VFIOEnabled:   true,
-		ExecDefaults:  clusterconfig.DefaultExecDefaults(),
+		NodeID:                        *nodeID,
+		GRPCAddr:                      *grpcAddr,
+		WGInterface:                   *wgInterface,
+		RedisAddrs:                    "10.0.0.1:6379,10.0.0.2:6379,10.0.0.3:6379",
+		JuiceFSMount:                  *clusterRoot,
+		SSIRootFS:                     *ssiRootFS,
+		SSIMountBase:                  *ssiMountBase,
+		SSIExecutor:                   *ssiExecutor,
+		RequireSSI:                    *requireSSI,
+		ChildSocket:                   *childSocket,
+		ChildState:                    *childState,
+		ChildLease:                    *childLease,
+		ChildTokenTTL:                 *childTokenTTL,
+		RemoteChildSessionCPUQuota:    *childSessionCPUQuota,
+		RemoteChildSessionMemoryQuota: *childSessionMemoryQuota,
+		RemoteChildSessionGPUQuota:    *childSessionGPUQuota,
+		VFIOState:                     *vfioState,
+		Peers:                         *peers,
+		VFIOEnabled:                   true,
+		ExecDefaults:                  clusterconfig.DefaultExecDefaults(),
 	}
 
 	if *configFile != "" {
@@ -216,6 +225,12 @@ func applyExplicitConfigFlags(cfg *Config) {
 			cfg.ChildLease = *childLease
 		case "remote-child-token-ttl":
 			cfg.ChildTokenTTL = *childTokenTTL
+		case "remote-child-session-cpu-quota":
+			cfg.RemoteChildSessionCPUQuota = *childSessionCPUQuota
+		case "remote-child-session-memory-quota":
+			cfg.RemoteChildSessionMemoryQuota = *childSessionMemoryQuota
+		case "remote-child-session-gpu-quota":
+			cfg.RemoteChildSessionGPUQuota = *childSessionGPUQuota
 		case "vfio-allocation-state":
 			cfg.VFIOState = *vfioState
 		}
@@ -415,13 +430,7 @@ func (s *Server) startGRPC() error {
 	reflection.Register(s.grpcServer)
 
 	// Register Cluster service
-	s.clusterServer = rpc.RegisterClusterServerImplWithOptions(s.grpcServer, s.nodeInfo.ID, s.scheduler, s.tracker, s.grpcPort, s.clientPool, rpc.ServerOptions{
-		SSI:                     s.ssiConfig(),
-		RemoteChildStorePath:    s.config.ChildState,
-		RemoteChildLeaseTimeout: s.config.ChildLease,
-		RemoteChildTokenTTL:     s.config.ChildTokenTTL,
-		VFIOAllocationStorePath: s.config.VFIOState,
-	})
+	s.clusterServer = rpc.RegisterClusterServerImplWithOptions(s.grpcServer, s.nodeInfo.ID, s.scheduler, s.tracker, s.grpcPort, s.clientPool, s.rpcServerOptions())
 	go s.pruneRemoteChildRecords()
 	go s.recoverRemoteChildRecords()
 
@@ -438,6 +447,19 @@ func (s *Server) startGRPC() error {
 	}
 
 	return nil
+}
+
+func (s *Server) rpcServerOptions() rpc.ServerOptions {
+	return rpc.ServerOptions{
+		SSI:                         s.ssiConfig(),
+		MaxRemoteChildSessionCPU:    s.config.RemoteChildSessionCPUQuota,
+		MaxRemoteChildSessionMemory: s.config.RemoteChildSessionMemoryQuota,
+		MaxRemoteChildSessionGPUs:   s.config.RemoteChildSessionGPUQuota,
+		RemoteChildStorePath:        s.config.ChildState,
+		RemoteChildLeaseTimeout:     s.config.ChildLease,
+		RemoteChildTokenTTL:         s.config.ChildTokenTTL,
+		VFIOAllocationStorePath:     s.config.VFIOState,
+	}
 }
 
 func (s *Server) pruneRemoteChildRecords() {

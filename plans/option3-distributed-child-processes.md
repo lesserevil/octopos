@@ -23,7 +23,7 @@ operational even if later stages are never completed.
 
 ## Current Implementation Status
 
-Status date: 2026-06-24.
+Status date: 2026-06-25.
 
 Implemented and live-tested on `shedwards-octo1`, `shedwards-octo2`, and
 `shedwards-octo3`:
@@ -176,6 +176,21 @@ Implemented and live-tested on `shedwards-octo1`, `shedwards-octo2`, and
   - `OCTOPOS_CHILD_CPU`
   - `OCTOPOS_CHILD_MEM`
   - `OCTOPOS_CHILD_GPU`
+- Remote-child scheduler input captures session, job, parent job/node, command,
+  cwd, fd plan, pipe keys, resource requests, explicit node affinity, and local
+  placement hints.
+- Daemon-side hint normalization converts `OCTOPOS_CHILD_CPU`,
+  `OCTOPOS_CHILD_MEM`, and `OCTOPOS_CHILD_GPU` into scheduler requirements,
+  preserves explicit node affinity, and pins `OCTOPOS_CHILD_LOCAL=1` children to
+  the parent node when no explicit target was supplied.
+- Remote-child placement policy now validates remote FD reopen plans before
+  scheduling, prefers the parent node for tiny commands, avoids the busiest
+  sibling node for parallel build commands, and penalizes GPU nodes for non-GPU
+  work while keeping GPU requests allocated through the scheduler.
+- Per-session aggregate remote-child CPU, memory, and GPU quotas are enforced by
+  `octoposd` and configured through `remote_child_session_cpu_quota`,
+  `remote_child_session_memory_quota`, and `remote_child_session_gpu_quota` in
+  the cluster config or matching daemon flags.
 - Interactive job-control signal forwarding in the foreground client:
   `SIGTSTP`, local shadow suspension, terminal restore/re-raw, and `SIGCONT`
   forwarding on resume.
@@ -537,6 +552,15 @@ Acceptance criteria:
 ### Phase 5: Scheduler Policy and Quotas
 
 Goal: make remote child placement predictable and fair.
+
+Current status: implemented. Remote-child scheduling now builds a typed
+child-specific input, applies daemon-side placement/resource hints, validates
+remote FD reopen plans before scheduling, keeps explicit node affinity
+authoritative, prefers parent-node placement for tiny commands, spreads parallel
+build siblings away from the busiest active node, avoids GPU nodes for non-GPU
+work, and enforces per-session aggregate CPU, memory, and GPU quotas. The quota
+knobs are available in `octoposd` flags and YAML config; a value of `0` leaves
+that quota unlimited.
 
 Tasks:
 
@@ -1338,6 +1362,11 @@ Suggested junior developer tasks:
 ## Milestone 10: Scheduler and Policy Integration
 
 Goal: make remote child placement safe and predictable.
+
+Current status: implemented. Scheduler inputs, placement/resource hints, FD-plan
+validation, GPU-node preference, tiny-command parent-node preference,
+parallel-build anti-affinity, and per-session aggregate CPU/memory/GPU quotas
+are covered by unit tests and daemon config wiring.
 
 Tasks:
 

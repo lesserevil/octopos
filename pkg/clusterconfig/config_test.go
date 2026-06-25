@@ -49,21 +49,35 @@ func TestLoadExecDefaultsZeroValuesUseBuiltInDefaults(t *testing.T) {
 
 func TestMarshalFileIncludesExecDefaults(t *testing.T) {
 	data, err := MarshalFile(File{
-		NodeID:             "node-1",
-		GRPCAddr:           "0.0.0.0:50051",
-		RequireSSI:         true,
-		VFIOEnabled:        true,
-		VFIOAllowedGroups:  []int{7},
-		VFIODeniedGroups:   []int{9},
-		VFIOAllowedClasses: []string{"0200"},
-		VFIOAllowedVendors: []string{"8086"},
-		ExecDefaults:       ExecDefaults{CPUCores: 2, MemoryGB: 4},
+		NodeID:                        "node-1",
+		GRPCAddr:                      "0.0.0.0:50051",
+		RequireSSI:                    true,
+		RemoteChildSessionCPUQuota:    12000,
+		RemoteChildSessionMemoryQuota: 64 << 30,
+		RemoteChildSessionGPUQuota:    2,
+		VFIOEnabled:                   true,
+		VFIOAllowedGroups:             []int{7},
+		VFIODeniedGroups:              []int{9},
+		VFIOAllowedClasses:            []string{"0200"},
+		VFIOAllowedVendors:            []string{"8086"},
+		ExecDefaults:                  ExecDefaults{CPUCores: 2, MemoryGB: 4},
 	})
 	if err != nil {
 		t.Fatalf("MarshalFile: %v", err)
 	}
 	text := string(data)
-	for _, want := range []string{"node_id: node-1", "cpu_cores: 2", "memory_gb: 4", "vfio_allowed_groups:", "vfio_denied_groups:", "vfio_allowed_classes:", "vfio_allowed_vendors:"} {
+	for _, want := range []string{
+		"node_id: node-1",
+		"remote_child_session_cpu_quota: 12000",
+		"remote_child_session_memory_quota: 68719476736",
+		"remote_child_session_gpu_quota: 2",
+		"cpu_cores: 2",
+		"memory_gb: 4",
+		"vfio_allowed_groups:",
+		"vfio_denied_groups:",
+		"vfio_allowed_classes:",
+		"vfio_allowed_vendors:",
+	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("config missing %q:\n%s", want, text)
 		}

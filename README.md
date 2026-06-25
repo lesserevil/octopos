@@ -271,8 +271,14 @@ mapping in the `REMOTE` column. Useful daemon flags:
 ```bash
 octoposd --remote-child-token-ttl=24h \
   --remote-child-lease-timeout=2m \
-  --remote-child-state=/var/lib/octopos/remote-children.json
+  --remote-child-state=/var/lib/octopos/remote-children.json \
+  --remote-child-session-cpu-quota=16000 \
+  --remote-child-session-memory-quota=68719476736 \
+  --remote-child-session-gpu-quota=2
 ```
+
+The session quota flags cap aggregate remote-child CPU millicores, memory bytes,
+and GPUs for a single session. Leave a quota at `0` to disable that limit.
 
 Check whether a host has seccomp user-notification support for audit mode:
 
